@@ -12,6 +12,10 @@ back to the RAW files and settings that made it.
 
 Apple Silicon only; developed and tested on macOS 26.
 
+**New here?** The [usage guide](docs/usage.md) walks through the app with screenshots.
+
+![hdrspace viewer](docs/images/01-viewer.jpg)
+
 ## Camera RGB to calibrated colour and luminance
 
 The engine is `mergehdr` ([`mergehdr/`](mergehdr)), a C++ re-implementation of Stephen
@@ -31,8 +35,19 @@ Wasilewski's linearhdr / pylinearhdr method.
 6. **Sun**: `shadowband` combines shadowband and ND-filter captures so the solar disc is not
    clipped.
 
-Luminance follows the Radiance convention, `L = 179 × (0.265 R + 0.670 G + 0.065 B)`. The
-absolute scale comes from the exposure model, so check a new camera and lens against a
+Pixel values are stored in Radiance units (W·sr⁻¹·m⁻², i.e. cd/m² ÷ 179) whatever the output
+colour space, and the luminance weights for that space are written to the header as
+`LuminanceRGB` (the Y row of its RGB → XYZ matrix). Luminance is therefore
+`L = 179 × (w_R R + w_G G + w_B B) / EXPOSURE`, where `EXPOSURE` is the product of any
+`EXPOSURE=` lines in the header (1 if there are none):
+
+| Output | w_R, w_G, w_B | Luminance |
+|---|---|---|
+| Radiance RGB | 0.265, 0.670, 0.065 | `179 × (0.265 R + 0.670 G + 0.065 B)` |
+| linear sRGB (Rec. 709) | 0.2126, 0.7152, 0.0722 | `179 × (0.2126 R + 0.7152 G + 0.0722 B)` |
+| XYZ | 0, 1, 0 | `179 × Y` |
+
+The absolute scale comes from the exposure model, so check a new camera and lens against a
 luminance meter before relying on absolute values.
 
 ## Tools in the app

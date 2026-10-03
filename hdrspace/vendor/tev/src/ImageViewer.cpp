@@ -3599,7 +3599,9 @@ void ImageViewer::setExposurePrecise(float value) {
 
 void ImageViewer::setRadiance179Preview(bool value) {
     mRadiance179Preview = value;
-    mImageCanvas->setInspectionScale(radiometricInspectionScale());
+    // Perceptual maps are already in the engine's output units; the source file's EXPOSURE
+    // compensation is not applied to them again for display and readouts.
+    mImageCanvas->setInspectionScale(perceptualMapShown() ? 1.0f : radiometricInspectionScale());
 }
 
 void ImageViewer::setInspectionPresetIndex(int presetIndex) {

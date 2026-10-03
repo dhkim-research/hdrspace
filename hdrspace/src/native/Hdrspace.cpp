@@ -16485,12 +16485,20 @@ private:
         if (viewer_ && viewer_->perceptualMapShown()) {
             if (!perceptualSavedTonemap_) perceptualSavedTonemap_ = viewer_->tonemap();
             if (perceptualFalseColor_ && perceptualStats_) {
+                // The ramp is in the map's own units, so the display exposure and offset
+                // (which the shader applies first) are held at zero while it is shown.
+                if (!perceptualSavedExposure_) {
+                    perceptualSavedExposure_ = std::make_pair(viewer_->exposure(), viewer_->offset());
+                    viewer_->setExposure(0.0f);
+                    viewer_->setOffset(0.0f);
+                }
                 double lo = perceptualStats_->p01;
                 double hi = perceptualStats_->p99;
                 if (perceptualLog_) lo = std::max(lo, hi * 1e-4); // at most four decades
                 if (!(hi > lo)) hi = lo + 1.0;
                 viewer_->setFalseColorDisplay(true, perceptualLog_, static_cast<float>(lo), static_cast<float>(hi));
             } else {
+                restorePerceptualExposure();
                 viewer_->setTonemap(*perceptualSavedTonemap_ == tev::ETonemap::FalseColor ? tev::ETonemap::SRGB : *perceptualSavedTonemap_);
             }
         }
@@ -16503,6 +16511,15 @@ private:
             viewer_->setTonemap(*perceptualSavedTonemap_);
         }
         perceptualSavedTonemap_.reset();
+        restorePerceptualExposure();
+    }
+
+    void restorePerceptualExposure() {
+        if (viewer_ && perceptualSavedExposure_) {
+            viewer_->setExposure(perceptualSavedExposure_->first);
+            viewer_->setOffset(perceptualSavedExposure_->second);
+        }
+        perceptualSavedExposure_.reset();
     }
 
     void leavePerceptualMaps() {
@@ -26768,6 +26785,7 @@ private:
     double perceptualResultPpd_ = 30.0;
     double perceptualResultSensitivity_ = -1.0;
     std::optional<tev::ETonemap> perceptualSavedTonemap_;
+    std::optional<std::pair<float, float>> perceptualSavedExposure_;
     DesktopPanelWindow* createViewWindow_ = nullptr;
     // Grouped tool rail. RailFocus scrolls or opens the matching existing control
     // after the panel switch; tools keep using the shared canvas, images and results.
