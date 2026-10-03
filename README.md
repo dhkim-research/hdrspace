@@ -47,6 +47,11 @@ colour space, and the luminance weights for that space are written to the header
 | linear sRGB (Rec. 709) | 0.2126, 0.7152, 0.0722 | `179 × (0.2126 R + 0.7152 G + 0.0722 B)` |
 | XYZ | 0, 1, 0 | `179 × Y` |
 
+Every tool in hdrspace reads files this way (Glare, View Visibility, Perceptual maps and the
+viewer's luminance read-out). The one exception is an XYZ file that already holds cd/m², for
+example one written by another program: mark it as *XYZ (cd/m²)* in the viewer, or choose
+`--input-color xyz-cdm2` on the command line, and the ×179 is left out.
+
 The absolute scale comes from the exposure model, so check a new camera and lens against a
 luminance meter before relying on absolute values.
 

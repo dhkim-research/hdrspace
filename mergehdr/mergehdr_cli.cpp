@@ -4320,9 +4320,9 @@ std::string viewVisibilityHelp(const std::string &command) {
     oss << "  --sensitivity FLOAT        Sensitivity correction. Default: -1.\n";
     oss << "  --spectral-emission PATH   Spectral emission CSV. Default: OLED profile.\n";
     oss << "  --detail TEXT              hdrvdp3 or contrast-proxy. Default: hdrvdp3.\n";
-    oss << "  --input-color TEXT         rad, srgb, or xyz. Default: rad.\n";
-    oss << "                             rad/srgb are multiplied by 179 before RGB->XYZ;\n";
-    oss << "                             xyz is already absolute CIE XYZ in cd/m^2.\n";
+    oss << "  --input-color TEXT         rad, srgb, xyz (Radiance units), or xyz-cdm2 (XYZ already in cd/m2).\n";
+    oss << "                             Values are multiplied by 179 (not for xyz-cdm2) and divided by EXPOSURE.\n";
+    oss << "                             Default: rad.\n";
     oss << "  --debug-dir PATH           Write native debug dump directory.\n";
     oss << "  --help                     Show this help.\n\n";
     oss << "Output HDR channels:\n";
@@ -4842,6 +4842,8 @@ ViewVisibilitySummaryOptions::InputColor parseViewVisibilityInputColor(const std
         return ViewVisibilitySummaryOptions::InputColor::Srgb;
     if (token == "xyz")
         return ViewVisibilitySummaryOptions::InputColor::Xyz;
+    if (token == "xyz-cdm2" || token == "xyz_cdm2")
+        return ViewVisibilitySummaryOptions::InputColor::XyzCdm2;
     throw std::runtime_error("Unsupported --input-color value: " + value);
 }
 

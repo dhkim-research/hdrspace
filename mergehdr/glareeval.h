@@ -235,7 +235,8 @@ struct ViewVisibilitySummaryOptions {
     enum class InputColor {
         Rad,
         Srgb,
-        Xyz
+        Xyz,     // XYZ in Radiance units (cd/m² / 179), as mergehdr and Radiance write it
+        XyzCdm2  // XYZ already stored in cd/m²
     };
 
     std::string referencePath;

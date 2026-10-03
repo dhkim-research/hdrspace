@@ -7397,10 +7397,8 @@ private:
             (viewVisibilityDetailCombo_ && viewVisibilityDetailCombo_->selected_index() == 1)
                 ? "contrast_proxy"
                 : "hdrvdp3";
-        const std::string inputColorSuffix =
-            viewVisibilityInputColorCombo_ && viewVisibilityInputColorCombo_->selected_index() == 2
-                ? "xyz"
-                : (viewVisibilityInputColorCombo_ && viewVisibilityInputColorCombo_->selected_index() == 1 ? "srgb" : "rad");
+        const std::string inputColorSuffix = viewVisibilityInputColorKey(
+            viewVisibilityInputColorCombo_ ? viewVisibilityInputColorCombo_->selected_index() : 0);
         const std::string stem = sanitizeStem(
             (referencePath.empty() ? std::string("reference") : referencePath.stem().string()) + "_" +
             (testPath.empty() ? std::string("test") : testPath.stem().string()) + "_" + modeSuffix + "_" + inputColorSuffix
@@ -7451,11 +7449,22 @@ private:
             : (viewVisibilityDetailCombo_ && viewVisibilityDetailCombo_->selected_index() == 1 ? "Contrast proxy" : "HDR-VDP3");
     }
 
+    // Input colour list order: Radiance RGB, linear sRGB, XYZ (Radiance units), XYZ in cd/m².
+    static const char* viewVisibilityInputColorKey(int index) {
+        switch (index) {
+            case 1: return "srgb";
+            case 2: return "xyz";
+            case 3: return "xyz-cdm2";
+            default: return "rad";
+        }
+    }
+
     ViewVisibilitySummaryOptions::InputColor selectedViewVisibilityInputColor() const {
         const int index = viewVisibilityInputColorCombo_ ? viewVisibilityInputColorCombo_->selected_index() : 0;
         switch (index) {
             case 1: return ViewVisibilitySummaryOptions::InputColor::Srgb;
             case 2: return ViewVisibilitySummaryOptions::InputColor::Xyz;
+            case 3: return ViewVisibilitySummaryOptions::InputColor::XyzCdm2;
             default: return ViewVisibilitySummaryOptions::InputColor::Rad;
         }
     }
@@ -7463,12 +7472,14 @@ private:
     std::string viewVisibilityInputColorLabel() const {
         if (viewVisibilityResult_ && !viewVisibilityResult_->inputColor.empty()) {
             if (viewVisibilityResult_->inputColor == "xyz") return "XYZ";
+            if (viewVisibilityResult_->inputColor == "xyz-cdm2") return "XYZ (cd/m²)";
             if (viewVisibilityResult_->inputColor == "srgb") return "sRGB";
             return "Radiance RGB";
         }
         switch (selectedViewVisibilityInputColor()) {
             case ViewVisibilitySummaryOptions::InputColor::Srgb: return "sRGB";
             case ViewVisibilitySummaryOptions::InputColor::Xyz: return "XYZ";
+            case ViewVisibilitySummaryOptions::InputColor::XyzCdm2: return "XYZ (cd/m²)";
             case ViewVisibilitySummaryOptions::InputColor::Rad:
             default: return "Radiance RGB";
         }
@@ -7816,7 +7827,10 @@ private:
                 viewer_->redraw();
             }
         });
-        viewVisibilityInputColorCombo_ = combo("Input color", {"Radiance RGB (rad)", "Linear sRGB", "CIE XYZ (cd/m²)"}, 0);
+        viewVisibilityInputColorCombo_ = combo("Input color", {"Radiance RGB (rad)", "Linear sRGB", "CIE XYZ", "CIE XYZ (cd/m²)"}, 0);
+        viewVisibilityInputColorCombo_->set_tooltip(
+            "How the stored values are read. Rad, sRGB and XYZ are Radiance units (cd/m² ÷ 179, as mergehdr writes them); "
+            "choose CIE XYZ (cd/m²) for XYZ files that already hold cd/m². EXPOSURE= header lines are undone in every case.");
         viewVisibilityInputColorCombo_->set_callback([this](int) {
             resetViewVisibilityResult();
             setViewVisibilityStatusCaption("Input color space changed.");
@@ -16044,12 +16058,14 @@ private:
         perceptualColorLabel_ = valueLabel(row(content, "Colour"));
         perceptualColorLabel_->set_tooltip("Colour space of the file's values, from its header.");
         perceptualAssignCombo_ = new InspectorComboBox(row(content, "Assign colour"),
-            {"Choose...", "Radiance RGB", "sRGB / Rec.709", "XYZ", "Raw (camera)", "Luminance (cd/m²)"});
+            {"Choose...", "Radiance RGB", "sRGB / Rec.709", "XYZ", "XYZ (cd/m²)", "Raw (camera)", "Luminance (cd/m²)"});
         perceptualAssignCombo_->set_fixed_width(kFieldWidth);
         perceptualAssignCombo_->set_tooltip("The header has no colour information. The choice is written into the file's header (two lines); pixels stay as they are.");
         perceptualAssignCombo_->set_callback([this](int index) {
-            if (index > 0 && viewer_) {
-                viewer_->requestSourceColorAssignment(index - 1);
+            // Menu order -> ImageViewer colour kind (5 = XYZ already in cd/m²).
+            static const int kKinds[] = {-1, 0, 1, 2, 5, 3, 4};
+            if (index > 0 && index < 7 && viewer_) {
+                viewer_->requestSourceColorAssignment(kKinds[index]);
             }
             perceptualAssignCombo_->set_selected_index(0);
         });
@@ -16240,8 +16256,8 @@ private:
         switch (viewer_->sourceColorKind()) {
         case 0: return 0;
         case 1: return 1;
-        case 2: return 2;
-        case 4: return 2; // luminance (cd/m²) with three equal channels: X = Y = Z
+        case 2: return viewer_->sourceValuesInCdm2() ? 3 : 2;
+        case 4: return 3; // luminance (cd/m²) with three equal channels: X = Y = Z, already in cd/m²
         default: return -1;
         }
     }
@@ -16412,7 +16428,9 @@ private:
         opts.sensitivityCorrection = sensitivity;
         opts.spectralEmissionPath = emission.empty() ? std::string() : emission.string();
         opts.inputColor = inputColor == 1 ? ViewVisibilitySummaryOptions::InputColor::Srgb
-            : (inputColor == 2 ? ViewVisibilitySummaryOptions::InputColor::Xyz : ViewVisibilitySummaryOptions::InputColor::Rad);
+            : inputColor == 2 ? ViewVisibilitySummaryOptions::InputColor::Xyz
+            : inputColor == 3 ? ViewVisibilitySummaryOptions::InputColor::XyzCdm2
+                              : ViewVisibilitySummaryOptions::InputColor::Rad;
         PerceptualMapResult result;
         try {
             result = analyzePerceptualMap(opts, static_cast<PerceptualMapKind>(perceptualKind_));
@@ -16554,7 +16572,9 @@ private:
             std::string("HDRSPACE_MAP= ") + info.name,
             std::string("HDRSPACE_MAP_SOURCE= ") + source.filename().string(),
             std::format("HDRSPACE_MAP_SETTINGS= ppd {} sensitivity {} input {}", perceptualResultPpd_, perceptualResultSensitivity_,
-                perceptualInputColor() == 1 ? "srgb" : (perceptualInputColor() == 2 ? "xyz" : "rad")),
+                perceptualInputColor() == 1 ? "srgb"
+                    : perceptualInputColor() == 2 ? "xyz"
+                    : perceptualInputColor() == 3 ? "xyz-cdm2" : "rad"),
         };
         if (std::string(info.unit) == "cd/m²") lines.push_back("HDRSPACE_COLOR= luminance cd/m2");
         const std::string view = currentImageHeaderValue("VIEW");
@@ -25778,7 +25798,7 @@ private:
             const auto it = values.find("viewVisibilityInputColor");
             const std::string inputColor = it == values.end() ? std::string{} : tev::toLower(trim(it->second));
             viewVisibilityInputColorCombo_->set_selected_index(
-                inputColor == "xyz" ? 2 : (inputColor == "srgb" ? 1 : 0)
+                inputColor == "xyz-cdm2" ? 3 : (inputColor == "xyz" ? 2 : (inputColor == "srgb" ? 1 : 0))
             );
         }
     }
@@ -25792,10 +25812,7 @@ private:
             values["oiiotoolPath"] = normalizedTextBoxValue(oiiotoolPathBox_->value());
         }
         if (viewVisibilityInputColorCombo_) {
-            values["viewVisibilityInputColor"] =
-                viewVisibilityInputColorCombo_->selected_index() == 2
-                    ? "xyz"
-                    : (viewVisibilityInputColorCombo_->selected_index() == 1 ? "srgb" : "rad");
+            values["viewVisibilityInputColor"] = viewVisibilityInputColorKey(viewVisibilityInputColorCombo_->selected_index());
         }
         writeKeyValueFile(paths_.settingsFile, values);
         paths_ = resolvePaths();

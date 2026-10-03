@@ -29,8 +29,10 @@ window with all keyboard shortcuts.
 
 **Files without colour information.** If a file has no primaries or colour header, the colour
 shows as *Unknown* and conversions are turned off, because hdrspace does not guess. Use
-**Interpret file as** in the same menu to say what the file is: Rad, sRGB, XYZ, Raw, or
-Luminance (cd/m²). hdrspace then adds one or two lines (`PRIMARIES=` and `HDRSPACE_COLOR=`) to
+**Interpret file as** in the same menu to say what the file is: Rad, sRGB, XYZ, XYZ (cd/m²),
+Raw, or Luminance (cd/m²). Plain *XYZ* means Radiance units (cd/m² ÷ 179), which is how
+mergehdr and Radiance write XYZ. Choose *XYZ (cd/m²)* only for XYZ files that another
+program saved directly in cd/m². hdrspace then adds one or two lines (`PRIMARIES=` and `HDRSPACE_COLOR=`) to
 the header. It asks before writing and leaves every other header line and all pixel data
 unchanged.
 
@@ -116,8 +118,10 @@ down (**Test**). It tells you how much of the detectable contrast in the view is
 
 1. Choose the **Reference**, **Test** and a **White mask**. The mask is an HDR image that is
    white where the view counts, such as the window area. Then press **Load pair**.
-2. Set the viewing conditions: input colour space, **PPD** (pixels per degree), sensitivity
-   and output detail.
+2. Set the viewing conditions: **Input color**, **PPD** (pixels per degree), sensitivity and
+   output detail. For Input color, Radiance RGB, linear sRGB and CIE XYZ are read in Radiance
+   units (× 179). CIE XYZ (cd/m²) is for XYZ files that already hold cd/m². Header
+   `EXPOSURE=` lines are always undone.
 3. Press **Compute visibility**.
 
 The result is a **Visibility ratio** and a **Quality** score. The tabs above the canvas switch

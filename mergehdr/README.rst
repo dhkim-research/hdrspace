@@ -33,34 +33,32 @@ Typical usage::
    mergehdr -profile R5m2 run --bloom-prevent "*.CR3" > out.hdr
    mergehdr run --colorspace xyz --no-fisheye "*.CR3" > out.hdr
 
-Canon 8 mm Paul Bourke profile
-------------------------------
+Profiles
+--------
 
-``R5m2ND3_3`` keeps the RAW, color, ND, and 5274 x 5274 crop settings from
-``R5m2ND3_2`` but replaces the generic ideal-equisolid correction with the
-Paul Bourke empirical Canon EF 8-15 mm curve at 8 mm. The mapping is applied
-natively with one bilinear resampling pass and writes a 180-degree
-equidistant ``VIEW`` header::
+``profiles/`` holds ready-made presets for the setup mergehdr was tested with:
 
-   mergehdr -profile R5m2ND3_3 run --demosaic dht \
-     --merge-weight linearhdr 2T0A*.CR3 > 1439_R5m2ND3_3_bourke_equidistant.hdr
+- camera: Canon EOS R5 Mark II
+- lens: Canon EF 8-15mm f/4L Fisheye USM, on an EF-RF mount adapter
+- filters: Kolari Clear, plus an ND3 (ND 3.0) filter for bright skies
 
-The profile uses a 5274 x 5274 crop at ``1405 150`` with source and target
-radii of 2637 px. ``profiles/paul_bourke_equidistant.cal`` records the same
-polynomial for provenance and direct ``pcomb`` verification; the normal
-profile path does not launch ``pcomb``.
+``R5m2`` is the preset for this camera and lens. ``R5m2ND3`` is the same setup
+with the ND3 filter: it adds ``nd = 3.0`` and has its own colour matrix. For
+other equipment, make your own preset with the calibration tools below.
 
-The same native mapping can be applied to an already merged, uncorrected HDR
-with ``convertprojection``. Four coefficients represent
+Lens projection
+---------------
+
+``convertprojection`` converts a merged fisheye HDR between projections. A
+measured lens curve can be given as four coefficients of
 ``rho=C1*phi+C2*phi^2+C3*phi^3+C4*phi^4``, with ``phi`` in radians::
 
    mergehdr convertprojection --equisolid --equidistant \
-     -p 0.7189 0.00079342 -0.0289 -0.001 \
-     -o corrected.hdr uncorrected.hdr
+     -p C1 C2 C3 C4 -o corrected.hdr uncorrected.hdr
 
-For polynomial conversion, source and target radii default to half the square
-input width. Use ``--source-radius`` and ``--target-radius`` only when the
-fisheye disk or 90-degree target radius differs from that default.
+Source and target radii default to half the square input width. Use
+``--source-radius`` and ``--target-radius`` only when the fisheye disk or the
+90-degree target radius differs from that.
 
 Vignetting correction
 ---------------------
@@ -71,7 +69,7 @@ table is linearly interpolated (and linearly extrapolated beyond its endpoint)
 at 180-degree equiangular pixel-center angles, then multiplied into the
 destination RGB image after any fisheye or calibrated lens projection::
 
-   mergehdr -profile R5m2ND3_3 run \
+   mergehdr -profile R5m2 run \
      -vfile /path/to/F-22_vignetting.txt \
      -o corrected.hdr "*.CR3"
 

@@ -207,7 +207,11 @@ public:
     // True for a Radiance file without colour information (or with one hdrspace assigned):
     // the user may then assign a colour space, which is written into the file's header.
     bool canAssignSourceColor() const;
+    // True when the values are already in cd/m² (assigned "luminance" or "xyz cd/m2") rather
+    // than in Radiance units (cd/m² / 179).
+    bool sourceValuesInCdm2() const;
     // Asks for confirmation, adds the PRIMARIES / HDRSPACE_COLOR header lines and reloads.
+    // kind: 0 Radiance RGB, 1 sRGB, 2 XYZ, 3 raw, 4 luminance (cd/m²), 5 XYZ in cd/m².
     void requestSourceColorAssignment(int kind);
     // Perceptual maps (shown on the canvas in place of the file's values).
     // inputColor: 0 Radiance RGB, 1 sRGB, 2 XYZ (as View Visibility's input colour).
@@ -580,6 +584,8 @@ private:
     std::string mPerceptualEmissionPath;
     int mPerceptualInputColor = 0;
     std::vector<nanogui::Button*> mAssignColorButtons;
+    std::vector<int> mAssignColorButtonKinds;
+    int currentAssignedColorKind() const;
     nanogui::Widget* mAssignColorHeading = nullptr;
     nanogui::Widget* mAssignColorSpacer = nullptr;
     std::optional<std::string> assignedSourceColor() const;

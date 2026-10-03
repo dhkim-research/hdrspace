@@ -1267,15 +1267,18 @@ ImageViewer::ImageViewer(
                 const std::pair<const char*, const char*> assignItems[] = {
                     {"Radiance RGB", "Radiance primaries (equal-energy white). Writes PRIMARIES and HDRSPACE_COLOR into the header."},
                     {"sRGB / Rec.709", "Linear sRGB primaries, D65 white. Writes PRIMARIES and HDRSPACE_COLOR into the header."},
-                    {"XYZ", "CIE 1931 XYZ values. Writes PRIMARIES and HDRSPACE_COLOR into the header."},
+                    {"XYZ", "CIE 1931 XYZ in Radiance units (cd/m\u00b2 \u00f7 179), as mergehdr and Radiance write it. Writes PRIMARIES and HDRSPACE_COLOR into the header."},
                     {"Raw (camera)", "Camera sensor values without a colour matrix; conversions stay off. Writes HDRSPACE_COLOR."},
                     {"Luminance (cd/m\u00b2)", "Monochrome luminance in cd/m\u00b2 (all channels equal). Writes HDRSPACE_COLOR."},
+                    {"XYZ (cd/m\u00b2)", "CIE 1931 XYZ already in cd/m\u00b2 (not Radiance units). Writes PRIMARIES and HDRSPACE_COLOR into the header."},
                 };
-                for (int kind = 0; kind < 5; ++kind) {
+                mAssignColorButtonKinds.clear();
+                for (const int kind : {0, 1, 2, 5, 3, 4}) {
                     auto* button = new MenuItemButton{popup, assignItems[kind].first};
                     button->set_tooltip(assignItems[kind].second);
                     button->set_callback([this, kind]() { requestSourceColorAssignment(kind); });
                     mAssignColorButtons.push_back(button);
+                    mAssignColorButtonKinds.push_back(kind);
                 }
             }
             refreshInspectionModeUi();
@@ -3896,13 +3899,12 @@ void ImageViewer::refreshInspectionModeUi() {
 
     {
         const bool assignable = canAssignSourceColor();
-        const auto assigned = assignedSourceColor();
-        static const char* kAssignKeys[] = {"rad", "srgb", "xyz", "raw", "luminance"};
+        const int assignedKind = currentAssignedColorKind();
         if (mAssignColorSpacer) mAssignColorSpacer->set_visible(assignable);
         if (mAssignColorHeading) mAssignColorHeading->set_visible(assignable);
         for (size_t i = 0; i < mAssignColorButtons.size(); ++i) {
             mAssignColorButtons[i]->set_visible(assignable);
-            mAssignColorButtons[i]->set_pushed(assigned.has_value() && *assigned == kAssignKeys[i]);
+            mAssignColorButtons[i]->set_pushed(i < mAssignColorButtonKinds.size() && mAssignColorButtonKinds[i] == assignedKind);
         }
         if (mValueModePopupButton && m_nvg_context) {
             auto* popup = mValueModePopupButton->popup();
@@ -3938,7 +3940,11 @@ void ImageViewer::applyInspectionPreset(int presetIndex) {
     }
     syncHighlightChannelGroup();
     syncInspectionDisplayChannelSelection();
-    const bool useRadianceScale = sourceValueLabel() == "Rad" &&
+    // Radiance pictures store Rad, sRGB and XYZ values in Radiance units (cd/m² / 179), so XYZ
+    // and luminance read-outs are scaled by 179, unless the values are marked as cd/m².
+    const std::string sourceLabel = sourceValueLabel();
+    const bool useRadianceScale = currentFileIsRadiance() && !sourceValuesInCdm2() &&
+        (sourceLabel == "Rad" || sourceLabel == "sRGB" || sourceLabel == "XYZ") &&
         (presetIndex == InspectionXyz || presetIndex == InspectionLuminance);
     mImageCanvas->clearInspectionPreviewImage();
     mImageCanvas->setInspectionMatrixOverride(Matrix3f{1.0f});
@@ -4604,8 +4610,9 @@ std::shared_ptr<Image> ImageViewer::makeExperimentalPerceptualPreviewImage(const
     opts.sensitivityCorrection = mPerceptualSensitivity;
     opts.spectralEmissionPath = mPerceptualEmissionPath;
     opts.inputColor = mPerceptualInputColor == 1 ? ViewVisibilitySummaryOptions::InputColor::Srgb
-        : (mPerceptualInputColor == 2 ? ViewVisibilitySummaryOptions::InputColor::Xyz
-                                      : ViewVisibilitySummaryOptions::InputColor::Rad);
+        : mPerceptualInputColor == 2 ? ViewVisibilitySummaryOptions::InputColor::Xyz
+        : mPerceptualInputColor == 3 ? ViewVisibilitySummaryOptions::InputColor::XyzCdm2
+                                     : ViewVisibilitySummaryOptions::InputColor::Rad;
     PerceptualMapResult result;
     try {
         result = analyzePerceptualMap(opts, kind);
@@ -6357,8 +6364,32 @@ std::string ImageViewer::sourceColorCaption() const {
         return "Unknown";
     }
     static const char* kNames[] = {"Rad", "sRGB", "XYZ", "Raw", "Luminance", "RGB"};
-    const std::string name = kNames[kind];
+    const std::string name = std::string{kNames[kind]} + (kind == 2 && sourceValuesInCdm2() ? " cd/m\u00b2" : "");
     return name + (assignedSourceColor().has_value() ? " (assigned)" : " (header)");
+}
+
+bool ImageViewer::sourceValuesInCdm2() const {
+    if (!mCurrentImage) {
+        return false;
+    }
+    const auto value = findAttributeValue(mCurrentImage->attributes(), "HDRSPACE_COLOR");
+    if (!value) {
+        return false;
+    }
+    std::string text{*value};
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    return text.find("cd/m2") != std::string::npos;
+}
+
+int ImageViewer::currentAssignedColorKind() const {
+    const auto assigned = assignedSourceColor();
+    if (!assigned) return -1;
+    if (*assigned == "rad") return 0;
+    if (*assigned == "srgb") return 1;
+    if (*assigned == "xyz") return sourceValuesInCdm2() ? 5 : 2;
+    if (*assigned == "raw") return 3;
+    if (*assigned == "luminance") return 4;
+    return -1;
 }
 
 bool ImageViewer::canAssignSourceColor() const {
@@ -6372,15 +6403,16 @@ bool ImageViewer::canAssignSourceColor() const {
 // line and of the pixel data are kept. Lines hdrspace wrote before (HDRSPACE_COLOR and the
 // top-level PRIMARIES that came with it) are replaced.
 bool ImageViewer::writeAssignedColorHeader(int kind, std::string& error) {
-    static const char* kKeys[] = {"rad", "srgb", "xyz", "raw", "luminance"};
+    static const char* kKeys[] = {"rad", "srgb", "xyz", "raw", "luminance", "xyz"};
     static const char* kPrimaries[] = {
         "PRIMARIES= 0.6400 0.3300 0.2900 0.6000 0.1500 0.0600 0.3333 0.3333",
         "PRIMARIES= 0.6400 0.3300 0.3000 0.6000 0.1500 0.0600 0.3127 0.3290",
         "PRIMARIES= 1.0000 0.0000 0.0000 1.0000 0.0000 0.0000 0.3333 0.3333",
         nullptr,
         nullptr,
+        "PRIMARIES= 1.0000 0.0000 0.0000 1.0000 0.0000 0.0000 0.3333 0.3333",
     };
-    if (kind < 0 || kind > 4 || !mCurrentImage) {
+    if (kind < 0 || kind > 5 || !mCurrentImage) {
         error = "No colour space chosen.";
         return false;
     }
@@ -6437,7 +6469,7 @@ bool ImageViewer::writeAssignedColorHeader(int kind, std::string& error) {
     if (kPrimaries[kind]) {
         kept.push_back(kPrimaries[kind]);
     }
-    kept.push_back(std::string{"HDRSPACE_COLOR= "} + kKeys[kind] + (kind == 4 ? " cd/m2" : ""));
+    kept.push_back(std::string{"HDRSPACE_COLOR= "} + kKeys[kind] + (kind == 4 || kind == 5 ? " cd/m2" : ""));
 
     std::string output;
     for (size_t i = 0; i < kept.size(); ++i) {
@@ -6473,16 +6505,17 @@ bool ImageViewer::writeAssignedColorHeader(int kind, std::string& error) {
 }
 
 void ImageViewer::requestSourceColorAssignment(int kind) {
-    if (!canAssignSourceColor() || kind < 0 || kind > 4) {
+    if (!canAssignSourceColor() || kind < 0 || kind > 5) {
         return;
     }
-    static const char* kNames[] = {"Radiance RGB", "sRGB / Rec.709", "XYZ", "Raw (camera)", "Luminance (cd/m²)"};
+    static const char* kNames[] = {"Radiance RGB", "sRGB / Rec.709", "XYZ", "Raw (camera)", "Luminance (cd/m²)", "XYZ (cd/m²)"};
     static const char* kLines[] = {
         "PRIMARIES= 0.6400 0.3300 0.2900 0.6000 0.1500 0.0600 0.3333 0.3333\nHDRSPACE_COLOR= rad",
         "PRIMARIES= 0.6400 0.3300 0.3000 0.6000 0.1500 0.0600 0.3127 0.3290\nHDRSPACE_COLOR= srgb",
         "PRIMARIES= 1.0000 0.0000 0.0000 1.0000 0.0000 0.0000 0.3333 0.3333\nHDRSPACE_COLOR= xyz",
         "HDRSPACE_COLOR= raw",
         "HDRSPACE_COLOR= luminance cd/m2",
+        "PRIMARIES= 1.0000 0.0000 0.0000 1.0000 0.0000 0.0000 0.3333 0.3333\nHDRSPACE_COLOR= xyz cd/m2",
     };
     closeInspectionModeMenu();
     const std::string fileName = mCurrentImage->path().filename().string();

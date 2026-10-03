@@ -83,27 +83,31 @@ const char *viewVisibilityInputColorLabel(ViewVisibilitySummaryOptions::InputCol
     switch (inputColor) {
         case ViewVisibilitySummaryOptions::InputColor::Srgb: return "srgb";
         case ViewVisibilitySummaryOptions::InputColor::Xyz: return "xyz";
+        case ViewVisibilitySummaryOptions::InputColor::XyzCdm2: return "xyz-cdm2";
         case ViewVisibilitySummaryOptions::InputColor::Rad:
         default: return "rad";
     }
 }
 
+// `inputScale` comes from viewVisibilityInputScale() for the same picture and input colour.
 Vec3d viewVisibilityInputXyzAt(
     const HdrImage &image,
     size_t pixelIndex,
-    ViewVisibilitySummaryOptions::InputColor inputColor
+    ViewVisibilitySummaryOptions::InputColor inputColor,
+    double inputScale
 ) {
     const size_t index = pixelIndex * 3;
     const double c0 = static_cast<double>(image.rgb[index + 0]);
     const double c1 = static_cast<double>(image.rgb[index + 1]);
     const double c2 = static_cast<double>(image.rgb[index + 2]);
 
-    if (inputColor == ViewVisibilitySummaryOptions::InputColor::Xyz)
-        return Vec3d{c0, c1, c2};
+    if (inputColor == ViewVisibilitySummaryOptions::InputColor::Xyz ||
+        inputColor == ViewVisibilitySummaryOptions::InputColor::XyzCdm2)
+        return Vec3d{c0 * inputScale, c1 * inputScale, c2 * inputScale};
 
-    const double r = c0 * kWhiteEfficacy;
-    const double g = c1 * kWhiteEfficacy;
-    const double b = c2 * kWhiteEfficacy;
+    const double r = c0 * inputScale;
+    const double g = c1 * inputScale;
+    const double b = c2 * inputScale;
     if (inputColor == ViewVisibilitySummaryOptions::InputColor::Srgb) {
         return Vec3d{
             0.4124564 * r + 0.3575761 * g + 0.1804375 * b,
@@ -212,6 +216,26 @@ double headerExposureScale(const HdrImage &image) {
     if (exposureProduct > 0.0)
         return 1.0 / exposureProduct;
     return 1.0;
+}
+
+// Factor from stored pixel values to cd/m² (XYZ) or to luminous RGB for the HDR-VDP input:
+// Radiance values (Rad, sRGB, XYZ) are multiplied by 179, as in luminanceAt(), and the header
+// EXPOSURE is undone. XyzCdm2 marks XYZ already stored in cd/m².
+// EXPOSURE follows Radiance (isexpos/exposval): every top-level "EXPOSURE=" line multiplies;
+// indented lines are headers of input pictures that the writing program already accounted for.
+double viewVisibilityInputScale(const HdrImage &image, ViewVisibilitySummaryOptions::InputColor inputColor) {
+    double exposureProduct = 1.0;
+    for (const std::string &line : image.rawHeaderLines) {
+        if (line.compare(0, 9, "EXPOSURE=") != 0)
+            continue;
+        const double exposure = std::atof(line.c_str() + 9);
+        if (exposure > 0.0)
+            exposureProduct *= exposure;
+    }
+    const double exposureScale = exposureProduct > 0.0 ? 1.0 / exposureProduct : 1.0;
+    if (inputColor == ViewVisibilitySummaryOptions::InputColor::XyzCdm2)
+        return exposureScale;
+    return kWhiteEfficacy * exposureScale;
 }
 
 bool parseTargetPrimariesAndWhite(const HdrImage &image, std::array<double, 8> &values) {
@@ -3553,9 +3577,10 @@ Vec3d hdrvdpPreMtfChannelsAt(
     size_t pixelIndex,
     HdrvdpPreparedImageMode mode,
     const Mat3d &xyzToNativePreAod,
-    ViewVisibilitySummaryOptions::InputColor inputColor
+    ViewVisibilitySummaryOptions::InputColor inputColor,
+    double inputScale
 ) {
-    const Vec3d xyzIn = viewVisibilityInputXyzAt(image, pixelIndex, inputColor);
+    const Vec3d xyzIn = viewVisibilityInputXyzAt(image, pixelIndex, inputColor, inputScale);
     if (mode == HdrvdpPreparedImageMode::NativeTransformed) {
         const Vec3d native = mulMat3Vec(xyzToNativePreAod, xyzIn);
         return Vec3d{std::max(1e-6, native.x), std::max(1e-6, native.y), std::max(1e-6, native.z)};
@@ -3600,8 +3625,9 @@ NativeHdrvdpPreparedImage prepareNativeHdrvdpImage(
     std::vector<double> workY(pixelCount, 0.0);
     std::vector<double> workZ(pixelCount, 0.0);
 
+    const double inputScale = viewVisibilityInputScale(image, inputColor);
     for (size_t i = 0; i < pixelCount; ++i) {
-        const Vec3d channels = hdrvdpPreMtfChannelsAt(image, i, mode, spectralContext.xyzToNativePreAod, inputColor);
+        const Vec3d channels = hdrvdpPreMtfChannelsAt(image, i, mode, spectralContext.xyzToNativePreAod, inputColor, inputScale);
         workX[i] = channels.x;
         workY[i] = channels.y;
         workZ[i] = channels.z;
@@ -9388,15 +9414,17 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
                 testLuminance[idx] = std::max(0.0, luminanceAt(test, x, y, testInfo));
             }
         } else {
+            const double refInputScale = viewVisibilityInputScale(reference, opts.inputColor);
+            const double testInputScale = viewVisibilityInputScale(test, opts.inputColor);
             #if defined(_OPENMP)
             #pragma omp parallel for schedule(static)
             #endif
             for (long long i = 0; i < static_cast<long long>(pixelCount); ++i) {
                 const size_t idx = static_cast<size_t>(i);
                 refLuminance[idx] = std::max(
-                    0.0, viewVisibilityInputXyzAt(reference, idx, opts.inputColor).y);
+                    0.0, viewVisibilityInputXyzAt(reference, idx, opts.inputColor, refInputScale).y);
                 testLuminance[idx] = std::max(
-                    0.0, viewVisibilityInputXyzAt(test, idx, opts.inputColor).y);
+                    0.0, viewVisibilityInputXyzAt(test, idx, opts.inputColor, testInputScale).y);
             }
         }
         result.detailLabel = "Contrast proxy";
@@ -9468,14 +9496,18 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
         // preparations. They are recomputed from the same cached pictures with the same function
         // and spectral-context matrix as in prepareNativeHdrvdpImage() instead of being cached.
         std::vector<double> diffMask(pixelCount, 0.0);
+        const double refInputScale = viewVisibilityInputScale(reference, opts.inputColor);
+        const double testInputScale = viewVisibilityInputScale(test, opts.inputColor);
         #if defined(_OPENMP)
         #pragma omp parallel for schedule(static)
         #endif
         for (long long i = 0; i < static_cast<long long>(pixelCount); ++i) {
             const Vec3d refNative = hdrvdpPreMtfChannelsAt(reference, static_cast<size_t>(i),
-                HdrvdpPreparedImageMode::NativeTransformed, referenceSideBySidePrepared.spectralContext->xyzToNativePreAod, opts.inputColor);
+                HdrvdpPreparedImageMode::NativeTransformed, referenceSideBySidePrepared.spectralContext->xyzToNativePreAod, opts.inputColor,
+                refInputScale);
             const Vec3d testNative = hdrvdpPreMtfChannelsAt(test, static_cast<size_t>(i),
-                HdrvdpPreparedImageMode::NativeTransformed, testSideBySidePrepared.spectralContext->xyzToNativePreAod, opts.inputColor);
+                HdrvdpPreparedImageMode::NativeTransformed, testSideBySidePrepared.spectralContext->xyzToNativePreAod, opts.inputColor,
+                testInputScale);
             const double refR = refNative.x;
             const double refG = refNative.y;
             const double refB = refNative.z;
@@ -9843,13 +9875,15 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
     std::vector<double> sideTestLogLmSum(pixelCount, 0.0);
     std::vector<double> sideRefAdaptLogBlur(pixelCount, 0.0);
     std::vector<double> sideTestAdaptLogBlur(pixelCount, 0.0);
+    const double refInputScale = viewVisibilityInputScale(reference, opts.inputColor);
+    const double testInputScale = viewVisibilityInputScale(test, opts.inputColor);
     #if defined(_OPENMP)
     #pragma omp parallel for schedule(static)
     #endif
     for (long long i = 0; i < static_cast<long long>(pixelCount); ++i) {
         const size_t idx = static_cast<size_t>(i);
-        const Vec3d refXyz = viewVisibilityInputXyzAt(reference, idx, opts.inputColor);
-        const Vec3d testXyz = viewVisibilityInputXyzAt(test, idx, opts.inputColor);
+        const Vec3d refXyz = viewVisibilityInputXyzAt(reference, idx, opts.inputColor, refInputScale);
+        const Vec3d testXyz = viewVisibilityInputXyzAt(test, idx, opts.inputColor, testInputScale);
         refXyzX[idx] = refXyz.x;
         refXyzY[idx] = refXyz.y;
         refXyzZ[idx] = refXyz.z;
