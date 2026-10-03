@@ -200,19 +200,24 @@ bool parseHeaderTriplet(const HdrImage &image, const std::string &key, std::arra
 
 bool stringContainsInsensitive(const std::string &haystack, const std::string &needle);
 
-double headerExposureScale(const HdrImage &image) {
+// Product of the picture's EXPOSURE, as Radiance reads it (isexpos/exposval): every line that
+// starts with "EXPOSURE=" multiplies; indented lines are headers of input pictures copied by the
+// writing program (pcomb and others) and do not describe these pixels.
+double radianceExposureProduct(const HdrImage &image) {
+    const std::vector<std::string> &lines = image.rawHeaderLines.empty() ? image.headerLines : image.rawHeaderLines;
     double exposureProduct = 1.0;
-    for (size_t i = 0; i < image.headerLines.size(); ++i) {
-        const std::string &line = image.headerLines[i];
-        if (!stringContainsInsensitive(line, "EXPOSURE="))
+    for (const std::string &line : lines) {
+        if (line.compare(0, 9, "EXPOSURE=") != 0)
             continue;
-        const size_t eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        const double exposure = std::atof(trimCopy(line.substr(eq + 1)).c_str());
+        const double exposure = std::atof(line.c_str() + 9);
         if (exposure > 0.0)
             exposureProduct *= exposure;
     }
+    return exposureProduct;
+}
+
+double headerExposureScale(const HdrImage &image) {
+    const double exposureProduct = radianceExposureProduct(image);
     if (exposureProduct > 0.0)
         return 1.0 / exposureProduct;
     return 1.0;
@@ -221,18 +226,9 @@ double headerExposureScale(const HdrImage &image) {
 // Factor from stored pixel values to cd/m² (XYZ) or to luminous RGB for the HDR-VDP input:
 // Radiance values (Rad, sRGB, XYZ) are multiplied by 179, as in luminanceAt(), and the header
 // EXPOSURE is undone. XyzCdm2 marks XYZ already stored in cd/m².
-// EXPOSURE follows Radiance (isexpos/exposval): every top-level "EXPOSURE=" line multiplies;
-// indented lines are headers of input pictures that the writing program already accounted for.
+// EXPOSURE follows Radiance, see radianceExposureProduct().
 double viewVisibilityInputScale(const HdrImage &image, ViewVisibilitySummaryOptions::InputColor inputColor) {
-    double exposureProduct = 1.0;
-    for (const std::string &line : image.rawHeaderLines) {
-        if (line.compare(0, 9, "EXPOSURE=") != 0)
-            continue;
-        const double exposure = std::atof(line.c_str() + 9);
-        if (exposure > 0.0)
-            exposureProduct *= exposure;
-    }
-    const double exposureScale = exposureProduct > 0.0 ? 1.0 / exposureProduct : 1.0;
+    const double exposureScale = headerExposureScale(image);
     if (inputColor == ViewVisibilitySummaryOptions::InputColor::XyzCdm2)
         return exposureScale;
     return kWhiteEfficacy * exposureScale;
@@ -676,20 +672,7 @@ void finalizeViewBasis(ViewBasis &view) {
 HeaderLuminanceInfo resolveLuminanceInfo(const HdrImage &image) {
     HeaderLuminanceInfo info;
 
-    double exposureProduct = 1.0;
-    for (size_t i = 0; i < image.headerLines.size(); ++i) {
-        const std::string &line = image.headerLines[i];
-        if (!stringContainsInsensitive(line, "EXPOSURE="))
-            continue;
-        const size_t eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        const double exposure = std::atof(trimCopy(line.substr(eq + 1)).c_str());
-        if (exposure > 0.0)
-            exposureProduct *= exposure;
-    }
-    if (exposureProduct > 0.0)
-        info.exposureScale = 1.0 / exposureProduct;
+    info.exposureScale = headerExposureScale(image);
 
     if (imageIsMonochromeRgb(image)) {
         info.mode = HeaderLuminanceInfo::Monochrome;
