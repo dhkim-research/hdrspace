@@ -1,0 +1,683 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <tev/Channel.h>
+#include <tev/Common.h>
+#include <tev/ThreadPool.h>
+#include <tev/imageio/Colors.h>
+#include <tev/imageio/Exif.h>
+#include <tev/imageio/PngImageLoader.h>
+#include <tev/imageio/Xmp.h>
+
+#include <png.h>
+
+using namespace nanogui;
+using namespace std;
+
+namespace tev {
+
+Task<vector<ImageData>> PngImageLoader::load(istream& iStream, const fs::path&, string_view, const ImageLoaderSettings&, int priority) const {
+    png_byte header[8] = {0};
+    iStream.read(reinterpret_cast<char*>(header), 8);
+    if (png_sig_cmp(header, 0, 8)) {
+        throw FormatNotSupported{"File is not a PNG image."};
+    }
+
+    png_structp pngPtr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!pngPtr) {
+        throw ImageLoadError{"Failed to create PNG read struct."};
+    }
+
+    png_infop infoPtr = nullptr;
+    const auto pngGuard = ScopeGuard{[&]() { png_destroy_read_struct(&pngPtr, &infoPtr, nullptr); }};
+
+    png_set_error_fn(
+        pngPtr,
+        nullptr,
+        [](png_structp, png_const_charp errorMsg) { throw ImageLoadError{format("PNG error: {}", errorMsg)}; },
+        [](png_structp, png_const_charp warningMsg) { tlog::warning("PNG warning: {}", warningMsg); }
+    );
+
+    infoPtr = png_create_info_struct(pngPtr);
+    if (!infoPtr) {
+        throw ImageLoadError{"Failed to create PNG info struct."};
+    }
+
+    png_set_read_fn(pngPtr, &iStream, [](png_structp p, png_bytep data, png_size_t length) {
+        auto stream = static_cast<istream*>(png_get_io_ptr(p));
+        size_t totalRead = 0;
+        while (stream && totalRead < length) {
+            stream->read(reinterpret_cast<char*>(data) + totalRead, length - totalRead);
+            totalRead += stream->gcount();
+        }
+
+        if (totalRead < length) {
+            png_error(p, "Read error");
+        }
+    });
+
+    // Tell libpng we've already read the signature
+    png_set_sig_bytes(pngPtr, 8);
+
+    png_read_info(pngPtr, infoPtr);
+
+    png_uint_32 width, height;
+    int bitDepth, colorType, interlaceType;
+    png_get_IHDR(pngPtr, infoPtr, &width, &height, &bitDepth, &colorType, &interlaceType, nullptr, nullptr);
+
+    Vector2i size{static_cast<int>(width), static_cast<int>(height)};
+    if (size.x() == 0 || size.y() == 0) {
+        throw ImageLoadError{"Image has zero pixels."};
+    }
+
+    // Determine number of channels
+    size_t numColorChannels = 0;
+    size_t numChannels = 0;
+    switch (colorType) {
+        case PNG_COLOR_TYPE_GRAY: numColorChannels = numChannels = 1; break;
+        case PNG_COLOR_TYPE_GRAY_ALPHA:
+            numColorChannels = 1;
+            numChannels = 2;
+            break;
+        case PNG_COLOR_TYPE_RGB: numColorChannels = numChannels = 3; break;
+        case PNG_COLOR_TYPE_RGB_ALPHA:
+            numColorChannels = 3;
+            numChannels = 4;
+            break;
+        case PNG_COLOR_TYPE_PALETTE:
+            png_set_palette_to_rgb(pngPtr);
+            numColorChannels = numChannels = 3;
+            break;
+        default: throw ImageLoadError{format("Unsupported PNG color type: {}", colorType)};
+    }
+
+    if (interlaceType != PNG_INTERLACE_NONE) {
+        tlog::debug("Image is interlaced. Converting to non-interlaced.");
+        png_set_interlace_handling(pngPtr);
+    }
+
+    // Only grayscale and palette images can have a bit depth of 1, 2, or 4. Since we configure the PNG reader to convert palette images to
+    // RGB, we can additionally configure the reader to convert grayscale images with a bit depth of 1, 2, or 4 to 8-bit and then we only
+    // have to deal with either 16-bit or 8-bit images.
+    if (colorType == PNG_COLOR_TYPE_GRAY && bitDepth < 8) {
+        tlog::debug("Converting grayscale image with bit depth {} to 8-bit.", bitDepth);
+        png_set_expand_gray_1_2_4_to_8(pngPtr);
+    }
+
+    if (png_get_valid(pngPtr, infoPtr, PNG_INFO_tRNS)) {
+        tlog::debug("PNG has tRNS chunk. Converting to alpha channel.");
+
+        png_set_tRNS_to_alpha(pngPtr); // Convert transparency to alpha channel
+        if (numColorChannels != numChannels) {
+            tlog::warning("PNG has tRNS chunk but already has an alpha channel.");
+        }
+
+        numChannels = numColorChannels + 1;
+    }
+
+    png_read_update_info(pngPtr, infoPtr);
+
+    bitDepth = png_get_bit_depth(pngPtr, infoPtr);
+    if (bitDepth != 8 && bitDepth != 16) {
+        throw ImageLoadError{format("Unsupported PNG bit depth: {}", bitDepth)};
+    }
+
+    const auto pixelFormat = bitDepth > 8 ? EPixelFormat::U16 : EPixelFormat::U8;
+
+    tlog::debug("PNG image info: size={} numChannels={} bitDepth={} colorType={}", size, numChannels, bitDepth, colorType);
+
+    // 16 bit channels are big endian by default, but we want little endian on little endian systems
+    if (bitDepth > 8 && endian::little == endian::native) {
+        png_set_swap(pngPtr);
+    }
+
+    AttributeNode pngAttributes{
+        .name = "PNG",
+        .value = "",
+        .type = "",
+        .children = {},
+    };
+
+    if (png_timep time; png_get_tIME(pngPtr, infoPtr, &time) == PNG_INFO_tIME) {
+        pngAttributes.children.emplace_back(
+            AttributeNode{
+                .name = "tIME chunk",
+                .value = "",
+                .type = "",
+                .children = {AttributeNode{
+                    .name = "Last modified",
+                    .value = format(
+                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}", time->year, time->month, time->day, time->hour, time->minute, time->second
+                    ),
+                    .type = "UTC timestamp",
+                    .children = {},
+                }}
+            }
+        );
+    }
+
+    int unit = 0;
+    if (png_uint_32 resX, resY; png_get_pHYs_dpi(pngPtr, infoPtr, &resX, &resY, &unit) == PNG_INFO_pHYs) {
+        pngAttributes.children.emplace_back(
+            AttributeNode{
+                .name = "pHYs chunk",
+                .value = "",
+                .type = "",
+                .children = {
+                             AttributeNode{
+                        .name = "Pixel density X",
+                        .value = format("{}", resX),
+                        .type = unit == PNG_RESOLUTION_METER ? "dpi" : "pixels/unknown",
+                        .children = {},
+                    }, AttributeNode{
+                        .name = "Pixel density Y",
+                        .value = format("{}", resY),
+                        .type = unit == PNG_RESOLUTION_METER ? "dpi" : "pixels/unknown",
+                        .children = {},
+                    }, }
+        }
+        );
+    }
+
+    vector<AttributeNode> attributes;
+
+    EOrientation orientation = EOrientation::TopLeft;
+    const auto handleExifData = [&](span<const uint8_t> data) {
+        try {
+            const auto exif = Exif{data};
+            attributes.emplace_back(exif.toAttributes());
+
+            const auto exifOrientation = exif.getOrientation();
+            if (exifOrientation != EOrientation::None) {
+                orientation = exifOrientation;
+                tlog::debug("EXIF image orientation: {}", (int)orientation);
+            }
+        } catch (const invalid_argument& e) { tlog::warning("Failed to read EXIF metadata: {}", e.what()); }
+    };
+
+    png_uint_32 exifDataSize = 0;
+    png_bytep exifDataRaw = nullptr;
+    png_get_eXIf_1(pngPtr, infoPtr, &exifDataSize, &exifDataRaw);
+
+    if (exifDataRaw) {
+        tlog::debug("Found EXIF data chunk of size {} bytes", exifDataSize);
+        handleExifData({exifDataRaw, exifDataSize});
+    }
+
+    png_textp textPtr = nullptr;
+    if (const int numText = png_get_text(pngPtr, infoPtr, &textPtr, nullptr); numText > 0) {
+        tlog::debug("Found {} text chunks in PNG metadata", numText);
+
+        vector<AttributeNode> textEntries;
+        for (int i = 0; i < numText; ++i) {
+            const size_t len = strlen(textPtr[i].text);
+            string_view key = textPtr[i].key;
+
+            // PNG can contain XMP metadata in one of its text chunks. Officially, the key is "XML:com.adobe.xmp", see
+            // https://www.w3.org/TR/png-3/#11keywords, but before standardization some software used "Raw profile type xmp". Furthermore,
+            // EXIF data should be stored in a separate eXIf chunk, but, again, historically some software stored it in text chunks (in hex
+            // encoded form) with keys like "Raw profile type exif" or "Raw profile type APP1".
+            if (key == "XML:com.adobe.xmp" || key == "Raw profile type xmp") {
+                tlog::debug("Found XMP metadata chunk of size {}.", len);
+                try {
+                    const auto xmp = Xmp{
+                        string_view{textPtr[i].text, len}
+                    };
+
+                    attributes.emplace_back(xmp.attributes());
+                    orientation = xmp.orientation();
+                    const auto xmpOrientation = xmp.orientation();
+                    if (xmpOrientation != EOrientation::None) {
+                        orientation = xmpOrientation;
+                        tlog::debug("XMP image orientation: {}", (int)orientation);
+                    }
+                } catch (const invalid_argument& e) { tlog::warning("Failed to read XMP metadata: {}", e.what()); }
+                continue;
+            } else if (key == "Raw profile type exif" || key == "Raw profile type APP1" || key == "Raw profile type app1") {
+                tlog::debug("Found EXIF metadata of size {} in text chunk '{}'.", len, key);
+
+                istringstream is{
+                    string{textPtr[i].text, len}
+                };
+                string magic;
+                size_t payloadLen;
+                is >> magic >> payloadLen;
+
+                if (!is || magic != "exif" || payloadLen == 0) {
+                    tlog::warning("EXIF text chunk has invalid format.");
+                    continue;
+                }
+
+                vector<uint8_t> exifDataBuffer;
+
+                string line;
+                while (getline(is, line)) {
+                    for (size_t j = 0; j < line.size(); j += 2) {
+                        const char a = line[j], b = line[j + 1];
+                        exifDataBuffer.emplace_back(
+                            ((a >= 'a'     ? (a - 'a' + 10) :
+                                  a >= 'A' ? (a - 'A' + 10) :
+                                             (a - '0'))
+                             << 4) |
+                            (b >= 'a'     ? (b - 'a' + 10) :
+                                 b >= 'A' ? (b - 'A' + 10) :
+                                            (b - '0'))
+                        );
+                    }
+                }
+
+                if (exifDataBuffer.size() != payloadLen) {
+                    tlog::warning("EXIF text chunk has mismatched payload length {}!={}.", exifDataBuffer.size(), payloadLen);
+                }
+
+                handleExifData(exifDataBuffer);
+                continue;
+            }
+
+            textEntries.emplace_back(AttributeNode{.name = string{key}, .value = textPtr[i].text, .type = "string", .children = {}});
+        }
+
+        if (!textEntries.empty()) {
+            pngAttributes.children.emplace_back(
+                AttributeNode{
+                    .name = "Text chunks",
+                    .value = "",
+                    .type = "",
+                    .children = std::move(textEntries),
+                }
+            );
+        }
+    }
+
+    if (!pngAttributes.children.empty()) {
+        attributes.emplace_back(std::move(pngAttributes));
+    }
+
+    const bool hasAlpha = numChannels > numColorChannels;
+    const auto numInterleavedChannels = nextSupportedTextureChannelCount(numChannels);
+
+    png_bytep iccProfileData = nullptr;
+    png_charp iccProfileName = nullptr;
+    png_uint_32 iccProfileSize = 0;
+    if (png_get_iCCP(pngPtr, infoPtr, &iccProfileName, nullptr, &iccProfileData, &iccProfileSize) == PNG_INFO_iCCP) {
+        tlog::debug("Found ICC color profile: {}", iccProfileName);
+    }
+
+    const png_uint_32 numFrames = png_get_num_frames(pngPtr, infoPtr);
+    const bool isAnimated = numFrames > 1;
+    if (isAnimated) {
+        tlog::debug("Image is an animated PNG with {} frames", numFrames);
+    }
+
+    const auto numPixels = static_cast<size_t>(size.x()) * size.y();
+    const auto numSamples = numPixels * numChannels;
+    const auto numInterleavedSamples = numPixels * numInterleavedChannels;
+    const auto numBytesPerPixel = numChannels * nBytes(pixelFormat);
+
+    // Allocate enough memory for each frame. By making the data as big as the whole canvas, all frames should fit.
+    auto buf = PixelBuffer::alloc(numSamples, pixelFormat);
+    HeapArray<float> frameData;
+
+    // Png wants to read into a 2D array of pointers to rows, so we need to create that as well
+    HeapArray<png_bytep> rowPointers(height);
+
+    vector<ImageData> result;
+
+    optional<MultiChannelView<float>> prevCanvas = nullopt;
+
+    const auto readFrame = [&]<trivially_copyable T>(int frameIdx) -> Task<ImageData> {
+        ImageData resultData;
+        resultData.attributes = attributes;
+
+        if (isAnimated) {
+            resultData.partName = format("frames.{}", frameIdx);
+        }
+
+        // PNG images have a fixed point representation of up to 16 bits per channel in TF space. FP16 is perfectly adequate to represent
+        // such values after conversion to linear space.
+        resultData.channels = co_await makeRgbaInterleavedChannels(
+            numChannels, numInterleavedChannels, hasAlpha, size, EPixelFormat::F32, EPixelFormat::F16, resultData.partName, priority
+        );
+        resultData.orientation = orientation;
+        resultData.hasPremultipliedAlpha = false;
+
+        const auto outView = MultiChannelView<float>{resultData.channels};
+
+        enum class EDisposeOp : png_byte { None = 0, Background = 1, Previous = 2 };
+        enum class EBlendOp : png_byte { Source = 0, Over = 1 };
+
+        static constexpr auto disposeOpToString = [](EDisposeOp op) {
+            switch (op) {
+                case EDisposeOp::None: return "none";
+                case EDisposeOp::Background: return "background";
+                case EDisposeOp::Previous: return "previous";
+                default: return "invalid";
+            }
+        };
+
+        static constexpr auto blendOpToString = [](EBlendOp op) {
+            switch (op) {
+                case EBlendOp::Source: return "source";
+                case EBlendOp::Over: return "over";
+                default: return "invalid";
+            }
+        };
+
+        Vector2i frameSize;
+        Vector2i frameOffset;
+
+        png_uint_32 frameSizeX, frameSizeY, xOffset, yOffset;
+        png_uint_16 delayNum, delayDen;
+        EDisposeOp disposeOp;
+        EBlendOp blendOp;
+
+        if (png_get_next_frame_fcTL(
+                pngPtr, infoPtr, &frameSizeX, &frameSizeY, &xOffset, &yOffset, &delayNum, &delayDen, (png_byte*)&disposeOp, (png_byte*)&blendOp
+            )) {
+            frameSize = {static_cast<int>(frameSizeX), static_cast<int>(frameSizeY)};
+            frameOffset = {static_cast<int>(xOffset), static_cast<int>(yOffset)};
+
+            tlog::debug(
+                "fcTL: size={}, offset={}, dispose_op={}, blend_op={}",
+                frameSize,
+                frameOffset,
+                disposeOpToString(disposeOp),
+                blendOpToString(blendOp)
+            );
+        } else {
+            // If we don't have an fcTL chunk, we must be the static frame of the PNG (IDAT chunk), *not* be part of the animation (else
+            // there would have been an fcTL chunk before the IDAT chunk), and we fill the entire canvas.
+            frameSize = size;
+            frameOffset = {0, 0};
+            disposeOp = EDisposeOp::None;
+            blendOp = EBlendOp::Source;
+        }
+
+        // If our frame fills the entire canvas and is configured to overwrite the canvas (as is the case for static frames / PNGs), we can
+        // directly write onto the canvas and not worry about blending.
+        const bool directlyOnCanvas = frameOffset == Vector2i{0, 0} && frameSize == size;
+
+        const size_t numFramePixels = posProd(frameSize);
+        const size_t numInterleavedFrameSamples = numFramePixels * numInterleavedChannels;
+        if (!directlyOnCanvas && numInterleavedFrameSamples > frameData.size()) {
+            const size_t allocationSize = std::max(numInterleavedFrameSamples, numInterleavedSamples);
+            if (allocationSize > numSamples) {
+                tlog::warning("PNG frame data {} is larger than final image buffer {}. Re-allocating.", frameSize, size);
+            }
+
+            frameData = HeapArray<float>(allocationSize);
+        }
+
+        const auto dstView = directlyOnCanvas ? outView : MultiChannelView<float>{frameData.data(), numInterleavedChannels, frameSize};
+
+        for (int y = 0; y < frameSize.y(); ++y) {
+            rowPointers[y] = buf.dataBytes() + y * frameSize.x() * numBytesPerPixel;
+        }
+
+        png_read_image(pngPtr, rowPointers.data());
+
+        const auto applyColorspace = [&]() -> Task<void> {
+            if (double maxCLL, maxFALL; png_get_cLLI(pngPtr, infoPtr, &maxCLL, &maxFALL) == PNG_INFO_cLLI) {
+                tlog::info("cLLI: maxCLL={} maxFALL={}", maxCLL, maxFALL);
+
+                resultData.hdrMetadata.maxCLL = static_cast<float>(maxCLL);
+                resultData.hdrMetadata.maxFALL = static_cast<float>(maxFALL);
+            }
+
+            if (double wx, wy, rx, ry, gx, gy, bx, by, maxl, minl;
+                png_get_mDCV(pngPtr, infoPtr, &wx, &wy, &rx, &ry, &gx, &gy, &bx, &by, &maxl, &minl) == PNG_INFO_mDCV) {
+                resultData.hdrMetadata.masteringChroma = {
+                    {
+                     {(float)rx, (float)ry},
+                     {(float)gx, (float)gy},
+                     {(float)bx, (float)by},
+                     {(float)wx, (float)wy},
+                     }
+                };
+                resultData.hdrMetadata.masteringMinLum = (float)minl;
+                resultData.hdrMetadata.masteringMaxLum = (float)maxl;
+
+                tlog::info(
+                    "mDCV: minLum={} maxLum={} chroma={}",
+                    resultData.hdrMetadata.masteringMinLum,
+                    resultData.hdrMetadata.masteringMaxLum,
+                    resultData.hdrMetadata.masteringChroma
+                );
+            }
+
+            // According to https://www.w3.org/TR/png-3/#color-chunk-precendence, if a cICP chunk exists, use it to convert to sRGB. Else,
+            // if an iCCP chunk exists, use its embedded ICC color profile to convert to linear sRGB. Otherwise, check the sRGB chunk for
+            // whether the image is in sRGB/Rec709. If not, then check the gAMA and cHRM chunks for gamma and chromaticity values and use
+            // them to convert to linear sRGB. And lastly (this isn't in the spec, but based on having seen a lot of PNGs), if none of these
+            // chunks are present, fall back to sRGB.
+
+            if (png_byte primaries, transfer, matrixCoeffs, fullRange;
+                png_get_cICP(pngPtr, infoPtr, &primaries, &transfer, &matrixCoeffs, &fullRange) == PNG_INFO_cICP) {
+                auto cicp = ColorProfile::CICP{
+                    .primaries = (ituth273::EColorPrimaries)primaries,
+                    .transfer = (ituth273::ETransfer)transfer,
+                    .matrixCoeffs = matrixCoeffs,
+                    .videoFullRangeFlag = fullRange,
+                };
+
+                if (!ituth273::isTransferImplemented(cicp.transfer)) {
+                    tlog::warning("Unsupported transfer '{}' in cICP chunk. Using sRGB instead.", ituth273::toString(cicp.transfer));
+                    cicp.transfer = ituth273::ETransfer::SRGB;
+                }
+
+                tlog::debug(
+                    "cICP: primaries={} transfer={} full_range={}",
+                    ituth273::toString(cicp.primaries),
+                    ituth273::toString(cicp.transfer),
+                    cicp.videoFullRangeFlag == 1 ? "yes" : "no"
+                );
+
+                const LimitedRange range = cicp.videoFullRangeFlag != 0 ? LimitedRange::full() : limitedRangeForBitsPerSample(bitDepth);
+
+                if (cicp.matrixCoeffs != 0) {
+                    tlog::warning(
+                        "Unsupported matrix coefficients in cICP chunk: {}. PNG images only support RGB (=0). Ignoring.", cicp.matrixCoeffs
+                    );
+                }
+
+                co_await toFloat32(buf.span<const T>(), numChannels, dstView, hasAlpha, priority);
+
+                co_await ThreadPool::global().parallelFor(
+                    0uz,
+                    numPixels,
+                    numSamples,
+                    [&](size_t i) {
+                        const float alpha = hasAlpha ? dstView[-1, i] : 1.0f;
+
+                        Vector3f color = {0.0f};
+                        for (size_t c = 0; c < numColorChannels; ++c) {
+                            color[c] = (dstView[c, i] - range.offset) * range.scale;
+                        }
+
+                        color = ituth273::invTransfer(cicp.transfer, color) * alpha;
+                        for (size_t c = 0; c < numColorChannels; ++c) {
+                            dstView[c, i] = color[c];
+                        }
+                    },
+                    priority
+                );
+                resultData.hasPremultipliedAlpha = true;
+
+                // Assume png image is display referred and wants white point adaptation if mismatched. Matches browser behavior.
+                resultData.renderingIntent = ERenderingIntent::RelativeColorimetric;
+                resultData.toRec709 = convertColorspaceMatrix(ituth273::chroma(cicp.primaries), rec709Chroma(), resultData.renderingIntent);
+                resultData.readMetadataFromCicp(cicp);
+
+                co_return;
+            } else if (iccProfileData) {
+                try {
+                    co_await toFloat32(buf.span<const T>(), numChannels, dstView, hasAlpha, priority);
+
+                    const auto profile = ColorProfile::fromIcc({iccProfileData, iccProfileSize});
+                    co_await toLinearSrgbPremul(
+                        profile, numChannels > numColorChannels ? EAlphaKind::Straight : EAlphaKind::None, dstView, dstView, nullopt, priority
+                    );
+                    resultData.hasPremultipliedAlpha = true;
+                    resultData.readMetadataFromIcc(profile);
+                    co_return;
+                } catch (const runtime_error& e) { tlog::warning("Failed to apply ICC color profile: {}", e.what()); }
+            }
+
+            // Assume png image is display referred and wants white point adaptation if mismatched. Matches browser behavior.
+            resultData.renderingIntent = ERenderingIntent::RelativeColorimetric;
+            resultData.nativeMetadata.chroma = rec709Chroma(); // default to Rec.709 primaries unless cHRM chunk says otherwise
+
+            int srgbIntent = 0;
+            const bool hasChunkSrgb = png_get_sRGB(pngPtr, infoPtr, &srgbIntent) == PNG_INFO_iCCP;
+
+            double invGamma64 = 1.0 / 2.2;
+            const bool hasChunkGama = png_get_gAMA(pngPtr, infoPtr, &invGamma64) == PNG_INFO_gAMA;
+            const float gamma = 1.0f / (float)invGamma64;
+
+            array<double, 8> ch = {0};
+            const bool hasChunkChrm = png_get_cHRM(pngPtr, infoPtr, &ch[0], &ch[1], &ch[2], &ch[3], &ch[4], &ch[5], &ch[6], &ch[7]) ==
+                PNG_INFO_cHRM;
+
+            const bool useSrgb = hasChunkSrgb || (!hasChunkGama && !hasChunkChrm);
+            if (useSrgb) {
+                if (hasChunkSrgb) {
+                    // NOTE: since tev represents colors in sRGB space anyway there is nothing to transform and the rendering intent makes
+                    // no difference.
+                    tlog::debug("Using sRGB chunk: rendering_intent={}", srgbIntent);
+                    resultData.renderingIntent = static_cast<ERenderingIntent>(srgbIntent);
+                } else {
+                    tlog::debug("No cICP, iCCP, sRGB, gAMA, or cHRM chunks found. Using sRGB by default.");
+                }
+
+                co_await toFloat32<true, true>(buf.span<const T>(), numChannels, dstView, hasAlpha, priority);
+
+                resultData.hasPremultipliedAlpha = true;
+                resultData.nativeMetadata.transfer = ituth273::ETransfer::SRGB;
+                co_return;
+            }
+
+            tlog::debug("Using gamma={}", invGamma64);
+            co_await toFloat32(buf.span<const T>(), numChannels, dstView, hasAlpha, priority);
+
+            co_await ThreadPool::global().parallelFor(
+                0uz,
+                numPixels,
+                numSamples,
+                [&](size_t i) {
+                    const float alpha = hasAlpha ? dstView[-1, i] : 1.0f;
+                    for (size_t c = 0; c < numColorChannels; ++c) {
+                        dstView[c, i] = pow(dstView[c, i], gamma) * alpha;
+                    }
+                },
+                priority
+            );
+
+            resultData.hasPremultipliedAlpha = true;
+            resultData.nativeMetadata.transfer = ituth273::ETransfer::GenericGamma;
+            resultData.nativeMetadata.gamma = (float)invGamma64;
+
+            if (hasChunkChrm) {
+                const chroma_t chroma = {
+                    {
+                     {(float)ch[2], (float)ch[3]}, // red
+                        {(float)ch[4], (float)ch[5]}, // green
+                        {(float)ch[6], (float)ch[7]}, // blue
+                        {(float)ch[0], (float)ch[1]}, // white
+                    }
+                };
+
+                resultData.toRec709 = convertColorspaceMatrix(chroma, rec709Chroma(), resultData.renderingIntent);
+                resultData.nativeMetadata.chroma = chroma;
+
+                tlog::debug("cHRM: primaries={}", chroma);
+            }
+        };
+
+        co_await applyColorspace();
+
+        if (!directlyOnCanvas || blendOp != EBlendOp::Source) {
+            tlog::debug("Blending frame onto previous canvas");
+
+            co_await ThreadPool::global().parallelFor(
+                0,
+                size.y(),
+                numSamples,
+                [&](int y) {
+                    Vector2i framePos;
+                    framePos.y() = y - frameOffset.y();
+                    for (int x = 0; x < size.x(); ++x) {
+                        framePos.x() = x - frameOffset.x();
+
+                        const bool isInFrame = Box2i{frameSize}.contains(framePos);
+                        for (size_t c = 0; c < numChannels; ++c) {
+                            // The background (if no previous canvas is set) is defined as transparent black per the spec.
+                            const float bg = prevCanvas ? (*prevCanvas)[c, x, y] : 0.0f;
+
+                            float val = bg;
+                            if (isInFrame) {
+                                if (blendOp == EBlendOp::Source) {
+                                    val = dstView[c, framePos.x(), framePos.y()];
+                                } else {
+                                    const float alpha = hasAlpha ? dstView[-1, framePos.x(), framePos.y()] : 1.0f;
+                                    val = dstView[c, framePos.x(), framePos.y()] + bg * (1.0f - alpha);
+                                }
+                            }
+
+                            outView[c, x, y] = val;
+                        }
+                    }
+                },
+                priority
+            );
+        }
+
+        // Depending on the dispose operation, the next frame will be blended either onto the current frame (none), onto no frame at all
+        // (background), or the previous frame (previous).
+        switch (disposeOp) {
+            case EDisposeOp::None: prevCanvas = outView; break;
+            case EDisposeOp::Background: prevCanvas = nullopt; break;
+            case EDisposeOp::Previous: break; // Previous frame is already set as the previous canvas
+            default: throw ImageLoadError{format("Unsupported PNG dispose operation: {}", (uint8_t)disposeOp)};
+        }
+
+        co_return resultData;
+    };
+
+    if (!isAnimated && numFrames > 1) {
+        tlog::warning("PNG has {} frames, but no animation control chunk found", numFrames);
+    }
+
+    for (png_uint_32 i = 0; i < numFrames; ++i) {
+        if (isAnimated) {
+            png_read_frame_head(pngPtr, infoPtr);
+            tlog::debug("Reading frame {}/{}", i + 1, numFrames);
+        }
+
+        if (pixelFormat == EPixelFormat::U8) {
+            result.emplace_back(co_await readFrame.operator()<uint8_t>(i));
+        } else if (pixelFormat == EPixelFormat::U16) {
+            result.emplace_back(co_await readFrame.operator()<uint16_t>(i));
+        } else {
+            TEV_ASSERT(false, "Unexpected pixel format {}", toString(pixelFormat));
+        }
+    }
+
+    co_return result;
+}
+
+} // namespace tev

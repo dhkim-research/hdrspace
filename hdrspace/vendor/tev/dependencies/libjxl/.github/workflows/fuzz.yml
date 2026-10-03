@@ -1,0 +1,66 @@
+# Copyright (c) the JPEG XL Project Authors. All rights reserved.
+#
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+# CI on pull-requests to run the fuzzer from oss-fuzz. See:
+#
+#   https://google.github.io/oss-fuzz/getting-started/continuous-integration/
+
+name: CIFuzz
+on:
+  merge_group:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+    paths:
+      - '**.c'
+      - '**.cc'
+      - '**.cmake'
+      - '**.h'
+      - '**CMakeLists.txt'
+      - .github/workflows/fuzz.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fuzzing:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'CI:none') }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      with:
+        egress-policy: audit
+
+    - name: Checkout source
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      id: checkout
+      with:
+        # The build_fuzzers action checks out the code to the storage/libjxl
+        # directory already, but doesn't check out the submodules. This step
+        # is a workaround for checking out the submodules.
+        path: storage/libjxl
+        submodules: true
+    - name: Build Fuzzers
+      id: build
+      uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@3e6a7fd7bcd631647ab9beed1fe0897498e6af39 # 22.09.2025
+      with:
+        oss-fuzz-project-name: 'libjxl'
+        language: c++
+    - name: Run Fuzzers
+      uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@3e6a7fd7bcd631647ab9beed1fe0897498e6af39 # 22.09.2025
+      with:
+        oss-fuzz-project-name: 'libjxl'
+        language: c++
+        fuzz-seconds: 600
+    - name: Upload Crash
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+      if: failure() && steps.build.outcome == 'success'
+      with:
+        name: artifacts
+        path: ./out/artifacts

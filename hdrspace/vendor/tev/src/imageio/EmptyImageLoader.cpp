@@ -1,0 +1,81 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <tev/imageio/EmptyImageLoader.h>
+
+#include <istream>
+
+using namespace nanogui;
+using namespace std;
+
+namespace tev {
+
+Task<vector<ImageData>> EmptyImageLoader::load(istream& iStream, const fs::path&, string_view, const ImageLoaderSettings&, int priority) const {
+    char magic[6];
+    iStream.read(magic, 6);
+    string magicString(magic, 6);
+
+    if (!iStream || magicString != "empty ") {
+        throw FormatNotSupported{format("Invalid magic empty string {}.", magic)};
+    }
+
+    Vector2i size;
+    int nChannels;
+    iStream >> size.x() >> size.y() >> nChannels;
+
+    const auto numPixels = posProd(size);
+    if (numPixels == 0) {
+        throw ImageLoadError{"Image has zero pixels."};
+    }
+
+    vector<ImageData> result(1);
+    ImageData& data = result.front();
+
+    for (int i = 0; i < nChannels; ++i) {
+        // The following lines decode strings by prefix length. The reason for using sthis encoding is to allow arbitrary characters,
+        // including whitespaces, in the channel names.
+        vector<char> channelNameData;
+        int length;
+        iStream >> length;
+        channelNameData.resize(length + 1, 0);
+        iStream.read(channelNameData.data(), length);
+
+        string channelName = channelNameData.data();
+
+        data.channels.emplace_back(Channel{channelName, size, EPixelFormat::F32, EPixelFormat::F32});
+    }
+
+    const auto outView = MultiChannelView<float>{data.channels};
+    co_await ThreadPool::global().parallelFor(
+        0uz,
+        numPixels,
+        numPixels * nChannels,
+        [&outView](size_t i) {
+            for (size_t c = 0, count = outView.nChannels(); c < count; ++c) {
+                outView[c, i] = 0.0f;
+            }
+        },
+        priority
+    );
+
+    data.hasPremultipliedAlpha = true;
+
+    co_return result;
+}
+
+} // namespace tev

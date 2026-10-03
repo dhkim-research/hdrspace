@@ -1,0 +1,74 @@
+name: Build Python wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Upload wheels to PyPI? (0: no, 1: yes)'
+        required: true
+        default: '0'
+
+jobs:
+  build_wheels:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+      fail-fast: false
+
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    env:
+      CIBW_ARCHS_MACOS: ${{ matrix.os == 'macos-14' && 'arm64' || matrix.os == 'macos-13' && 'x86_64' || '' }}
+
+    steps:
+      # Checkout with retry mechanism for reliability
+      - uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: actions/checkout@v4
+          with: |
+            submodules: recursive
+          attempt_limit: 3
+          attempt_delay: 2000
+
+      - uses: actions/setup-python@v5
+        name: Install Python
+        with:
+          python-version: '3.11'
+
+      - name: Prepare compiler environment for Windows
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install cibuildwheel
+        run: |
+          python -m pip install cibuildwheel==2.20.0
+
+      - name: Build wheels
+        run: |
+          python -m cibuildwheel --output-dir wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  upload_pypi:
+    name: Upload wheels to PyPI
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.upload == '1'}}
+    needs: [build_wheels]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_PASSWORD }}

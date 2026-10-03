@@ -1,0 +1,938 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <tev/FalseColor.h>
+
+#include <nanogui/vector.h>
+
+#include <tinylogger/tinylogger.h>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <concepts>
+#include <cstring>
+#include <exception>
+#include <filesystem>
+#include <format>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <source_location>
+#include <span>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#ifdef _WIN32
+#    define NOMINMAX
+#    include <Windows.h>
+#    undef NOMINMAX
+#    pragma warning(disable : 4127) // warning C4127: conditional expression is constant
+#    pragma warning(disable : 4244) // warning C4244: conversion from X to Y, possible loss of data
+#endif
+
+// Define command key for windows/mac/linux
+#ifdef __APPLE__
+#    define SYSTEM_COMMAND_LEFT GLFW_KEY_LEFT_SUPER
+#    define SYSTEM_COMMAND_RIGHT GLFW_KEY_RIGHT_SUPER
+#else
+#    define SYSTEM_COMMAND_LEFT GLFW_KEY_LEFT_CONTROL
+#    define SYSTEM_COMMAND_RIGHT GLFW_KEY_RIGHT_CONTROL
+#endif
+
+#define TEV_ASSERT(cond, description, ...)                                                                                     \
+    if (!(cond)) [[unlikely]] {                                                                                                \
+        const auto s = std::source_location::current();                                                                        \
+        throw std::runtime_error{                                                                                              \
+            std::format("{}({}:{}) `{}`: " description, s.file_name(), s.line(), s.column(), s.function_name(), ##__VA_ARGS__) \
+        };                                                                                                                     \
+    }
+
+#ifndef TEV_VERSION
+#    define TEV_VERSION "undefined"
+#endif
+
+namespace tev {
+std::string toString(const std::filesystem::path& path);
+}
+
+// Make std::filesystem::path formattable.
+template <> struct std::formatter<std::filesystem::path> : std::formatter<std::string_view> {
+    template <typename FormatContext> auto format(const std::filesystem::path& path, FormatContext& ctx) const {
+        return formatter<std::string_view>::format(tev::toString(path), ctx);
+    }
+};
+
+template <typename T, size_t N_DIMS> struct std::formatter<std::array<T, N_DIMS>> {
+    template <class ParseContext> constexpr ParseContext::iterator parse(ParseContext& ctx) { return ctx.begin(); }
+    template <class FmtContext> FmtContext::iterator format(const std::array<T, N_DIMS>& v, FmtContext& ctx) const {
+        auto&& out = ctx.out();
+
+        std::format_to(out, "[");
+        for (size_t i = 0; i < N_DIMS; ++i) {
+            if (i != 0) {
+                std::format_to(out, ", ");
+            }
+
+            std::format_to(out, "{}", v[i]);
+        }
+
+        return std::format_to(out, "]");
+    }
+};
+
+template <typename T, size_t N_DIMS> struct std::formatter<nanogui::Array<T, N_DIMS>> {
+    template <class ParseContext> constexpr ParseContext::iterator parse(ParseContext& ctx) { return ctx.begin(); }
+    template <class FmtContext> FmtContext::iterator format(const nanogui::Array<T, N_DIMS>& v, FmtContext& ctx) const {
+        auto&& out = ctx.out();
+
+        std::format_to(out, "[");
+        for (size_t i = 0; i < N_DIMS; ++i) {
+            if (i != 0) {
+                std::format_to(out, ", ");
+            }
+
+            std::format_to(out, "{}", v[i]);
+        }
+
+        return std::format_to(out, "]");
+    }
+};
+
+template <typename T, size_t N_DIMS> struct std::formatter<nanogui::Matrix<T, N_DIMS>> {
+    template <class ParseContext> constexpr ParseContext::iterator parse(ParseContext& ctx) { return ctx.begin(); }
+    template <class FmtContext> FmtContext::iterator format(const nanogui::Matrix<T, N_DIMS>& m, FmtContext& ctx) const {
+        auto&& out = ctx.out();
+
+        std::format_to(out, "[");
+        for (size_t i = 0; i < N_DIMS; ++i) {
+            if (i != 0) {
+                std::format_to(out, ", ");
+            }
+
+            std::format_to(out, "[");
+            for (size_t j = 0; j < N_DIMS; ++j) {
+                if (j != 0) {
+                    std::format_to(out, ", ");
+                }
+
+                std::format_to(out, "{}", m.m[j][i]);
+            }
+
+            std::format_to(out, "]");
+        }
+
+        return std::format_to(out, "]");
+    }
+};
+
+inline nanogui::Matrix2f extract2x2(const nanogui::Matrix3f& mat) {
+    nanogui::Matrix2f result;
+    result.m[0][0] = mat.m[0][0];
+    result.m[0][1] = mat.m[0][1];
+    result.m[1][0] = mat.m[1][0];
+    result.m[1][1] = mat.m[1][1];
+
+    return result;
+}
+
+inline float extractScale(const nanogui::Matrix3f& mat) {
+    const float det = mat.m[0][0] * mat.m[1][1] - mat.m[0][1] * mat.m[1][0];
+    return std::sqrt(det);
+}
+
+template <typename T, size_t N_DIMS>
+bool almostEquals(const nanogui::Matrix<T, N_DIMS>& a, const nanogui::Matrix<T, N_DIMS>& b, float epsilon = 1e-6f) {
+    float frob = 0.0f;
+    for (size_t j = 0; j < N_DIMS; ++j) {
+        for (size_t i = 0; i < N_DIMS; ++i) {
+            const float diff = a.m[j][i] - b.m[j][i];
+            frob += diff * diff;
+        }
+    }
+
+    frob = std::sqrt(std::max(frob, 0.0f));
+    return frob < epsilon;
+}
+
+template <size_t N_DIMS> nanogui::Array<float, N_DIMS> abs(const nanogui::Array<float, N_DIMS>& v) {
+    nanogui::Array<float, N_DIMS> result;
+    for (size_t i = 0; i < N_DIMS; ++i) {
+        result[i] = std::abs(v[i]);
+    }
+
+    return result;
+}
+
+template <size_t N_DIMS> nanogui::Array<float, N_DIMS> exp(const nanogui::Array<float, N_DIMS>& v) {
+    nanogui::Array<float, N_DIMS> result;
+    for (size_t i = 0; i < N_DIMS; ++i) {
+        result[i] = std::exp(v[i]);
+    }
+
+    return result;
+}
+
+template <size_t N_DIMS> nanogui::Array<float, N_DIMS> log(const nanogui::Array<float, N_DIMS>& v) {
+    nanogui::Array<float, N_DIMS> result;
+    for (size_t i = 0; i < N_DIMS; ++i) {
+        result[i] = std::log(v[i]);
+    }
+
+    return result;
+}
+
+template <size_t N_DIMS> nanogui::Array<float, N_DIMS> max(const nanogui::Array<float, N_DIMS>& a, const nanogui::Array<float, N_DIMS>& b) {
+    nanogui::Array<float, N_DIMS> result;
+    for (size_t i = 0; i < N_DIMS; ++i) {
+        result[i] = std::max(a[i], b[i]);
+    }
+
+    return result;
+}
+
+template <size_t N_DIMS> nanogui::Array<float, N_DIMS> min(const nanogui::Array<float, N_DIMS>& a, const nanogui::Array<float, N_DIMS>& b) {
+    nanogui::Array<float, N_DIMS> result;
+    for (size_t i = 0; i < N_DIMS; ++i) {
+        result[i] = std::min(a[i], b[i]);
+    }
+
+    return result;
+}
+
+template <size_t N_DIMS> nanogui::Array<float, N_DIMS> pow(const nanogui::Array<float, N_DIMS>& v, float exponent) {
+    nanogui::Array<float, N_DIMS> result;
+    for (size_t i = 0; i < N_DIMS; ++i) {
+        result[i] = std::pow(v[i], exponent);
+    }
+
+    return result;
+}
+
+template <typename T, size_t N_DIMS> auto prod(const nanogui::Array<T, N_DIMS>& v) {
+    using signed_size_t = std::common_type_t<std::ptrdiff_t, std::make_signed_t<size_t>>;
+    using area_t = std::conditional_t<std::is_integral_v<T>, std::conditional_t<std::is_signed_v<T>, signed_size_t, size_t>, T>;
+    area_t result = (T)1;
+
+    for (uint32_t i = 0; i < N_DIMS; ++i) {
+        result *= (area_t)v[i];
+    }
+
+    return result;
+}
+
+template <typename T, size_t N_DIMS> auto posProd(const nanogui::Array<T, N_DIMS>& v) {
+    using area_t = std::conditional_t<std::is_integral_v<T>, size_t, T>;
+    area_t result = (T)1;
+
+    for (uint32_t i = 0; i < N_DIMS; ++i) {
+        if (v[i] < 0) [[unlikely]] {
+            throw std::runtime_error{std::format("Negative value {} encountered when computing positive product.", v)};
+        }
+
+        result *= (area_t)v[i];
+    }
+
+    return result;
+}
+
+struct NVGcontext;
+
+namespace tev {
+
+namespace fs = std::filesystem;
+
+// TODO: remove this custom to_vector implementation in favor of std::ranges::to<std::vector> once g++ supported it for long enough
+//       Same for fixed_chunks once std::ranges::views::chunk becomes available.
+namespace detail {
+
+template <template <typename...> class Vector> struct to_vector_fn {
+    template <std::ranges::range R> friend constexpr auto operator|(R&& r, to_vector_fn) {
+        using value_type = std::ranges::range_value_t<R>;
+        if constexpr (std::ranges::sized_range<R>) {
+            Vector<value_type> v;
+            v.reserve(std::ranges::size(r));
+            for (auto&& e : r) {
+                v.emplace_back(static_cast<decltype(e)&&>(e));
+            }
+            return v;
+        } else {
+            return Vector<value_type>(std::ranges::begin(r), std::ranges::end(r));
+        }
+    }
+};
+
+template <size_t N> struct fixed_chunks_fn {
+    template <typename T, std::size_t Extent> friend constexpr auto operator|(std::span<T, Extent> s, fixed_chunks_fn) {
+        return std::views::iota(std::size_t{0}, s.size() / N) |
+            std::views::transform([s](std::size_t i) { return s.subspan(i * N).template first<N>(); });
+    }
+};
+
+} // namespace detail
+
+inline constexpr detail::to_vector_fn<std::vector> toVector{};
+template <std::size_t N> inline constexpr detail::fixed_chunks_fn<N> fixed_chunks{};
+
+// Helper for std::visit on multiple lambdas
+template <typename... Callable> struct visitor : Callable... {
+    using Callable::operator()...;
+};
+
+template <typename T> concept trivially_copyable = std::is_trivially_copyable_v<T>;
+
+// Stricter version of from_chars that only returns true if the entire input was consumed and no error occurred.
+template <typename T> bool fromChars(const char* begin, const char* end, T& value) {
+    const auto result = std::from_chars(begin, end, value);
+    return result.ec == std::errc{} && result.ptr == end;
+}
+
+template <typename T> bool fromChars(std::string_view s, T& value) {
+    // Shockingly, macOS *still* does not ship a floating point from_chars() implementation -- a C++17 feature! -- so we polyfill via the
+    // much heavier stof (string alloc + exception on failed parse). TODO: remove once supported
+#ifdef __APPLE__
+    if constexpr (std::is_floating_point_v<T>) {
+        try {
+            value = std::stof(std::string{s});
+            return true;
+        } catch (const std::invalid_argument&) { return false; } catch (const std::out_of_range&) {
+            return false;
+        }
+    } else
+#endif
+    {
+        return fromChars(s.data(), s.data() + s.size(), value);
+    }
+}
+
+template <trivially_copyable T> T fromBytes(std::span<const uint8_t> data) {
+    if (data.size() < sizeof(T)) {
+        throw std::runtime_error{"Not enough data to read value of type."};
+    }
+
+    T val = {};
+    std::memcpy(&val, data.data(), sizeof(T));
+    return val;
+}
+
+template <trivially_copyable T> T fromBytes(const uint8_t* data) {
+    T val = {};
+    std::memcpy(&val, data, sizeof(T));
+    return val;
+}
+
+template <trivially_copyable T> T swapBytes(T value) {
+    static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8, "Unsupported type for byte swapping.");
+    if constexpr (sizeof(T) == 1) {
+        return value;
+    } else {
+        using uint_t = std::conditional_t<sizeof(T) == 2, uint16_t, std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>>;
+        return std::bit_cast<T>(std::byteswap(std::bit_cast<uint_t>(value)));
+    }
+}
+
+inline int codePointLength(char first) {
+    if ((first & 0xf8) == 0xf0) {
+        return 4;
+    } else if ((first & 0xf0) == 0xe0) {
+        return 3;
+    } else if ((first & 0xe0) == 0xc0) {
+        return 2;
+    } else {
+        return 1;
+    }
+}
+
+std::string ensureUtf8(std::string_view str);
+std::string utf16to8(std::wstring_view utf16);
+fs::path toPath(std::string_view utf8);
+std::string toString(const fs::path& path);
+std::string toDisplayString(const fs::path& path);
+
+bool naturalCompare(std::string_view a, std::string_view b);
+
+template <typename T> void removeDuplicates(std::vector<T>& vec) {
+    std::unordered_set<T> tmp;
+    size_t idx = 0;
+    for (const auto& v : vec) {
+        if (tmp.contains(v)) {
+            continue;
+        }
+
+        tmp.insert(v);
+        vec[idx++] = v;
+    }
+
+    vec.resize(idx);
+}
+
+// Taken from https://en.wikibooks.org/wiki/Algorithm_Implementation/Strings/Levenshtein_distance#C++
+template <typename T> typename T::size_type levenshteinDistance(const T& source, const T& target) {
+    if (source.size() > target.size()) {
+        return levenshteinDistance(target, source);
+    }
+
+    using TSizeType = typename T::size_type;
+    const TSizeType minSize = source.size(), max_size = target.size();
+    std::vector<TSizeType> levDist(minSize + 1);
+
+    for (TSizeType i = 0; i <= minSize; ++i) {
+        levDist[i] = i;
+    }
+
+    for (TSizeType j = 1; j <= max_size; ++j) {
+        TSizeType previousDiagonal = levDist[0], previousDiagonalSave;
+        ++levDist[0];
+
+        for (TSizeType i = 1; i <= minSize; ++i) {
+            previousDiagonalSave = levDist[i];
+            if (source[i - 1] == target[j - 1]) {
+                levDist[i] = previousDiagonal;
+            } else {
+                levDist[i] = std::min(std::min(levDist[i - 1], levDist[i]), previousDiagonal) + 1;
+            }
+
+            previousDiagonal = previousDiagonalSave;
+        }
+    }
+
+    return levDist[minSize];
+}
+
+template <typename F> void forEachFileInDir(bool recursive, const fs::path& path, F&& callback) {
+    // Ignore errors in case a directory no longer exists. Simply don't invoke the loop body in that case.
+    std::error_code ec;
+    if (recursive) {
+        for (const auto& entry : fs::recursive_directory_iterator{path, ec}) {
+            callback(entry);
+        }
+    } else {
+        for (const auto& entry : fs::directory_iterator{path, ec}) {
+            callback(entry);
+        }
+    }
+}
+
+template <std::invocable F> class ScopeGuard {
+public:
+    ScopeGuard(const F& callback) : mCallback{callback} {}
+    ScopeGuard(F&& callback) : mCallback{std::move(callback)} {}
+    ScopeGuard(const ScopeGuard<F>& other) = delete;
+    ScopeGuard& operator=(const ScopeGuard<F>& other) = delete;
+    ScopeGuard(ScopeGuard<F>&& other) { *this = std::move(other); }
+    ScopeGuard& operator=(ScopeGuard<F>&& other) {
+        mCallback = std::move(other.mCallback);
+        other.mCallback = {};
+        return *this;
+    }
+
+    ~ScopeGuard() {
+        if (mArmed) {
+            mCallback();
+        }
+    }
+
+    void disarm() { mArmed = false; }
+
+private:
+    F mCallback;
+    bool mArmed = true;
+};
+
+template <typename T> class HeapArray {
+public:
+    HeapArray() : mBuf{nullptr}, mSize{0} {}
+    HeapArray(size_t size) : mBuf{std::make_unique<T[]>(size)}, mSize{size} {}
+    HeapArray(HeapArray&& other) { *this = std::move(other); }
+    HeapArray& operator=(HeapArray&& other) {
+        mBuf = std::move(other.mBuf);
+        mSize = other.mSize;
+        other.mBuf = nullptr;
+        other.mSize = 0;
+        return *this;
+    }
+
+    operator bool() const { return mBuf != nullptr; }
+    T& operator[](size_t idx) { return mBuf[idx]; }
+    const T& operator[](size_t idx) const { return mBuf[idx]; }
+
+    T* data() { return mBuf.get(); }
+    const T* data() const { return mBuf.get(); }
+
+    size_t size() const { return mSize; }
+    void resize(size_t newSize) {
+        if (newSize <= mSize) {
+            mSize = newSize;
+            return;
+        }
+
+        const auto oldBuf = std::move(mBuf);
+        mBuf = std::make_unique<T[]>(newSize);
+        if (oldBuf) {
+            std::copy_n(oldBuf.get(), mSize, mBuf.get());
+        }
+
+        mSize = newSize;
+    }
+
+    operator std::span<const T>() const { return std::span<const T>{mBuf.get(), mSize}; }
+    operator std::span<T>() { return std::span<T>{mBuf.get(), mSize}; }
+
+private:
+    std::unique_ptr<T[]> mBuf;
+    size_t mSize;
+};
+
+template <typename T> T round(T value, T decimals) {
+    auto precision = std::pow(static_cast<T>(10), decimals);
+    return std::round(value * precision) / precision;
+}
+
+template <typename T> T nextPot(T value) {
+    if (value == 0) {
+        return 1;
+    }
+
+    T pot = 1;
+    while (pot < value) {
+        pot <<= 1;
+    }
+
+    return pot;
+}
+
+inline bool isPot(size_t value) {
+    if (value == 0) {
+        return false;
+    }
+
+    return (value & (value - 1)) == 0;
+}
+
+template <typename Int> Int divRoundUp(Int value, Int divisor) { return (value + divisor - 1) / divisor; }
+
+template <typename Int> Int nextMultiple(Int value, Int multiple) { return divRoundUp(value, multiple) * multiple; }
+
+template <typename T> std::string join(const T& components, std::string_view delim) {
+    std::ostringstream s;
+    for (const auto& component : components) {
+        if (&components[0] != &component) {
+            s << delim;
+        }
+
+        s << component;
+    }
+
+    return std::move(s).str();
+}
+
+template <typename T> auto viewOptionals(std::span<std::optional<T>> optionals) {
+    return optionals | std::views::filter([](const auto& opt) { return opt.has_value(); }) |
+        std::views::transform([](auto&& opt) -> auto& { return *opt; });
+}
+
+// If `inclusive` is true, trailing delimiters are included in the resulting parts.
+std::vector<std::string_view> split(std::string_view text, std::string_view delim, bool inclusive = false);
+std::vector<std::string_view> splitWhitespace(std::string_view text, bool inclusive = false);
+
+std::string toLower(std::string_view str);
+std::string toUpper(std::string_view str);
+
+std::string_view trimLeft(std::string_view s);
+std::string_view trimRight(std::string_view s);
+std::string_view trim(std::string_view s);
+
+std::string substituteCurly(std::string_view str, const std::function<std::string(std::string_view)>& replacer);
+
+nanogui::Color parseColor(std::string_view str);
+
+bool matchesFuzzy(std::string_view text, std::string_view filter, size_t* matchedPartId = nullptr);
+bool matchesRegex(std::string_view text, std::string_view filter);
+inline bool matchesFuzzyOrRegex(std::string_view text, std::string_view filter, bool isRegex) {
+    return isRegex ? matchesRegex(text, filter) : matchesFuzzy(text, filter);
+}
+
+void drawTextWithShadow(NVGcontext* ctx, float x, float y, std::string_view text, float shadowAlpha = 1.0f);
+
+int maxTextureSize();
+size_t nextSupportedTextureChannelCount(size_t channelCount);
+
+inline float toSRGB(float val, float gamma = 2.4f) {
+    static constexpr float a = 0.055f;
+    static constexpr float threshold = 0.0031308f;
+
+    const float absVal = std::abs(val);
+    if (absVal <= threshold) {
+        return 12.92f * val;
+    } else {
+        return std::copysign((1.0f + a) * std::pow(absVal, 1.0f / gamma) - a, val);
+    }
+}
+
+inline float toLinear(float val, float gamma = 2.4f) {
+    static constexpr float a = 0.055f;
+    static constexpr float threshold = 0.04045f;
+
+    const float absVal = std::abs(val);
+    if (absVal <= threshold) {
+        return val / 12.92f;
+    } else {
+        return std::copysign(std::pow((absVal + a) / (1.0f + a), gamma), val);
+    }
+}
+
+int lastError();
+int lastSocketError();
+std::string errorString(int errorId);
+
+fs::path homeDirectory();
+fs::path runtimeDirectory();
+
+void toggleConsole();
+
+bool shuttingDown();
+void setShuttingDown();
+
+struct FlatpakInfo {
+    std::string flatpakId = "";
+    std::unordered_map<std::string_view, std::unordered_map<std::string_view, std::string>> metadata;
+
+    bool hasNetworkAccess() const {
+        const auto it = metadata.find("Context");
+        if (it == metadata.end()) {
+            return false;
+        }
+
+        const auto accessIt = it->second.find("shared");
+        if (accessIt == it->second.end()) {
+            return false;
+        }
+
+        const auto parts = split(accessIt->second, ";");
+        return std::find(parts.begin(), parts.end(), "network") != parts.end();
+    }
+};
+
+const std::optional<FlatpakInfo>& flatpakInfo();
+
+enum class EAlphaKind {
+    // This refers to premultiplied alpha in nonlinear space, i.e. after a transfer function like gamma correction. This kind of
+    // premultiplied alpha has generally little use, since one should not blend in non-linear space. But, regrettably, some image formats
+    // represent premultiplied alpha this way. Our color management system (lcms2) for handling ICC color profiles unfortunately also
+    // expects this kind of premultiplied alpha, so we have to support it.
+    PremultipliedNonlinear,
+    // This refers to premultiplied alpha in linear space, i.e. before a transfer function like gamma correction. This is the most useful
+    // kind of premultiplied alpha.
+    Premultiplied,
+    Straight,
+    None,
+};
+
+std::string_view toString(EAlphaKind mode);
+
+enum EInterpolationMode : int {
+    Nearest = 0,
+    Bilinear,
+    Trilinear,
+
+    // This enum value should never be used directly. It facilitates looping over all members of this enum.
+    NumInterpolationModes,
+};
+
+EInterpolationMode toInterpolationMode(std::string_view name);
+std::string_view toString(EInterpolationMode mode);
+
+enum class ETonemap : int {
+    None = 0,
+    SRGB = 0,
+    Gamma,
+    FalseColor,
+    PositiveNegative,
+    Reinhard,
+
+    // This enum value should never be used directly. It facilitates looping over all members of this enum.
+    Count,
+};
+
+ETonemap toTonemap(std::string_view name);
+
+inline nanogui::Vector3f applyTonemap(nanogui::Vector3f value, float gamma, ETonemap tonemap) {
+    nanogui::Vector3f result;
+    switch (tonemap) {
+        case ETonemap::SRGB: {
+            result = {toSRGB(value.x()), toSRGB(value.y()), toSRGB(value.z())};
+            break;
+        }
+        case ETonemap::Gamma: {
+            result = {std::pow(value.x(), 1 / gamma), std::pow(value.y(), 1 / gamma), std::pow(value.z(), 1 / gamma)};
+            break;
+        }
+        case ETonemap::FalseColor: {
+            static constexpr auto falseColor = [](float linear) {
+                static const auto fcd = colormap::turbo();
+                int start = 4 * std::clamp((int)(linear * (int)(fcd.size() / 4)), 0, (int)fcd.size() / 4 - 1);
+                return nanogui::Vector3f{fcd[start], fcd[start + 1], fcd[start + 2]};
+            };
+
+            result = falseColor(log2(mean(value) + 0.03125f) / 10 + 0.5f);
+            break;
+        }
+        case ETonemap::PositiveNegative: {
+            result = {-2.0f * mean(min(value, nanogui::Vector3f{0.0f})), 2.0f * mean(max(value, nanogui::Vector3f{0.0f})), 0.0f};
+            break;
+        }
+        case ETonemap::Reinhard: {
+            const auto positive = max(value, nanogui::Vector3f{0.0f});
+            const float luminance =
+                0.2126f * positive.x() +
+                0.7152f * positive.y() +
+                0.0722f * positive.z();
+            const auto mapped = positive / (1.0f + luminance);
+            result = {toSRGB(mapped.x()), toSRGB(mapped.y()), toSRGB(mapped.z())};
+            break;
+        }
+        default: throw std::runtime_error{"Invalid tonemap selected."};
+    }
+
+    return min(max(result, nanogui::Vector3f{0.0f}), nanogui::Vector3f{1.0f});
+}
+
+template <typename E> struct enable_bitmask : std::false_type {};
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E operator|(E a, E b) {
+    using U = std::underlying_type_t<E>;
+    return static_cast<E>(static_cast<U>(a) | static_cast<U>(b));
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E operator&(E a, E b) {
+    using U = std::underlying_type_t<E>;
+    return static_cast<E>(static_cast<U>(a) & static_cast<U>(b));
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E operator^(E a, E b) {
+    using U = std::underlying_type_t<E>;
+    return static_cast<E>(static_cast<U>(a) ^ static_cast<U>(b));
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E operator~(E a) {
+    using U = std::underlying_type_t<E>;
+    return static_cast<E>(~static_cast<U>(a));
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E& operator|=(E& a, E b) {
+    return a = a | b;
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E& operator&=(E& a, E b) {
+    return a = a & b;
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr E& operator^=(E& a, E b) {
+    return a = a ^ b;
+}
+
+template <typename E>
+    requires enable_bitmask<E>::value
+constexpr bool hasFlag(E mask, E flag) {
+    using U = std::underlying_type_t<E>;
+    return (static_cast<U>(mask) & static_cast<U>(flag)) == static_cast<U>(flag);
+}
+
+enum class EChannelMask : uint8_t {
+    None = 0,
+    Red = 1 << 0,
+    Green = 1 << 1,
+    Blue = 1 << 2,
+    Alpha = 1 << 3,
+    All = Red | Green | Blue | Alpha,
+};
+
+template <> struct enable_bitmask<EChannelMask> : std::true_type {};
+
+enum class EMetric : int {
+    Error = 0,
+    AbsoluteError,
+    SquaredError,
+    RelativeAbsoluteError,
+    RelativeSquaredError,
+
+    // This enum value should never be used directly. It facilitates looping over all members of this enum.
+    Count,
+};
+
+EMetric toMetric(std::string_view name);
+
+inline float applyMetric(float image, float reference, EMetric metric) {
+    float diff = image - reference;
+    switch (metric) {
+        case EMetric::Error: return diff;
+        case EMetric::AbsoluteError: return std::abs(diff);
+        case EMetric::SquaredError: return diff * diff;
+        case EMetric::RelativeAbsoluteError: return std::abs(diff) / (reference + 0.01f);
+        case EMetric::RelativeSquaredError: return diff * diff / (reference * reference + 0.01f);
+        default: throw std::runtime_error{"Invalid metric selected."};
+    }
+}
+
+inline float applyExposureAndOffset(float value, float exposure, float offset) { return std::pow(2.0f, exposure) * value + offset; }
+
+enum EDirection {
+    Forward,
+    Backward,
+};
+
+enum EOrientation : int {
+    None = 0,
+    TopLeft = 1,
+    TopRight = 2,
+    BottomRight = 3,
+    BottomLeft = 4,
+    LeftTop = 5,
+    RightTop = 6,
+    RightBottom = 7,
+    LeftBottom = 8,
+};
+
+inline nanogui::Vector2i applyOrientation(EOrientation orientation, nanogui::Vector2i pos, nanogui::Vector2i size) {
+    switch (orientation) {
+        case None: return pos;
+        case TopLeft: return pos;
+        case TopRight: return {size.x() - pos.x() - 1, pos.y()};
+        case BottomRight: return {size.x() - pos.x() - 1, size.y() - pos.y() - 1};
+        case BottomLeft: return {pos.x(), size.y() - pos.y() - 1};
+        case LeftTop: return {pos.y(), pos.x()};
+        case RightTop: return {pos.y(), size.x() - pos.x() - 1};
+        case RightBottom: return {size.y() - pos.y() - 1, size.x() - pos.x() - 1};
+        case LeftBottom: return {size.y() - pos.y() - 1, pos.x()};
+    }
+
+    return pos;
+}
+
+std::string_view toString(EOrientation orientation);
+
+enum class EPixelType {
+    Uint,
+    Int,
+    Float,
+};
+
+std::string_view toString(EPixelType type);
+
+enum class EPixelFormat {
+    U8,
+    U16,
+    U32,
+    I8,
+    I16,
+    I32,
+    F16,
+    F32,
+};
+
+std::string_view toString(EPixelFormat format);
+EPixelType pixelType(EPixelFormat format);
+
+inline size_t nBytes(EPixelFormat format) {
+    switch (format) {
+        case EPixelFormat::U8: return 1;
+        case EPixelFormat::U16: return 2;
+        case EPixelFormat::U32: return 4;
+        case EPixelFormat::I8: return 1;
+        case EPixelFormat::I16: return 2;
+        case EPixelFormat::I32: return 4;
+        case EPixelFormat::F16: return 2;
+        case EPixelFormat::F32: return 4;
+    }
+
+    return 0;
+}
+
+inline size_t nBits(EPixelFormat format) { return nBytes(format) * 8; }
+
+inline constexpr uint32_t fourcc(const char s[5]) {
+    uint32_t result = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        result |= ((uint32_t)s[i]) << (8 * (3 - i));
+    }
+
+    return result;
+}
+
+// Implemented in main.cpp
+void scheduleToMainThread(const std::function<void()>& fun);
+void redrawWindow();
+
+static const nanogui::Color IMAGE_COLOR = {0.35f, 0.35f, 0.8f, 1.0f};
+static const nanogui::Color REFERENCE_COLOR = {0.7f, 0.4f, 0.4f, 1.0f};
+static const nanogui::Color CROP_COLOR = {0.2f, 0.5f, 0.2f, 1.0f};
+
+// Exceptions
+class ImageLoadError final : public std::runtime_error {
+public:
+    ImageLoadError(const std::string& message) : std::runtime_error{message} {}
+};
+
+class ImageModifyError final : public std::runtime_error {
+public:
+    ImageModifyError(const std::string& message) : std::runtime_error{message} {}
+};
+
+class ImageSaveError final : public std::runtime_error {
+public:
+    ImageSaveError(const std::string& message) : std::runtime_error{message} {}
+};
+
+class CompoundException final : public std::runtime_error {
+public:
+    CompoundException(std::span<const std::exception_ptr> exceptions) :
+        runtime_error{buildMessage(exceptions)}, mExceptions{std::begin(exceptions), std::end(exceptions)} {}
+
+    std::span<const std::exception_ptr> exceptions() const noexcept { return mExceptions; }
+
+private:
+    static std::string buildMessage(std::span<const std::exception_ptr> exceptions);
+
+    std::vector<std::exception_ptr> mExceptions;
+};
+
+} // namespace tev

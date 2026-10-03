@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>hdrspace</title>
+    <link rel="stylesheet" href="app.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>mergehdr</h1>
+          <p>Viewer</p>
+        </div>
+        <nav>
+          <button class="nav-item active" data-panel="merge">Merge</button>
+          <button class="nav-item" data-panel="calibration">Color Calibration</button>
+          <button class="nav-item" data-panel="shutter">Shutter Calibration</button>
+          <button class="nav-item" data-panel="aperture">Aperture Calibration</button>
+          <button class="nav-item" data-panel="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main class="workspace">
+        <section id="panel-merge" class="panel-view active">
+          <div class="merge-layout">
+            <section class="controls-panel">
+              <div class="panel-head panel-head-tight">
+                <h2>Merge</h2>
+                <p>Choose files, crop in the viewer, then run.</p>
+              </div>
+
+              <div class="form-section">
+                <input id="workdir" type="hidden">
+
+                <label class="field">
+                  <span>Input files or folder</span>
+                  <div class="inline-input">
+                    <input id="inputPattern" type="text" placeholder="Choose RAW files or enter a pattern like *.CR3">
+                    <button id="pickInputFiles" class="ghost">Choose</button>
+                  </div>
+                </label>
+
+                <div id="inputFilesList" class="file-list empty">No files selected yet.</div>
+
+                <div class="field-row">
+                  <label class="field">
+                    <span>Output folder</span>
+                    <div class="inline-input">
+                      <input id="outputDir" type="text">
+                      <button id="pickOutputDir" class="ghost">Browse</button>
+                    </div>
+                  </label>
+                  <label class="field">
+                    <span>Output name</span>
+                    <input id="outputName" type="text" value="out.hdr">
+                  </label>
+                </div>
+
+                <div class="field-row">
+                  <label class="field">
+                    <span>Preset</span>
+                    <select id="profile"></select>
+                    <small class="hint">Camera and lens preset. Leave on Auto if you do not have one.</small>
+                  </label>
+                  <label class="field">
+                    <span>Format</span>
+                    <select id="outputFormat">
+                      <option value="hdr">hdr</option>
+                      <option value="exr">exr</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="field-row">
+                  <label class="field">
+                    <span>Output space</span>
+                    <div class="inline-input">
+                      <select id="colorspace">
+                        <option value="rad">rad</option>
+                        <option value="srgb">srgb</option>
+                        <option value="xyz">xyz</option>
+                        <option value="raw">raw</option>
+                      </select>
+                      <button id="toggleColorInfo" class="ghost">Info</button>
+                    </div>
+                  </label>
+                  <label class="field">
+                    <span>Interpolation</span>
+                    <select id="demosaic">
+                      <option value="">default</option>
+                      <option value="ahd">ahd</option>
+                      <option value="dht">dht</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div id="colorInfo" class="info-card hidden">
+                  <strong>Color target</strong>
+                  <p><code>rad</code> is the usual Radiance HDR target. <code>srgb</code> and <code>xyz</code> use display or CIE primaries. <code>raw</code> keeps sensor-native RGB after demosaic.</p>
+                  <p>The standard Radiance luminance scale stays on by default in this app.</p>
+                </div>
+
+                <div class="field-row compact-fields">
+                  <label class="field">
+                    <span>Black level</span>
+                    <input id="blackLevel" type="text" placeholder="Auto or preset">
+                  </label>
+                  <label class="field">
+                    <span>White level</span>
+                    <input id="whiteLevel" type="text" placeholder="Auto or preset">
+                  </label>
+                  <label class="field">
+                    <span>Saturation</span>
+                    <input id="saturation" type="text" placeholder="Auto or preset">
+                  </label>
+                </div>
+
+                <div class="field-row">
+                  <label class="field">
+                    <span>Merge method</span>
+                    <select id="mergeWeight">
+                      <option value="">default</option>
+                      <option value="hdrmerge">hdrmerge</option>
+                      <option value="linearhdr">linearhdr</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Preview source</span>
+                    <div class="inline-input">
+                      <input id="previewSource" type="text" placeholder="Usually the first chosen RAW">
+                      <button id="pickPreviewSource" class="ghost">Browse</button>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="subsection">
+                  <div class="subsection-head">
+                    <h3>Crop</h3>
+                    <div class="button-row tight">
+                      <button id="generatePreview" class="ghost">Refresh preview</button>
+                      <button id="clearCrop" class="ghost">Clear</button>
+                    </div>
+                  </div>
+
+                  <div class="crop-grid">
+                    <label class="field"><span>x</span><input id="cropX" type="number" min="0" value="0"></label>
+                    <label class="field"><span>y</span><input id="cropY" type="number" min="0" value="0"></label>
+                    <label class="field"><span>w</span><input id="cropW" type="number" min="0" value="0"></label>
+                    <label class="field"><span>h</span><input id="cropH" type="number" min="0" value="0"></label>
+                  </div>
+                  <small class="hint">Drag directly on the preview to update the crop.</small>
+                </div>
+
+                <div class="toggle-row">
+                  <label class="check"><input id="bloom" type="checkbox"><span>Bloom prevent</span></label>
+                  <label class="check"><input id="fisheye" type="checkbox" disabled><span>Fisheye correction</span></label>
+                </div>
+
+                <details class="advanced">
+                  <summary>Advanced</summary>
+                  <div class="advanced-body">
+                    <div class="field-row compact-fields">
+                      <label class="check inline-check">
+                        <input id="rawgrid" type="checkbox">
+                        <span>Raw grid</span>
+                      </label>
+                    </div>
+
+                    <label class="field">
+                      <span>XYZCAM override</span>
+                      <input id="xyzcamOverride" type="text" placeholder="Optional 3x3 row-major matrix">
+                    </label>
+
+                    <label class="field">
+                      <span>Extra run arguments</span>
+                      <input id="extra" type="text" placeholder="For rare options only">
+                      <small class="hint">Blank is fine. Most options have their own controls above.</small>
+                    </label>
+
+                    <label class="check disabled">
+                      <input id="vignette" type="checkbox" disabled>
+                      <span>Vignetting correction will be added later</span>
+                    </label>
+                  </div>
+                </details>
+
+                <div class="button-row">
+                  <button id="startMerge" class="primary">Run merge</button>
+                  <button id="openTev">Show in native viewer</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="viewer-panel viewer-panel-primary">
+              <div class="viewer-stage">
+                <div class="preview-header">
+                  <div>
+                    <h2>Viewer</h2>
+                    <p id="previewMeta">Choose input files or a preview source.</p>
+                  </div>
+                  <div class="viewer-toolbar">
+                    <div class="viewer-toolbar-group">
+                      <button id="fitView" class="ghost active">Fit</button>
+                      <button id="actualPixels" class="ghost">100%</button>
+                      <button id="modeCrop" class="ghost active">Crop</button>
+                      <button id="modePan" class="ghost">Pan</button>
+                    </div>
+                    <div class="viewer-toolbar-group viewer-sliders">
+                      <label class="viewer-slider">
+                        <span>Exp</span>
+                        <input id="viewerExposure" type="range" min="-4" max="4" step="0.25" value="0">
+                      </label>
+                      <label class="viewer-slider">
+                        <span>Gamma</span>
+                        <input id="viewerGamma" type="range" min="0.6" max="2.4" step="0.05" value="1">
+                      </label>
+                      <label class="check inline-check">
+                        <input id="viewerFalseColor" type="checkbox">
+                        <span>False color</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div id="previewStage" class="preview-canvas">
+                  <canvas id="previewCanvas"></canvas>
+                  <div id="viewerEmpty" class="viewer-empty">Choose input files to start the preview.</div>
+                  <img id="previewImage" class="viewer-source-image" alt="preview">
+                </div>
+                <div class="viewer-footer">
+                  <span id="viewerModeLabel">Crop mode</span>
+                  <span id="viewerZoomLabel">Fit</span>
+                  <span id="viewerReadout">Move over the image to inspect preview pixels.</span>
+                </div>
+              </div>
+
+              <div class="status-card">
+                <div class="status-top">
+                  <span id="mergeStatus" class="status-pill">Idle</span>
+                  <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress-track">
+                  <div id="progressFill" class="progress-fill"></div>
+                </div>
+                <div class="status-line">
+                  <span id="progressStage">waiting</span>
+                  <span id="luminanceSummary">No merge yet.</span>
+                </div>
+                <div id="issuesBox" class="issues-box hidden"></div>
+
+                <details class="details-card">
+                  <summary>Details</summary>
+                  <div class="button-row tight">
+                    <button id="copyCommand" class="ghost">Copy command</button>
+                  </div>
+                  <pre id="commandOut" class="log compact">(not run yet)</pre>
+                  <pre id="logOut" class="log compact">(no output yet)</pre>
+                </details>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-calibration" class="panel-view">
+          <div class="two-column-page">
+            <section class="controls-panel">
+              <div class="panel-head">
+                <h2>Color Calibration</h2>
+                <p>Reference image, test image, cells, and matrix fitting in one place.</p>
+              </div>
+
+              <div class="form-section">
+                <label class="field">
+                  <span>Working folder</span>
+                  <input id="calWorkdir" type="text">
+                </label>
+
+                <div class="field-row">
+                  <label class="field">
+                    <span>Reference image or TSV</span>
+                    <div class="inline-input">
+                      <input id="calReference" type="text">
+                      <button id="pickCalReference" class="ghost">Browse</button>
+                    </div>
+                  </label>
+                  <label class="field">
+                    <span>Test image or TSV</span>
+                    <div class="inline-input">
+                      <input id="calTest" type="text">
+                      <button id="pickCalTest" class="ghost">Browse</button>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="subsection">
+                  <div class="subsection-head">
+                    <h3>Patch detection</h3>
+                  </div>
+                  <div class="button-row">
+                    <button id="detectRefCells" class="ghost">Detect reference cells</button>
+                    <button id="detectTestCells" class="ghost">Detect test cells</button>
+                  </div>
+                  <div class="field-row">
+                    <label class="field">
+                      <span>Reference cells</span>
+                      <input id="calRefCells" type="text">
+                    </label>
+                    <label class="field">
+                      <span>Test cells</span>
+                      <input id="calTestCells" type="text">
+                    </label>
+                  </div>
+                </div>
+
+                <div class="field-row compact-fields">
+                  <label class="field">
+                    <span>Reference colorspace</span>
+                    <select id="calRefcol">
+                      <option value="rad">rad</option>
+                      <option value="srgb">srgb</option>
+                      <option value="xyz">xyz</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Minimizer</span>
+                    <select id="calMinimizer">
+                      <option value="luv">luv</option>
+                      <option value="lab">lab</option>
+                    </select>
+                  </label>
+                  <label class="check inline-check">
+                    <input id="calVerbose" type="checkbox">
+                    <span>Verbose output</span>
+                  </label>
+                </div>
+
+                <label class="field">
+                  <span>XYZCAM override</span>
+                  <input id="calXyzcam" type="text" placeholder="Optional 3x3 row-major matrix">
+                </label>
+
+                <div class="button-row">
+                  <button id="runColorCalibrate" class="primary">Run color calibration</button>
+                  <button id="copyRecommendedXyzcam">Copy recommended xyzcam</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="viewer-panel">
+              <div class="viewer-stage">
+                <div class="preview-header">
+                  <div>
+                    <h2>Chart preview</h2>
+                    <p id="chartMeta">Detect cells from the reference or test image.</p>
+                  </div>
+                </div>
+                <div class="preview-canvas chart-canvas">
+                  <img id="chartPreviewImage" alt="chart preview">
+                </div>
+              </div>
+
+              <div class="status-card">
+                <div class="status-top">
+                  <span id="recommendedMatrix" class="status-pill">No recommendation yet</span>
+                </div>
+                <pre id="chartCellsText" class="log compact">(no cells yet)</pre>
+                <pre id="calibrationResult" class="log tall">(not run yet)</pre>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-shutter" class="panel-view">
+          <div class="single-column-page">
+            <section class="controls-panel">
+              <div class="panel-head">
+                <h2>Shutter Calibration</h2>
+                <p>Use one or more exposure sequences and a stable crop.</p>
+              </div>
+              <div class="form-section">
+                <label class="field"><span>Working folder</span><input id="shutterWorkdir" type="text"></label>
+                <label class="field"><span>Sequences</span><textarea id="shutterSequences" rows="8" placeholder="One sequence or pattern per line"></textarea></label>
+                <label class="field"><span>Crops</span><textarea id="shutterCrops" rows="4" placeholder="One crop per line, or use the crop from Merge"></textarea></label>
+                <div class="field-row">
+                  <label class="field">
+                    <span>Channel</span>
+                    <select id="shutterChannel">
+                      <option value="g">g</option>
+                      <option value="r">r</option>
+                      <option value="b">b</option>
+                    </select>
+                  </label>
+                  <label class="field"><span>Data output</span><input id="shutterDataout" type="text" placeholder="optional"></label>
+                </div>
+                <div class="button-row">
+                  <button id="useMergeCropForShutter" class="ghost">Use crop from Merge</button>
+                  <button id="runShutter" class="primary">Run shutter calibration</button>
+                </div>
+              </div>
+            </section>
+            <section class="viewer-panel slim">
+              <div class="status-card">
+                <pre id="shutterResult" class="log tall">(not run yet)</pre>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-aperture" class="panel-view">
+          <div class="single-column-page">
+            <section class="controls-panel">
+              <div class="panel-head">
+                <h2>Aperture Calibration</h2>
+                <p>Compare aperture sequences from the same scene and lighting.</p>
+              </div>
+              <div class="form-section">
+                <label class="field"><span>Working folder</span><input id="apertureWorkdir" type="text"></label>
+                <label class="field"><span>Sequences</span><textarea id="apertureSequences" rows="8" placeholder="One aperture sequence per line"></textarea></label>
+                <div class="field-row">
+                  <label class="field"><span>Crop</span><input id="apertureCrop" type="text" placeholder="Use the crop from Merge or Preview"></label>
+                  <label class="field"><span>Shutter correction</span><input id="apertureShutterc" type="text" placeholder="-1.02408e-05"></label>
+                </div>
+                <div class="button-row">
+                  <button id="useMergeCropForAperture" class="ghost">Use crop from Merge</button>
+                  <button id="runAperture" class="primary">Run aperture calibration</button>
+                </div>
+              </div>
+            </section>
+            <section class="viewer-panel slim">
+              <div class="status-card">
+                <pre id="apertureResult" class="log tall">(not run yet)</pre>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-settings" class="panel-view">
+          <div class="single-column-page">
+            <section class="controls-panel">
+              <div class="panel-head">
+                <h2>Settings</h2>
+                <p>Leave paths blank to use detected defaults.</p>
+              </div>
+              <div class="form-section">
+                <label class="field">
+                  <span>mergehdr binary</span>
+                  <div class="inline-input">
+                    <input id="settingsMergehdrPath" type="text">
+                    <button id="pickSettingsMergehdr" class="ghost">Browse</button>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>tev binary</span>
+                  <div class="inline-input">
+                    <input id="settingsTevPath" type="text">
+                    <button id="pickSettingsTev" class="ghost">Browse</button>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>oiiotool binary</span>
+                  <div class="inline-input">
+                    <input id="settingsOiiotoolPath" type="text">
+                    <button id="pickSettingsOiiotool" class="ghost">Browse</button>
+                  </div>
+                </label>
+                <div class="button-row">
+                  <button id="saveSettings" class="primary">Save settings</button>
+                  <button id="useDetectedPaths">Use detected defaults</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="viewer-panel slim">
+              <div class="status-card">
+                <pre id="settingsProfilesInfo" class="log compact">(profiles load here)</pre>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

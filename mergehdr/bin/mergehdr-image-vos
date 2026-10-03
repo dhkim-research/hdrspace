@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+SELF=$(python3 - <<'PY' "$0"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$SELF")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+SUPPORT_DIR=${HDRSPACE_SUPPORT_DIR:-"$HOME/Library/Application Support/hdrspace"}
+RUNTIME_ROOT=${HDRSPACE_DA3_RUNTIME_ROOT:-"$SUPPORT_DIR/da3-runtime"}
+HF_HOME_DIR=${HDRSPACE_DA3_HF_HOME:-"$SUPPORT_DIR/da3-hf-home"}
+
+if [ "${1:-}" = "install" ]; then
+    shift
+    for PYTHON_CANDIDATE in /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.13 python3.12 python3.13; do
+        if command -v "$PYTHON_CANDIDATE" >/dev/null 2>&1; then
+            exec "$PYTHON_CANDIDATE" "$ROOT_DIR/tools/install_da3_mps.py" \
+                --runtime-root "$RUNTIME_ROOT" --hf-home "$HF_HOME_DIR" "$@"
+        fi
+    done
+    echo "Python 3.12 or 3.13 is required to install the DA3 MPS runtime." >&2
+    exit 1
+fi
+
+RUNTIME_PYTHON="$RUNTIME_ROOT/.venv/bin/python3"
+RUNTIME_HELPER="$RUNTIME_ROOT/da3_vos_helper.py"
+if [ ! -x "$RUNTIME_PYTHON" ] || [ ! -f "$RUNTIME_HELPER" ]; then
+    echo "DA3 MPS runtime is not installed. Run: $0 install" >&2
+    exit 1
+fi
+
+export HF_HOME="$HF_HOME_DIR"
+export HF_HUB_CACHE="$HF_HOME_DIR/hub"
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+exec "$RUNTIME_PYTHON" "$RUNTIME_HELPER" "$@"

@@ -1,0 +1,34 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2026 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <tev/Box.h>
+#include <tev/Channel.h>
+#include <tev/Common.h>
+#include <tev/Task.h>
+
+#include <span>
+
+namespace tev {
+
+Task<void> demosaic(
+    ChannelView<const float> cfaIn, MultiChannelView<float> rgbOut, std::span<const uint8_t> cfaPattern, nanogui::Vector2i cfaSize, int priority
+);
+
+} // namespace tev

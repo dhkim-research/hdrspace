@@ -1,0 +1,166 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <tev/Common.h>
+#include <tev/imageio/Xmp.h>
+
+#define TXMP_STRING_TYPE std::string
+#include <XMP.hpp>
+#include <XMP.incl_cpp>
+
+#include <algorithm>
+#include <string>
+#include <string_view>
+
+using namespace std;
+
+namespace tev {
+
+class XMPContext {
+public:
+    static bool init() {
+        call_once(initFlag, []() {
+            initialized = SXMPMeta::Initialize();
+            if (initialized) {
+                atexit(shutdown);
+            }
+        });
+
+        return initialized;
+    }
+
+private:
+    static void shutdown() {
+        if (initialized) {
+            SXMPMeta::Terminate();
+        }
+    }
+
+    static once_flag initFlag;
+    static bool initialized;
+};
+
+once_flag XMPContext::initFlag;
+bool XMPContext::initialized = false;
+
+Xmp::Xmp(string_view xmpData) {
+    if (!XMPContext::init()) {
+        throw invalid_argument{"Failed to initialize XMP toolkit."};
+    }
+
+    mAttributes.name = "XMP";
+
+    try {
+        SXMPMeta meta;
+        meta.ParseFromBuffer(xmpData.data(), xmpData.size());
+
+        SXMPIterator iter{meta};
+        string schema, path, value;
+
+        while (iter.Next(&schema, &path, &value)) {
+            // tlog::debug("{} | {} | {}", schema, path, value);
+
+            if (value.empty()) {
+                continue;
+            }
+
+            AttributeNode* node = &mAttributes;
+            const auto parts = split(path, ":/", true);
+
+            for (const auto& part : parts) {
+                // Search from the back because XMP properties are often nested in order.
+                const auto it = ranges::find(node->children | views::reverse, part, &AttributeNode::name);
+
+                if (it == node->children.rend()) {
+                    node->children.emplace_back(AttributeNode{.name = string{part}, .value = "", .type = "", .children = {}});
+                    node = &node->children.back();
+                    continue;
+                }
+
+                node = &(*it);
+            }
+
+            if (!node->value.empty()) {
+                tlog::warning("XMP property '{}' already has a value '{}', overwriting with new value '{}'.", path, node->value, value);
+            }
+
+            node->value = value;
+            node->type = "string";
+        }
+
+        if (mAttributes.children.empty()) {
+            throw invalid_argument{"Not a valid XMP packet: no properties found."};
+        }
+
+        if (XMP_Int32 orientation; meta.GetProperty_Int(kXMP_NS_TIFF, "Orientation", &orientation, nullptr)) {
+            switch (orientation) {
+                case 0: mOrientation = EOrientation::None; break;
+                case 1: mOrientation = EOrientation::TopLeft; break;
+                case 2: mOrientation = EOrientation::TopRight; break;
+                case 3: mOrientation = EOrientation::BottomRight; break;
+                case 4: mOrientation = EOrientation::BottomLeft; break;
+                case 5: mOrientation = EOrientation::LeftTop; break;
+                case 6: mOrientation = EOrientation::RightTop; break;
+                case 7: mOrientation = EOrientation::RightBottom; break;
+                case 8: mOrientation = EOrientation::LeftBottom; break;
+                default:
+                    tlog::warning("Invalid XMP orientation value: {}", orientation);
+                    mOrientation = EOrientation::None;
+                    break;
+            }
+
+            tlog::debug("Found XMP orientation: {}", toString(mOrientation));
+        }
+
+        // Metadata indicating this image is an Apple-format gain map. More metadata, like gain, is in Apple's maker note in a separate EXIF
+        // IFD, but the XMP metadata on the child image indicates whether there's a gain map.
+        {
+            const auto hdrGainMapNs = "http://ns.apple.com/HDRGainMap/1.0/";
+            const auto pixelDataNs = "http://ns.apple.com/pixeldatainfo/1.0/";
+            if (string prefix, version;
+                meta.GetNamespacePrefix(hdrGainMapNs, &prefix) && meta.GetProperty(hdrGainMapNs, "HDRGainMapVersion", &version, nullptr)) {
+                tlog::debug("Found Apple HDR gain map metadata: prefix={} version={}", prefix, version);
+
+                if (string headroom; meta.GetProperty(hdrGainMapNs, "HDRGainMapHeadroom", &headroom, nullptr)) {
+                    tlog::debug("- HDRGainMapHeadroom: {}", headroom);
+                }
+            }
+
+            if (string prefix; meta.GetNamespacePrefix(pixelDataNs, &prefix) &&
+                meta.GetProperty(pixelDataNs, "AuxiliaryImageType", &mAppleAuxImgType, nullptr)) {
+                tlog::debug("Apple aux image: prefix={} type={}", prefix, mAppleAuxImgType);
+            }
+        }
+
+        // Adobe's XMP gain map metadata can be converted to ISO 21496-1 gain map metadata (both are compatible)
+        try {
+            const auto ns = "http://ns.adobe.com/hdr-gain-map/1.0/";
+            if (string prefix, version; meta.GetNamespacePrefix(ns, &prefix) && meta.GetProperty(ns, "Version", &version, nullptr)) {
+                tlog::debug("Found XMP gainmap metadata: prefix={} version={}", prefix, version);
+
+                if (const auto it = ranges::find_if(mAttributes.children, [&](const auto& c) { return c.name.starts_with(prefix); });
+                    it != mAttributes.children.end() && it->children.size() > 1) {
+                    tlog::debug("XMP gainmap metadata contains more entries than just Version. Attempting to convert to ISO 21496-1 format.");
+                    mIsoGainMapMetadata = IsoGainMapMetadata{ns, &meta};
+                }
+            }
+        } catch (invalid_argument& e) { tlog::warning("Failed to convert XMP gainmap metadata: {}", e.what()); }
+    } catch (XMP_Error& e) { throw invalid_argument{e.GetErrMsg()}; }
+}
+
+} // namespace tev

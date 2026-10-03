@@ -1,0 +1,64 @@
+{ Canon EF 8-15 mm at 8 mm: Paul Bourke empirical fisheye curve
+  to a 180-degree equidistant Radiance image.
+
+  This CAL file records the same mapping used natively by profile
+  R5m2ND3_3. It is kept for provenance and direct pcomb verification.
+
+  Intended output and input: 5274 x 5274 pixels.
+  Source and target radius: 2637 pixels.
+
+  Five input images are required for direct pcomb use. They contain the
+  same source HDR shifted vertically by +120, +60, 0, -60, and -120 px.
+  This keeps bilinear source taps inside pcomb's scanline access window.
+}
+
+PI : 3.14159265358979323846;
+source_radius : 2637;
+target_radius : 2637;
+center_x : xres/2;
+center_y : yres/2;
+
+P(t) : .7189*t + .00079342*t*t - .0289*t*t*t - .001*t*t*t*t;
+
+cc(z) : if(z-.5, if(xres-.5-z, z, xres-.5), .5);
+
+R(f) : w00*ri(f,ox,oy) + w10*ri(f,ox+1,oy)
+     + w01*ri(f,ox,oy+1) + w11*ri(f,ox+1,oy+1);
+G(f) : w00*gi(f,ox,oy) + w10*gi(f,ox+1,oy)
+     + w01*gi(f,ox,oy+1) + w11*gi(f,ox+1,oy+1);
+B(f) : w00*bi(f,ox,oy) + w10*bi(f,ox+1,oy)
+     + w01*bi(f,ox,oy+1) + w11*bi(f,ox+1,oy+1);
+
+dx = x + .5 - center_x;
+dy = y + .5 - center_y;
+r = sqrt(dx*dx + dy*dy);
+q = r/target_radius;
+phi = .5*PI*q;
+rho = P(phi);
+
+s = source_radius*rho/r;
+sx = cc(center_x + dx*s);
+sy = cc(center_y + dy*s);
+px = sx - .5;
+py = sy - .5;
+
+ix = floor(px);
+iy = floor(py);
+tx = px - ix;
+ty = py - iy;
+
+w00 = (1-tx)*(1-ty);
+w10 = tx*(1-ty);
+w01 = (1-tx)*ty;
+w11 = tx*ty;
+
+dd = iy-y;
+k = if(dd+90, if(dd+30, if(30-dd, 0, if(90-dd, 60, 120)), -60), -120);
+f = if(k+90, if(k+30, if(30-k, 3, if(90-k, 4, 5)), 2), 1);
+ox = ix-x;
+oy = iy-y-k;
+
+valid = if(target_radius-r, if(1-rho, 1, 0), 0);
+ro = if(valid, R(f), 0);
+go = if(valid, G(f), 0);
+bo = if(valid, B(f), 0);

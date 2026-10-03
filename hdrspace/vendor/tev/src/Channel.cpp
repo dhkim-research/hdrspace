@@ -1,0 +1,146 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <tev/Channel.h>
+#include <tev/ThreadPool.h>
+
+#include <memory>
+
+using namespace nanogui;
+using namespace std;
+
+namespace tev {
+
+pair<string_view, string_view> Channel::split(string_view channel) {
+    const size_t dotPosition = channel.rfind(".");
+    if (dotPosition != string::npos) {
+        return {channel.substr(0, dotPosition + 1), channel.substr(dotPosition + 1)};
+    }
+
+    return {"", channel};
+}
+
+string Channel::join(string_view layer, string_view channel) { return format("{}.{}", layer, channel); }
+
+string Channel::joinIfNonempty(string_view layer, string_view channel) {
+    if (layer.empty()) {
+        return string{channel};
+    } else if (channel.empty()) {
+        return string{layer};
+    } else {
+        return Channel::join(layer, channel);
+    }
+}
+
+string_view Channel::tail(string_view channel) { return split(channel).second; }
+
+string_view Channel::head(string_view channel) { return split(channel).first; }
+
+bool Channel::isTopmost(string_view channel) { return tail(channel) == channel; }
+
+bool Channel::isAlpha(string_view channel) { return toLower(tail(channel)) == "a"; }
+
+Color Channel::color(string_view channel, bool pastel) {
+    auto lowerChannel = toLower(tail(channel));
+
+    if (pastel) {
+        if (lowerChannel == "r") {
+            return Color(0.8f, 0.2f, 0.2f, 1.0f);
+        } else if (lowerChannel == "g") {
+            return Color(0.2f, 0.8f, 0.2f, 1.0f);
+        } else if (lowerChannel == "b") {
+            return Color(0.2f, 0.3f, 1.0f, 1.0f);
+        }
+    } else {
+        if (lowerChannel == "r") {
+            return Color(1.0f, 0.0f, 0.0f, 1.0f);
+        } else if (lowerChannel == "g") {
+            return Color(0.0f, 1.0f, 0.0f, 1.0f);
+        } else if (lowerChannel == "b") {
+            return Color(0.0f, 0.0f, 1.0f, 1.0f);
+        }
+    }
+
+    return Color(1.0f, 1.0f);
+}
+
+Channel::Channel(
+    string_view name, Vector2i size, EPixelFormat format, EPixelFormat desiredFormat, shared_ptr<PixelBuffer> data, size_t dataOffset, size_t dataStride
+) :
+    mName{name}, mSize{size}, mDesiredPixelFormat{desiredFormat} {
+    if (data) {
+        if (format != data->format()) {
+            throw runtime_error{"Provided data has wrong pixel format."};
+        }
+
+        mData = data;
+        mDataOffset = dataOffset;
+        mDataStride = dataStride;
+    } else {
+        mData = make_shared<PixelBuffer>(PixelBuffer::alloc(posProd(size), format));
+        mDataOffset = 0;
+        mDataStride = 1;
+    }
+}
+
+Task<void> Channel::divideByAsync(const Channel& other, int priority) {
+    if (pixelFormat() != EPixelFormat::F32 || other.pixelFormat() != EPixelFormat::F32) {
+        throw runtime_error{"divideByAsync only supports F32 channels."};
+    }
+
+    auto dst = view<float>();
+    const auto src = other.view<const float>();
+
+    co_await ThreadPool::global().parallelFor(
+        0uz,
+        other.numPixels(),
+        other.numPixels(),
+        [&](size_t i) {
+            const float divisor = src[i];
+            dst[i] = divisor != 0.0f ? dst[i] / divisor : 0.0f;
+        },
+        priority
+    );
+}
+
+Task<void> Channel::multiplyWithAsync(const Channel& other, int priority) {
+    if (pixelFormat() != EPixelFormat::F32 || other.pixelFormat() != EPixelFormat::F32) {
+        throw runtime_error{"multiplyWithAsync only supports F32 channels."};
+    }
+
+    auto dst = view<float>();
+    const auto src = other.view<const float>();
+
+    co_await ThreadPool::global().parallelFor(0uz, other.numPixels(), other.numPixels(), [&](size_t i) { dst[i] *= src[i]; }, priority);
+}
+
+void Channel::updateTile(const Box2i bounds, const span<const float> newData) {
+    if (!Box2i{size()}.contains(bounds)) {
+        tlog::warning("Tile [{}, {}] does not fit into channel of size {}", bounds.min, bounds.max, size());
+        return;
+    }
+
+    const auto width = (size_t)(bounds.max.x() - bounds.min.x());
+    for (int y = bounds.min.y(); y < bounds.max.y(); ++y) {
+        for (int x = bounds.min.x(); x < bounds.max.x(); ++x) {
+            dynamicSetAt({x, y}, newData[(x - bounds.min.x()) + (y - bounds.min.y()) * width]);
+        }
+    }
+}
+
+} // namespace tev

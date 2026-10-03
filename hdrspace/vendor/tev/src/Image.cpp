@@ -1,0 +1,1985 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <tev/Channel.h>
+#include <tev/Common.h>
+#include <tev/Image.h>
+#include <tev/ThreadPool.h>
+#include <tev/imageio/Colors.h>
+#include <tev/imageio/ImageLoader.h>
+#include <tev/imageio/ImageSaver.h>
+#include <tev/imageio/StbiImageLoader.h>
+
+#include <half.h>
+
+#include <GLFW/glfw3.h>
+
+#include "../dependencies/nanogui/ext/nanovg/src/stb_image.h"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <fstream>
+#include <istream>
+#include <map>
+#include <numeric>
+#include <ranges>
+#include <unordered_set>
+#include <vector>
+
+using namespace nanogui;
+using namespace std;
+
+namespace tev {
+
+namespace {
+
+struct ParsedRadianceHeader {
+    std::unordered_map<std::string, std::string> items;
+    std::vector<AttributeNode> attributes;
+};
+
+std::vector<float> parseFloatList(std::string_view value) {
+    std::vector<float> result;
+    for (const auto token : splitWhitespace(trim(value))) {
+        float parsed = 0.0f;
+        if (fromChars(token, parsed)) {
+            result.push_back(parsed);
+        }
+    }
+    return result;
+}
+
+std::string trimLeadingComment(std::string_view line) {
+    line = trim(line);
+    while (!line.empty() && line.front() == '#') {
+        line.remove_prefix(1);
+        line = trim(line);
+    }
+    return std::string{line};
+}
+
+ParsedRadianceHeader parseRadianceHeader(const fs::path& path) {
+    ParsedRadianceHeader parsed;
+
+    struct InheritedValue {
+        size_t indentation = numeric_limits<size_t>::max();
+        std::string value;
+    };
+    std::unordered_map<std::string, InheritedValue> inheritedCameraCalibration;
+
+    const auto isCameraCalibrationKey = [](std::string_view key) {
+        return key == "XYZCAM" || key == "CAM_PREMULTIPLIERS" || key == "Camera2RGB";
+    };
+
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        return parsed;
+    }
+
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+
+        if (line.empty()) {
+            break;
+        }
+
+        if (line.starts_with("#?")) {
+            continue;
+        }
+
+        // Radiance programs indent copied input headers as command history.
+        // Left-justified assignments describe the current file. Camera
+        // calibration, however, commonly exists only in the nearest copied
+        // source header, so remember the shallowest inherited value as a
+        // fallback without importing unrelated historical metadata.
+        size_t indentation = 0;
+        while (indentation < line.size() && std::isspace(static_cast<unsigned char>(line[indentation]))) {
+            ++indentation;
+        }
+        const bool inherited = indentation > 0;
+
+        std::string cleaned = trimLeadingComment(line);
+        if (cleaned.empty()) {
+            continue;
+        }
+
+        const size_t eq = cleaned.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+
+        std::string key = std::string{trim(std::string_view{cleaned}.substr(0, eq))};
+        std::string value = std::string{trim(std::string_view{cleaned}.substr(eq + 1))};
+        if (key.empty()) {
+            continue;
+        }
+
+        if (inherited) {
+            if (isCameraCalibrationKey(key)) {
+                const auto existing = inheritedCameraCalibration.find(key);
+                if (existing == inheritedCameraCalibration.end() || indentation < existing->second.indentation) {
+                    inheritedCameraCalibration[key] = InheritedValue{indentation, value};
+                }
+            }
+            continue;
+        }
+
+        parsed.items[key] = value;
+        parsed.attributes.push_back(AttributeNode{.name = key, .value = value, .type = "", .children = {}});
+    }
+
+    AttributeNode inheritedRoot;
+    inheritedRoot.name = "Inherited camera calibration";
+    for (const std::string_view key : {"XYZCAM", "CAM_PREMULTIPLIERS", "Camera2RGB"}) {
+        if (parsed.items.contains(std::string{key})) {
+            continue;
+        }
+        const auto inherited = inheritedCameraCalibration.find(std::string{key});
+        if (inherited == inheritedCameraCalibration.end()) {
+            continue;
+        }
+
+        parsed.items.emplace(std::string{key}, inherited->second.value);
+        inheritedRoot.children.push_back(AttributeNode{
+            .name = std::string{key},
+            .value = inherited->second.value,
+            .type = "inherited from nearest source header",
+            .children = {},
+        });
+    }
+    if (!inheritedRoot.children.empty()) {
+        parsed.attributes.emplace_back(std::move(inheritedRoot));
+    }
+
+    return parsed;
+}
+
+[[maybe_unused]] std::optional<chroma_t> parseTargetChroma(const ParsedRadianceHeader& header) {
+    const auto primariesIt = header.items.find("TargetPrimaries");
+    const auto whiteIt = header.items.find("TargetWhitePoint");
+    if (primariesIt != header.items.end() && whiteIt != header.items.end()) {
+        const auto primaries = parseFloatList(primariesIt->second);
+        const auto white = parseFloatList(whiteIt->second);
+        if (primaries.size() == 6 && white.size() == 2) {
+            chroma_t result;
+            result[0] = Vector2f{primaries[0], primaries[1]};
+            result[1] = Vector2f{primaries[2], primaries[3]};
+            result[2] = Vector2f{primaries[4], primaries[5]};
+            result[3] = Vector2f{white[0], white[1]};
+            return result;
+        }
+    }
+
+    const auto radiancePrimariesIt = header.items.find("PRIMARIES");
+    if (radiancePrimariesIt == header.items.end()) {
+        return std::nullopt;
+    }
+
+    const auto values = parseFloatList(radiancePrimariesIt->second);
+    if (values.size() != 8) {
+        return std::nullopt;
+    }
+
+    chroma_t result;
+    result[0] = Vector2f{values[0], values[1]};
+    result[1] = Vector2f{values[2], values[3]};
+    result[2] = Vector2f{values[4], values[5]};
+    result[3] = Vector2f{values[6], values[7]};
+    return result;
+}
+
+[[maybe_unused]] std::optional<Matrix3f> parseNativeToRec709(const ParsedRadianceHeader& header) {
+    const auto xyzcamIt = header.items.find("XYZCAM");
+    if (xyzcamIt == header.items.end()) {
+        return std::nullopt;
+    }
+
+    const auto xyzcamValues = parseFloatList(xyzcamIt->second);
+    if (xyzcamValues.size() != 9) {
+        return std::nullopt;
+    }
+
+    Matrix3f xyzCam = Matrix3f{1.0f};
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            xyzCam.m[col][row] = xyzcamValues[(size_t)(row * 3 + col)];
+        }
+    }
+
+    if (const auto premultIt = header.items.find("CAM_PREMULTIPLIERS"); premultIt != header.items.end()) {
+        const auto premults = parseFloatList(premultIt->second);
+        if (premults.size() >= 3) {
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    xyzCam.m[col][row] *= premults[(size_t)row];
+                }
+            }
+        }
+    }
+
+    const Matrix3f sensorToXyz = inverse(xyzCam);
+    return xyzToChromaMatrix(rec709Chroma()) * sensorToXyz;
+}
+
+Task<vector<ImageData>> loadRadianceHdrWithStbiPath(const fs::path& path, int priority) {
+    int width = 0;
+    int height = 0;
+    int numChannels = 0;
+
+    if (!stbi_is_hdr(path.c_str())) {
+        throw ImageLoadError{"File is not recognized as Radiance HDR."};
+    }
+
+    using DataPtr = unique_ptr<void, decltype(&stbi_image_free)>;
+    DataPtr data{stbi_loadf(path.c_str(), &width, &height, &numChannels, 0), stbi_image_free};
+    if (!data) {
+        throw ImageLoadError{stbi_failure_reason()};
+    }
+
+    if (width <= 0 || height <= 0) {
+        throw ImageLoadError{"Image has zero pixels."};
+    }
+
+    const bool hasAlpha = numChannels == 4;
+    const auto size = Vector2i{width, height};
+
+    const ParsedRadianceHeader parsedHeader = parseRadianceHeader(path);
+
+    vector<ImageData> result(1);
+    ImageData& resultData = result.front();
+    resultData.channels = co_await ImageLoader::makeRgbaInterleavedChannels(
+        numChannels,
+        nextSupportedTextureChannelCount((size_t)numChannels),
+        hasAlpha,
+        size,
+        EPixelFormat::F32,
+        EPixelFormat::F32,
+        resultData.partName,
+        priority
+    );
+    resultData.hasPremultipliedAlpha = !hasAlpha;
+    resultData.nativeMetadata.transfer = ituth273::ETransfer::Linear;
+    resultData.renderingIntent = ERenderingIntent::AbsoluteColorimetric;
+
+    if (!parsedHeader.attributes.empty()) {
+        AttributeNode root;
+        root.name = "Radiance header";
+        root.children = parsedHeader.attributes;
+        resultData.attributes.emplace_back(std::move(root));
+    }
+
+    if (const auto sourceChroma = parseTargetChroma(parsedHeader)) {
+        resultData.nativeMetadata.chroma = *sourceChroma;
+    } else {
+        resultData.nativeMetadata.chroma = std::nullopt;
+    }
+
+    const auto outView = MultiChannelView<float>{resultData.channels};
+    const size_t numSamples = (size_t)width * height * numChannels;
+    const auto s = span{static_cast<const float*>(data.get()), numSamples};
+    co_await toFloat32(s, numChannels, outView, hasAlpha, priority);
+    resultData.sourceChannels = resultData.channels;
+
+    co_return result;
+}
+
+} // namespace
+
+AttributeNode HdrMetadata::toAttributes() const {
+    static constexpr auto floatToStringZeroMeansNA = [](float v) {
+        if (v <= 0.0f) {
+            return string{"n/a"};
+        } else {
+            return to_string(v);
+        }
+    };
+
+    AttributeNode root;
+    root.name = "HDR metadata";
+
+    AttributeNode& content = root.children.emplace_back();
+    content.name = "Content light level";
+    content.children.emplace_back(
+        AttributeNode{.name = "Best guess white level", .value = floatToStringZeroMeansNA(bestGuessWhiteLevel), .type = "cd/m²", .children = {}}
+    );
+    content.children.emplace_back(
+        AttributeNode{.name = "Max content light level", .value = floatToStringZeroMeansNA(maxCLL), .type = "cd/m²", .children = {}}
+    );
+    content.children.emplace_back(
+        AttributeNode{.name = "Max frame average light level", .value = floatToStringZeroMeansNA(maxFALL), .type = "cd/m²", .children = {}}
+    );
+
+    AttributeNode& masteringDisplay = root.children.emplace_back();
+    masteringDisplay.name = "Mastering display color volume";
+    masteringDisplay.children.emplace_back(
+        AttributeNode{.name = "Min luminance", .value = floatToStringZeroMeansNA(masteringMinLum), .type = "cd/m²", .children = {}}
+    );
+    masteringDisplay.children.emplace_back(
+        AttributeNode{.name = "Max luminance", .value = floatToStringZeroMeansNA(masteringMaxLum), .type = "cd/m²", .children = {}}
+    );
+
+    masteringDisplay.children.emplace_back(
+        AttributeNode{
+            .name = "Red primary",
+            .value = "(" + floatToStringZeroMeansNA(masteringChroma[0].x()) + ", " + floatToStringZeroMeansNA(masteringChroma[0].y()) + ")",
+            .type = "xy",
+            .children = {}
+        }
+    );
+    masteringDisplay.children.emplace_back(
+        AttributeNode{
+            .name = "Green primary",
+            .value = "(" + floatToStringZeroMeansNA(masteringChroma[1].x()) + ", " + floatToStringZeroMeansNA(masteringChroma[1].y()) + ")",
+            .type = "xy",
+            .children = {}
+        }
+    );
+    masteringDisplay.children.emplace_back(
+        AttributeNode{
+            .name = "Blue primary",
+            .value = "(" + floatToStringZeroMeansNA(masteringChroma[2].x()) + ", " + floatToStringZeroMeansNA(masteringChroma[2].y()) + ")",
+            .type = "xy",
+            .children = {}
+        }
+    );
+    masteringDisplay.children.emplace_back(
+        AttributeNode{
+            .name = "White point",
+            .value = "(" + floatToStringZeroMeansNA(masteringChroma[3].x()) + ", " + floatToStringZeroMeansNA(masteringChroma[3].y()) + ")",
+            .type = "xy",
+            .children = {}
+        }
+    );
+
+    return root;
+}
+
+void ImageData::readMetadataFromIcc(const ColorProfile& profile) {
+    renderingIntent = profile.renderingIntent();
+    nativeMetadata.chroma = profile.chroma();
+
+    if (const auto cicp = profile.cicp()) {
+        // Might override data previously set, but that's fine. CICP is authorative.
+        readMetadataFromCicp(*cicp);
+    }
+}
+
+void ImageData::readMetadataFromCicp(const ColorProfile::CICP& cicp) {
+    if (cicp.primaries != ituth273::EColorPrimaries::Unspecified) {
+        nativeMetadata.chroma = ituth273::chroma(cicp.primaries);
+    }
+
+    nativeMetadata.transfer = cicp.transfer;
+
+    hdrMetadata.bestGuessWhiteLevel = ituth273::bestGuessReferenceWhiteLevel(cicp.transfer);
+}
+
+vector<string> ImageData::channelsInLayer(string_view layerName) const {
+    vector<string> result;
+
+    for (const auto& c : channels) {
+        // If the layer name starts at the beginning, and if no other dot is found after the end of the layer name, then we have found a
+        // channel of this layer.
+        if (c.name().starts_with(layerName)) {
+            const auto& channelWithoutLayer = c.name().substr(layerName.length());
+            if (channelWithoutLayer.find(".") == string::npos) {
+                result.emplace_back(c.name());
+            }
+        }
+    }
+
+    return result;
+}
+
+Task<void> ImageData::applyColorConversion(const Matrix3f& mat, int priority) {
+    updateLayers();
+
+    if (almostEquals(mat, Matrix3f{1.0f})) {
+        co_return;
+    }
+
+    vector<Task<void>> tasks;
+
+    for (const auto& layer : layers) {
+        Channel* r = nullptr;
+        Channel* g = nullptr;
+        Channel* b = nullptr;
+
+        if (!(((r = mutableChannel(layer + "R")) && (g = mutableChannel(layer + "G")) && (b = mutableChannel(layer + "B"))) ||
+              ((r = mutableChannel(layer + "r")) && (g = mutableChannel(layer + "g")) && (b = mutableChannel(layer + "b"))))) {
+            // No RGB-triplet found
+            continue;
+        }
+
+        TEV_ASSERT(r && g && b, "RGB triplet of channels must exist.");
+
+        auto rv = r->view<float>(), gv = g->view<float>(), bv = b->view<float>();
+        tasks.emplace_back(
+            ThreadPool::global().parallelFor(
+                0uz,
+                r->numPixels(),
+                r->numPixels() * 3,
+                [rv, gv, bv, mat](size_t i) mutable {
+                    const auto rgb = mat * Vector3f{rv[i], gv[i], bv[i]};
+                    rv[i] = rgb.x();
+                    gv[i] = rgb.y();
+                    bv[i] = rgb.z();
+                },
+                priority
+            )
+        );
+    }
+
+    co_await awaitAll(tasks);
+
+    toRec709 = toRec709 * inverse(mat);
+}
+
+Task<void> ImageData::matchColorsAndSizeOf(const ImageData& other, int priority) {
+    if (channels.empty()) {
+        co_return;
+    }
+
+    updateLayers();
+
+    if (other.hasPremultipliedAlpha && !hasPremultipliedAlpha) {
+        co_await multiplyAlpha(priority);
+    } else if (!other.hasPremultipliedAlpha && hasPremultipliedAlpha) {
+        co_await unmultiplyAlpha(priority);
+    }
+
+    co_await applyColorConversion(inverse(other.toRec709) * toRec709, priority);
+    if (!other.channels.empty()) {
+        optional<Box2i> targetBox = other.displayWindow.isValid() && other.dataWindow.isValid() ?
+            optional{other.displayWindow.translate(-other.dataWindow.min)} :
+            nullopt;
+        co_await ImageLoader::resizeImageData(*this, other.channels.front().size(), targetBox, priority);
+    }
+}
+
+Task<void> ImageData::deriveWhiteLevelFromMetadata(int priority) {
+    if (toRec709 != Matrix3f{1.0f}) {
+        throw ImageModifyError{"Cannot derive white level from metadata before converting to Rec709 color space."};
+    }
+
+    if (hdrMetadata.maxCLL <= 0.0f && hdrMetadata.maxFALL <= 0.0f) {
+        co_return;
+    }
+
+    updateLayers();
+
+    vector<Task<void>> tasks;
+
+    vector<vector<float>> lumPerLayer(layers.size());
+
+    // This function follows the guidance from https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9508136 in that maxCLL corresponds to
+    // the 99.99th percentile luminance over the image. An additional complication is that "luminance" may be defined as the maximum RGB
+    // value (with BT.2020 primaries) in order to prevent clipping during tone mapping based on maxCLL. However, this interpretation is not
+    // condusive to deriving a white level for display (which should be actual cd/m² luminance). The following code therefore computes
+    // actual luminance, but leaves a commented-out option to compute maximum RGB BT.2020 instead.
+
+    // const auto toRec2020 = convertColorspaceMatrix(
+    //     rec709Chroma(), bt2020Chroma(), ERenderingIntent::AbsoluteColorimetric /* intent doesn't matter because white point is the same */
+    // );
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        const auto& layer = layers[i];
+
+        Channel* r = nullptr;
+        Channel* g = nullptr;
+        Channel* b = nullptr;
+
+        if (!(((r = mutableChannel(layer + "R")) && (g = mutableChannel(layer + "G")) && (b = mutableChannel(layer + "B"))) ||
+              ((r = mutableChannel(layer + "r")) && (g = mutableChannel(layer + "g")) && (b = mutableChannel(layer + "b"))))) {
+            // No RGB-triplet found
+            continue;
+        }
+
+        TEV_ASSERT(r && g && b, "RGB triplet of channels must exist.");
+
+        const auto rv = r->view<const float>(), gv = g->view<const float>(), bv = b->view<const float>();
+
+        lumPerLayer[i].resize(r->numPixels());
+        tasks.emplace_back(
+            ThreadPool::global().parallelFor(
+                0uz,
+                lumPerLayer[i].size(),
+                lumPerLayer[i].size(),
+                [rv, gv, bv, &lumBuf = lumPerLayer[i] /*, &toRec2020*/](size_t px) {
+                    // Optional: max RGB in BT.2020 primaries (see comment above)
+                    // const auto rgb = toRec2020 * Vector3f{r->at(px), g->at(px), b->at(px)};
+                    // const float lum = max({rgb.x(), rgb.y(), rgb.z()});
+
+                    const float lum = 0.2126 * rv[px] + 0.7152 * gv[px] + 0.0722 * bv[px];
+                    lumBuf[px] = isfinite(lum) ? lum : 0.0f;
+                },
+                priority
+            )
+        );
+    }
+
+    co_await awaitAll(tasks);
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        // 99.99th percentile luminance per https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9508136
+        const size_t n = (size_t)(lumPerLayer[i].size() * 0.9999);
+        nth_element(begin(lumPerLayer[i]), begin(lumPerLayer[i]) + n, end(lumPerLayer[i]));
+
+        const float maxLum = lumPerLayer[i][n];
+        const float avgLum = accumulate(begin(lumPerLayer[i]), end(lumPerLayer[i]), 0.0f) / lumPerLayer[i].size();
+
+        const float whiteLevelFromMaxCLL = hdrMetadata.maxCLL / maxLum;
+        const float whiteLevelFromMaxFALL = hdrMetadata.maxFALL / avgLum;
+
+        if (whiteLevelFromMaxCLL > 0.0f) {
+            hdrMetadata.bestGuessWhiteLevel = whiteLevelFromMaxCLL;
+        }
+
+        if (whiteLevelFromMaxFALL > 0.0f) {
+            hdrMetadata.bestGuessWhiteLevel = whiteLevelFromMaxFALL;
+        }
+
+        if (whiteLevelFromMaxFALL > 0 && whiteLevelFromMaxCLL > 0 &&
+            abs(whiteLevelFromMaxCLL - whiteLevelFromMaxFALL) / (whiteLevelFromMaxCLL + whiteLevelFromMaxFALL) > 0.01f) {
+            tlog::warning(
+                "Derived white levels from maxCLL ({}->{}) and maxFALL ({}->{}) of layer '{}' differ by over 1%.",
+                hdrMetadata.maxCLL,
+                whiteLevelFromMaxCLL,
+                hdrMetadata.maxFALL,
+                whiteLevelFromMaxFALL,
+                layers[i]
+            );
+        }
+
+        tlog::debug("Derived white level of {} from metadata & layer '{}'.", hdrMetadata.bestGuessWhiteLevel, layers[i]);
+    }
+}
+
+Task<void> ImageData::convertToDesiredPixelFormat(int priority) {
+    // All channels sharing the same data buffer must be converted together to avoid multiple conversions of the same data.
+    using map_t = multimap<shared_ptr<PixelBuffer>, Channel*>;
+    map_t channelsByData;
+    for (auto& c : channels) {
+        channelsByData.emplace(c.dataBuf(), &c);
+    }
+
+    vector<pair<map_t::iterator, map_t::iterator>> ranges;
+    for (auto it = channelsByData.begin(); it != channelsByData.end();) {
+        ranges.emplace_back(it, channelsByData.upper_bound(it->first));
+        it = ranges.back().second;
+    }
+
+    co_await ThreadPool::global().parallelFor(
+        0uz,
+        ranges.size(),
+        numeric_limits<uint32_t>::max(), // Ensure each range gets its own task
+        [&](size_t rangeIdx) -> Task<void> {
+            const auto rangeBegin = ranges.at(rangeIdx).first;
+            const auto rangeEnd = ranges.at(rangeIdx).second;
+
+            vector<Channel*> channelsToConvert;
+            const Channel* firstChannel = rangeBegin->second;
+            const EPixelFormat targetFormat = firstChannel->desiredPixelFormat();
+            const EPixelFormat sourceFormat = firstChannel->pixelFormat();
+
+            bool canConvert = true;
+            for (auto it2 = rangeBegin; it2 != rangeEnd; ++it2) {
+                const Channel* c = it2->second;
+                if (c->pixelFormat() != sourceFormat || c->desiredPixelFormat() != targetFormat) {
+                    canConvert = false;
+
+                    tlog::warning(
+                        "Channels sharing the same data buffer must have the same source and target pixel format. ({}: {} -> {}, {}: {} -> {})",
+                        firstChannel->name(),
+                        toString(sourceFormat),
+                        toString(targetFormat),
+                        c->name(),
+                        toString(c->pixelFormat()),
+                        toString(c->desiredPixelFormat())
+                    );
+                }
+            }
+
+            if (!canConvert || sourceFormat == targetFormat) {
+                co_return;
+            }
+
+            const auto data = rangeBegin->first;
+
+            const size_t nSamples = data->size();
+            auto convData = PixelBuffer::alloc(nSamples, targetFormat);
+
+            const auto typedConvert = [nSamples, priority](const auto* typedSrc, auto* typedDst) -> Task<void> {
+                co_await ThreadPool::global().parallelFor(
+                    0uz,
+                    nSamples,
+                    nSamples,
+                    [typedSrc, typedDst](size_t sampleIdx) {
+                        using src_t = remove_pointer_t<decltype(typedSrc)>;
+                        using dst_t = remove_pointer_t<decltype(typedDst)>;
+
+                        float tmp = typedSrc[sampleIdx];
+                        if constexpr (is_integral_v<src_t>) {
+                            tmp /= (float)numeric_limits<src_t>::max();
+                        }
+
+                        if constexpr (is_integral_v<dst_t>) {
+                            if constexpr (is_signed_v<dst_t>) {
+                                tmp = clamp(tmp, -1.0f, 1.0f) * (float)numeric_limits<dst_t>::max() + copysignf(0.5f, tmp);
+                            } else {
+                                tmp = clamp(tmp, 0.0f, 1.0f) * (float)numeric_limits<dst_t>::max() + 0.5f;
+                            }
+                        }
+
+                        typedDst[sampleIdx] = tmp;
+                    },
+                    priority
+                );
+            };
+
+            const auto typedSrcConvert = [targetFormat, &convData, &typedConvert](const auto* typedSrc) -> Task<void> {
+                switch (targetFormat) {
+                    case EPixelFormat::U8: co_await typedConvert(typedSrc, convData.data<uint8_t>()); break;
+                    case EPixelFormat::U16: co_await typedConvert(typedSrc, convData.data<uint16_t>()); break;
+                    case EPixelFormat::U32: co_await typedConvert(typedSrc, convData.data<uint32_t>()); break;
+                    case EPixelFormat::I8: co_await typedConvert(typedSrc, convData.data<int8_t>()); break;
+                    case EPixelFormat::I16: co_await typedConvert(typedSrc, convData.data<int16_t>()); break;
+                    case EPixelFormat::I32: co_await typedConvert(typedSrc, convData.data<int32_t>()); break;
+                    case EPixelFormat::F16: co_await typedConvert(typedSrc, convData.data<half>()); break;
+                    case EPixelFormat::F32: co_await typedConvert(typedSrc, convData.data<float>()); break;
+                }
+            };
+
+            switch (sourceFormat) {
+                case EPixelFormat::U8: co_await typedSrcConvert(data->data<const uint8_t>()); break;
+                case EPixelFormat::U16: co_await typedSrcConvert(data->data<const uint16_t>()); break;
+                case EPixelFormat::U32: co_await typedSrcConvert(data->data<const uint32_t>()); break;
+                case EPixelFormat::I8: co_await typedSrcConvert(data->data<const int8_t>()); break;
+                case EPixelFormat::I16: co_await typedSrcConvert(data->data<const int16_t>()); break;
+                case EPixelFormat::I32: co_await typedSrcConvert(data->data<const int32_t>()); break;
+                case EPixelFormat::F16: co_await typedSrcConvert(data->data<const half>()); break;
+                case EPixelFormat::F32: co_await typedSrcConvert(data->data<const float>()); break;
+            }
+
+            *data = std::move(convData);
+        },
+        priority
+    );
+}
+
+void ImageData::alphaOperation(const function<void(Channel&, const Channel&)>& func) {
+    updateLayers();
+
+    for (const auto& layer : layers) {
+        string alphaChannelName = layer + "A";
+
+        if (!hasChannel(alphaChannelName)) {
+            continue;
+        }
+
+        const Channel* alphaChannel = channel(alphaChannelName);
+        for (auto& channelName : channelsInLayer(layer)) {
+            if (channelName != alphaChannelName) {
+                func(*mutableChannel(channelName), *alphaChannel);
+            }
+        }
+    }
+}
+
+Task<void> ImageData::multiplyAlpha(int priority) {
+    if (hasPremultipliedAlpha) {
+        throw ImageModifyError{"Can't multiply with alpha twice."};
+    }
+
+    vector<Task<void>> tasks;
+    alphaOperation([&](Channel& target, const Channel& alpha) { tasks.emplace_back(target.multiplyWithAsync(alpha, priority)); });
+    co_await awaitAll(tasks);
+
+    hasPremultipliedAlpha = true;
+}
+
+Task<void> ImageData::unmultiplyAlpha(int priority) {
+    if (!hasPremultipliedAlpha) {
+        throw ImageModifyError{"Can't divide by alpha twice."};
+    }
+
+    vector<Task<void>> tasks;
+    alphaOperation([&](Channel& target, const Channel& alpha) { tasks.emplace_back(target.divideByAsync(alpha, priority)); });
+    co_await awaitAll(tasks);
+
+    hasPremultipliedAlpha = false;
+}
+
+Task<void> ImageData::orientToTopLeft(int priority) {
+    if (orientation == EOrientation::TopLeft) {
+        co_return;
+    }
+
+    const bool swapAxes = orientation >= EOrientation::LeftTop;
+
+    struct DataDesc {
+        shared_ptr<PixelBuffer> data;
+        Vector2i size;
+
+        struct Hash {
+            size_t operator()(const DataDesc& interval) const { return hash<shared_ptr<PixelBuffer>>()(interval.data); }
+        };
+
+        bool operator==(const DataDesc& other) const { return data == other.data && size == other.size; }
+    };
+
+    unordered_set<DataDesc, DataDesc::Hash> channelData;
+    for (auto& c : channels) {
+        // TODO: ensure channel data is interleaved if multiple channels share the same data buffer
+
+        channelData.insert({c.dataBuf(), c.size()});
+        if (swapAxes) {
+            c.setSize({c.size().y(), c.size().x()});
+        }
+    }
+
+    vector<Task<nanogui::Vector2i>> tasks;
+    for (auto& c : channelData) {
+        tasks.emplace_back(tev::orientToTopLeft(*c.data, c.size, orientation, priority));
+    }
+
+    co_await awaitAll(span{tasks});
+
+    const auto referenceWindow = displayWindow.isValid() ? displayWindow : (dataWindow.isValid() ? dataWindow : Box2i{size()});
+    if (dataWindow.isValid()) {
+        dataWindow = applyOrientation(orientation, dataWindow, referenceWindow);
+    }
+
+    if (displayWindow.isValid()) {
+        displayWindow = applyOrientation(orientation, displayWindow, referenceWindow);
+    }
+
+    orientation = EOrientation::TopLeft;
+}
+
+void ImageData::updateLayers() {
+    layers.clear();
+
+    set<string> layerNames;
+    for (auto& c : channels) {
+        layerNames.emplace(Channel::head(c.name()));
+    }
+
+    for (string_view l : layerNames) {
+        layers.emplace_back(l);
+    }
+}
+
+Task<void> ImageData::ensureValid(string_view channelSelector, int taskPriority) {
+    tlog::debug("Ensuring image is valid...");
+
+    if (channels.empty()) {
+        throw ImageLoadError{"Image must have at least one channel."};
+    }
+
+    // No data window? Default to the channel size
+    if (!dataWindow.isValid()) {
+        dataWindow = channels.front().size();
+    }
+
+    if (!displayWindow.isValid()) {
+        displayWindow = channels.front().size();
+    }
+
+    unordered_map<string_view, size_t> channelNameCounter;
+    for (auto& c : channels) {
+        if (c.size() != size()) {
+            throw ImageLoadError{format("All channels must have the same size as the data window. ({}: {} != {})", c.name(), c.size(), size())};
+        }
+
+        // Ensure the top-level layer of each channel is the image's part name
+        if (!c.name().starts_with(partName)) {
+            c.setName(Channel::joinIfNonempty(partName, c.name()));
+        }
+
+        // Deduplicate channel names by appending a numeric suffix to their head (before the last dot).
+        // E.g.: foo.bar.R -> foo.bar.1.R, R -> 1.R
+        const size_t count = channelNameCounter[c.name()]++;
+        if (count > 0) {
+            c.setName(Channel::join(format("{}{}", Channel::head(c.name()), to_string(count)), Channel::tail(c.name())));
+            tlog::debug("Renamed duplicate channel to '{}'", c.name());
+        }
+    }
+
+    if (!channelSelector.empty()) {
+        vector<pair<size_t, size_t>> matches;
+        for (size_t i = 0; i < channels.size(); ++i) {
+            size_t matchId;
+            if (matchesFuzzy(channels[i].name(), channelSelector, &matchId)) {
+                matches.emplace_back(matchId, i);
+            }
+        }
+
+        sort(begin(matches), end(matches));
+
+        // Prune and sort channels by the channel selector
+        vector<Channel> tmp = std::move(channels);
+        channels.clear();
+
+        for (const auto& match : matches) {
+            channels.emplace_back(std::move(tmp[match.second]));
+        }
+    }
+
+    updateLayers();
+
+    if (!hasPremultipliedAlpha) {
+        tlog::debug("- Multiplying alpha");
+        co_await multiplyAlpha(taskPriority);
+    }
+
+    TEV_ASSERT(hasPremultipliedAlpha, "tev assumes an internal pre-multiplied-alpha representation.");
+
+    if (toRec709 != Matrix3f{1.0f}) {
+        tlog::debug("- Converting to Rec.709 D65");
+
+        co_await applyColorConversion(toRec709, taskPriority);
+
+        // Since the image data is now in Rec709 space, converting to Rec709 is the identity transform.
+        toRec709 = Matrix3f{1.0f};
+    }
+
+    TEV_ASSERT(toRec709 == Matrix3f{1.0f}, "tev assumes an images to be internally represented in sRGB/Rec709 space.");
+
+    // NOTE: Lossy compression seems to ruin reliable derivations of the white level from maxCLL values. maxFALL values should work in
+    // principle, but the only dataset I have with those is https://people.csail.mit.edu/ericchan/hdr/ where the maxFALL values seem to be
+    // incorrect. (Do not match what the PQ transfer prescribes by inconsistent amounts. I might be doing something wrong.)
+
+    // co_await deriveWhiteLevelFromMetadata(taskPriority);
+
+    tlog::debug("- Converting to desired pixel format");
+    co_await convertToDesiredPixelFormat(taskPriority);
+
+    if (orientation != EOrientation::TopLeft) {
+        tlog::debug("- Orienting to top-left");
+        co_await orientToTopLeft(taskPriority);
+    }
+
+    TEV_ASSERT(orientation == EOrientation::TopLeft, "tev assumes an internal top-left orientation.");
+
+    attributes.emplace_back(hdrMetadata.toAttributes());
+
+    // Attribute tabs should have a consistent order. Arbitrarily sort them by name.
+    sort(begin(attributes), end(attributes), [](const AttributeNode& a, const AttributeNode& b) { return a.name < b.name; });
+}
+
+atomic<int> Image::sId(0);
+
+Image::Image(const fs::path& path, fs::file_time_type fileLastModified, ImageData&& data, string_view channelSelector, bool groupChannels) :
+    mPath{path}, mFileLastModified{fileLastModified}, mChannelSelector{channelSelector}, mData{std::move(data)}, mId{Image::drawId()} {
+    mName = channelSelector.empty() ? tev::toDisplayString(path) : format("{}:{}", tev::toDisplayString(path), channelSelector);
+
+    if (groupChannels) {
+        for (const auto& l : mData.layers) {
+            const auto groups = getGroupedChannels(l);
+            mChannelGroups.insert(end(mChannelGroups), begin(groups), end(groups));
+        }
+    } else {
+        // If we don't group channels, then each channel is its own group.
+        for (const auto& c : mData.channels) {
+            mChannelGroups.emplace_back(
+                ChannelGroup{
+                    string{c.name()},
+                    vector<string>{string{c.name()}, string{c.name()}, string{c.name()}}
+            }
+            );
+        }
+    }
+
+    // Ensure that alpha channels are last in their group
+    for (const auto& group : mChannelGroups) {
+        for (const auto& channel : group.channels) {
+            TEV_ASSERT(Channel::tail(channel) != "A" || &channel == &group.channels.back(), "Alpha channel must be last in channel group.");
+        }
+    }
+}
+
+Image::~Image() {
+    // Move the texture pointers to the main thread such that their reference count hits zero there. This is required, because OpenGL calls
+    // must always happen on the main thread.
+    scheduleToMainThread([textures = std::move(mTextures), sourceTextures = std::move(mSourceTextures)] {});
+
+    if (mStaleIdCallback) {
+        mStaleIdCallback(mId);
+    }
+}
+
+const Channel* Image::sourceChannel(string_view channelName) const & {
+    const auto it = std::ranges::find(mData.sourceChannels, channelName, [](const auto& c) { return c.name(); });
+    if (it != std::end(mData.sourceChannels)) {
+        return &(*it);
+    }
+
+    return nullptr;
+}
+
+string Image::shortName() const {
+    string result = mName;
+
+    size_t slashPosition = result.find_last_of("/\\");
+    if (slashPosition != string::npos) {
+        result = result.substr(slashPosition + 1);
+    }
+
+    size_t colonPosition = result.find_last_of(":");
+    if (colonPosition != string::npos) {
+        result = result.substr(0, colonPosition);
+    }
+
+    return result;
+}
+
+bool Image::isInterleaved(span<const string> channelNames, size_t desiredStride) const {
+    if (desiredStride == 0) {
+        throw runtime_error{"Desired stride must be greater than 0."};
+    }
+
+    if (desiredStride < channelNames.size()) {
+        throw runtime_error{"Desired stride must be at least the number of channels."};
+    }
+
+    // It's fine if there are fewer than 4 channels -- they may still have been allocated as part of an interleaved RGBA buffer where some
+    // of these 4 channels have default values. The following loop checks that the stride is 4 and that all present channels are adjacent.
+    shared_ptr<PixelBuffer> interleavedData;
+    for (size_t i = 0; i < channelNames.size(); ++i) {
+        const auto* chan = channel(channelNames[i]);
+        if (!chan) {
+            return false;
+        }
+
+        if (i == 0) {
+            interleavedData = chan->dataBuf();
+        }
+
+        if (interleavedData != chan->dataBuf() || chan->stride() != desiredStride || chan->offset() != i) {
+            return false;
+        }
+    }
+
+    return interleavedData != nullptr;
+}
+
+static size_t nChannelsInPixelFormat(Texture::PixelFormat pixelFormat) {
+    switch (pixelFormat) {
+        case Texture::PixelFormat::R: return 1;
+        case Texture::PixelFormat::RA: return 2;
+        case Texture::PixelFormat::RGB: return 3;
+        case Texture::PixelFormat::RGBA: return 4;
+        default: throw runtime_error{"Unsupported pixel format for texture."};
+    }
+}
+
+static size_t bitsPerSampleInComponentFormat(Texture::ComponentFormat componentFormat) {
+    switch (componentFormat) {
+        case Texture::ComponentFormat::UInt8: return 8;
+        case Texture::ComponentFormat::UInt16: return 16;
+        case Texture::ComponentFormat::UInt32: return 32;
+        case Texture::ComponentFormat::Int8: return 8;
+        case Texture::ComponentFormat::Int16: return 16;
+        case Texture::ComponentFormat::Int32: return 32;
+        case Texture::ComponentFormat::Float16: return 16;
+        case Texture::ComponentFormat::Float32: return 32;
+        default: throw runtime_error{"Unsupported component format for texture."};
+    }
+}
+
+static EPixelFormat pixelFormatForComponentFormat(Texture::ComponentFormat componentFormat) {
+    switch (componentFormat) {
+        case Texture::ComponentFormat::UInt8: return EPixelFormat::U8;
+        case Texture::ComponentFormat::UInt16: return EPixelFormat::U16;
+        case Texture::ComponentFormat::UInt32: return EPixelFormat::U32;
+        case Texture::ComponentFormat::Int8: return EPixelFormat::I8;
+        case Texture::ComponentFormat::Int16: return EPixelFormat::I16;
+        case Texture::ComponentFormat::Int32: return EPixelFormat::I32;
+        case Texture::ComponentFormat::Float16: return EPixelFormat::F16;
+        case Texture::ComponentFormat::Float32: return EPixelFormat::F32;
+        default: throw runtime_error{"Unsupported component format for texture."};
+    }
+}
+
+template <typename T>
+Task<void> prepareTextureChannel(T* data, const Channel* chan, Box2i box, size_t channelIdx, size_t numTextureChannels) {
+    const bool isAlpha = channelIdx == 3 || (chan && Channel::isAlpha(chan->name()));
+    const T defaultVal = isAlpha ? (T)1.0f : (T)0.0f;
+
+    const auto size = box.size();
+    const size_t numPixels = posProd(size);
+
+    if (chan) {
+        const auto copyChannel = [&](const auto view) -> Task<void> {
+            co_await ThreadPool::global().parallelFor(
+                0,
+                size.y(),
+                numPixels,
+                [view, &data, numTextureChannels, channelIdx, width = size.x(), pos = box.min](int y) {
+                    for (int x = 0; x < width; ++x) {
+                        const auto tileIdx = x + y * (size_t)width;
+                        data[tileIdx * numTextureChannels + channelIdx] = view[pos.x() + x, pos.y() + y];
+                    }
+                },
+                numeric_limits<int>::max()
+            );
+        };
+
+        switch (chan->pixelFormat()) {
+            case EPixelFormat::U8: co_await copyChannel(chan->view<const uint8_t>()); break;
+            case EPixelFormat::U16: co_await copyChannel(chan->view<const uint16_t>()); break;
+            case EPixelFormat::U32: co_await copyChannel(chan->view<const uint32_t>()); break;
+            case EPixelFormat::I8: co_await copyChannel(chan->view<const int8_t>()); break;
+            case EPixelFormat::I16: co_await copyChannel(chan->view<const int16_t>()); break;
+            case EPixelFormat::I32: co_await copyChannel(chan->view<const int32_t>()); break;
+            case EPixelFormat::F16: co_await copyChannel(chan->view<const half>()); break;
+            case EPixelFormat::F32: co_await copyChannel(chan->view<const float>()); break;
+        }
+    } else {
+        co_await ThreadPool::global().parallelFor(
+            0uz,
+            numPixels,
+            numPixels,
+            [&data, defaultVal, numTextureChannels, channelIdx](size_t j) { data[j * numTextureChannels + channelIdx] = defaultVal; },
+            numeric_limits<int>::max()
+        );
+    }
+}
+
+Texture* Image::texture(span<const string> channelNames, EInterpolationMode minFilter, EInterpolationMode magFilter) & {
+    if (size().x() > maxTextureSize() || size().y() > maxTextureSize()) {
+        tlog::error("{} is too large for Texturing. ({}x{})", mName, size().x(), size().y());
+        return nullptr;
+    }
+
+    const string lookup = format("{}-{}-{}", join(channelNames, ","), tev::toString(minFilter), tev::toString(magFilter));
+    if (const auto it = mTextures.find(lookup); it != end(mTextures)) {
+        auto& texture = it->second;
+        if (texture.mipmapDirty && minFilter == EInterpolationMode::Trilinear) {
+            texture.nanoguiTexture->generate_mipmap();
+            texture.mipmapDirty = false;
+        }
+
+        return texture.nanoguiTexture.get();
+    }
+
+    static constexpr auto toNanogui = [](EInterpolationMode mode) {
+        switch (mode) {
+            case EInterpolationMode::Nearest: return Texture::InterpolationMode::Nearest;
+            case EInterpolationMode::Bilinear: return Texture::InterpolationMode::Bilinear;
+            case EInterpolationMode::Trilinear: return Texture::InterpolationMode::Trilinear;
+            default: throw runtime_error{"Unknown interpolation mode."};
+        }
+    };
+
+    Texture::PixelFormat pixelFormat;
+    switch (channelNames.size()) {
+        case 1: pixelFormat = Texture::PixelFormat::R; break;
+        case 2: pixelFormat = Texture::PixelFormat::RA; break;
+        case 3: pixelFormat = Texture::PixelFormat::RGB; break;
+        case 4: pixelFormat = Texture::PixelFormat::RGBA; break;
+        default: throw runtime_error{"Unsupported number of channels for texture."};
+    }
+
+    Texture::ComponentFormat componentFormat = Texture::ComponentFormat::Float16;
+    for (const auto& chanName : channelNames) {
+        const Channel* chan = channel(chanName);
+        if (chan && chan->desiredPixelFormat() == EPixelFormat::F32) {
+            componentFormat = Texture::ComponentFormat::Float32;
+            break; // No need to check further, we already have a channel that requires F32.
+        }
+    }
+
+    mTextures.emplace(
+        lookup,
+        ImageTexture{
+            new Texture{
+                        pixelFormat, componentFormat,
+                        {size().x(), size().y()},
+                        toNanogui(minFilter),
+                        toNanogui(magFilter),
+                        Texture::WrapMode::ClampToEdge,
+                        1, Texture::TextureFlags::ShaderRead,
+                        true, },
+            {channelNames.begin(), channelNames.end()},
+            false,
+    }
+    );
+
+    auto& texture = mTextures.at(lookup).nanoguiTexture;
+
+    const size_t numTextureChannels = nChannelsInPixelFormat(texture->pixel_format());
+    const size_t bitsPerSample = bitsPerSampleInComponentFormat(texture->component_format());
+
+    // Important: num channels can be *larger* than the number of channels in the image here!
+    // This is because some graphics APIs, like metal, only have power-of-two channel counts: 1, 2, 4
+    if (numTextureChannels < channelNames.size()) {
+        throw runtime_error{format(
+            "Image has {} channels, but texture requires at least {} channels. (Image: {}, Texture: {})",
+            channelNames.size(),
+            numTextureChannels,
+            mName,
+            lookup
+        )};
+    }
+
+    const bool directUpload = isInterleaved(channelNames, numTextureChannels);
+
+    tlog::debug(
+        "Uploading texture: direct={} bps={} filter={}-{} img={}:{}",
+        directUpload,
+        bitsPerSample,
+        tev::toString(minFilter),
+        tev::toString(magFilter),
+        mName,
+        join(channelNames, ",")
+    );
+
+    const auto uploadTimeGuard = ScopeGuard{[now = chrono::system_clock::now()]() {
+        const auto duration = chrono::duration_cast<chrono::duration<double>>(chrono::system_clock::now() - now);
+        tlog::debug("Upload took {:.03}s", duration.count());
+    }};
+
+    shared_ptr<PixelBuffer> dataPtr = nullptr;
+
+    // Check if channel layout is already interleaved and in the right format. If yes, can directly copy onto GPU!
+    if (directUpload) {
+        const Channel* chan = channel(channelNames[0]);
+        dataPtr = chan->dataBuf();
+    } else {
+        const auto bufferGenTimeGuard = ScopeGuard{[now = chrono::system_clock::now()]() {
+            const auto duration = chrono::duration_cast<chrono::duration<double>>(chrono::system_clock::now() - now);
+            tlog::debug("Upload buffer generation took {:.03}s", duration.count());
+        }};
+
+        const auto numPixels = this->numPixels();
+        const auto size = this->size();
+
+        dataPtr = make_shared<PixelBuffer>(
+            PixelBuffer::alloc(numPixels * numTextureChannels, pixelFormatForComponentFormat(texture->component_format()))
+        );
+
+        vector<Task<void>> tasks;
+        for (size_t i = 0; i < numTextureChannels; ++i) {
+            const Channel* chan = i < channelNames.size() ? channel(channelNames[i]) : nullptr;
+            switch (texture->component_format()) {
+                case Texture::ComponentFormat::Float16:
+                    tasks.emplace_back(prepareTextureChannel(dataPtr->data<half>(), chan, {size}, i, numTextureChannels));
+                    break;
+                case Texture::ComponentFormat::Float32:
+                    tasks.emplace_back(prepareTextureChannel(dataPtr->data<float>(), chan, {size}, i, numTextureChannels));
+                    break;
+                default: throw runtime_error{"Unsupported component format for texture."};
+            }
+        }
+
+        waitAll(tasks);
+    }
+
+    // If the backend supports it, schedule an async copy that uses DMA to copy the texture without blocking the host. The operation is part
+    // of the graphics queue and correctly ordered wrt. other display operations. On Apple M* GPUs, CPU/GPU share the same memory, so this
+    // step just converts the texture into a more suitable layout.
+    texture->upload_async(dataPtr->dataBytes(), [](void* p) { delete (shared_ptr<PixelBuffer>*)p; }, new shared_ptr<PixelBuffer>(dataPtr));
+
+    if (minFilter == EInterpolationMode::Trilinear) {
+        texture->generate_mipmap();
+    }
+
+    return texture.get();
+}
+
+Texture* Image::sourceTexture(span<const string> channelNames, EInterpolationMode minFilter, EInterpolationMode magFilter) & {
+    if (!hasSourceChannels()) {
+        return texture(channelNames, minFilter, magFilter);
+    }
+
+    if (size().x() > maxTextureSize() || size().y() > maxTextureSize()) {
+        tlog::error("{} is too large for Texturing. ({}x{})", mName, size().x(), size().y());
+        return nullptr;
+    }
+
+    const string lookup = format("{}-{}-{}", join(channelNames, ","), tev::toString(minFilter), tev::toString(magFilter));
+    if (const auto it = mSourceTextures.find(lookup); it != end(mSourceTextures)) {
+        auto& texture = it->second;
+        if (texture.mipmapDirty && minFilter == EInterpolationMode::Trilinear) {
+            texture.nanoguiTexture->generate_mipmap();
+            texture.mipmapDirty = false;
+        }
+
+        return texture.nanoguiTexture.get();
+    }
+
+    static constexpr auto toNanogui = [](EInterpolationMode mode) {
+        switch (mode) {
+            case EInterpolationMode::Nearest: return Texture::InterpolationMode::Nearest;
+            case EInterpolationMode::Bilinear: return Texture::InterpolationMode::Bilinear;
+            case EInterpolationMode::Trilinear: return Texture::InterpolationMode::Trilinear;
+            default: throw runtime_error{"Unknown interpolation mode."};
+        }
+    };
+
+    Texture::PixelFormat pixelFormat;
+    switch (channelNames.size()) {
+        case 1: pixelFormat = Texture::PixelFormat::R; break;
+        case 2: pixelFormat = Texture::PixelFormat::RA; break;
+        case 3: pixelFormat = Texture::PixelFormat::RGB; break;
+        case 4: pixelFormat = Texture::PixelFormat::RGBA; break;
+        default: throw runtime_error{"Unsupported number of channels for texture."};
+    }
+
+    Texture::ComponentFormat componentFormat = Texture::ComponentFormat::Float16;
+    for (const auto& chanName : channelNames) {
+        const Channel* chan = sourceChannel(chanName);
+        if (chan && chan->desiredPixelFormat() == EPixelFormat::F32) {
+            componentFormat = Texture::ComponentFormat::Float32;
+            break;
+        }
+    }
+
+    mSourceTextures.emplace(
+        lookup,
+        ImageTexture{
+            new Texture{
+                        pixelFormat, componentFormat,
+                        {size().x(), size().y()},
+                        toNanogui(minFilter),
+                        toNanogui(magFilter),
+                        Texture::WrapMode::ClampToEdge,
+                        1, Texture::TextureFlags::ShaderRead,
+                        true, },
+            {channelNames.begin(), channelNames.end()},
+            false,
+    }
+    );
+
+    auto& texture = mSourceTextures.at(lookup).nanoguiTexture;
+
+    const size_t numTextureChannels = nChannelsInPixelFormat(texture->pixel_format());
+    const size_t bitsPerSample = bitsPerSampleInComponentFormat(texture->component_format());
+
+    if (numTextureChannels < channelNames.size()) {
+        throw runtime_error{format(
+            "Image has {} channels, but texture requires at least {} channels. (Image: {}, Texture: {})",
+            channelNames.size(),
+            numTextureChannels,
+            mName,
+            lookup
+        )};
+    }
+
+    const bool directUpload = false;
+
+    tlog::debug(
+        "Uploading source texture: direct={} bps={} filter={}-{} img={}:{}",
+        directUpload,
+        bitsPerSample,
+        tev::toString(minFilter),
+        tev::toString(magFilter),
+        mName,
+        join(channelNames, ",")
+    );
+
+    shared_ptr<PixelBuffer> dataPtr = make_shared<PixelBuffer>(
+        PixelBuffer::alloc(this->numPixels() * numTextureChannels, pixelFormatForComponentFormat(texture->component_format()))
+    );
+
+    vector<Task<void>> tasks;
+    for (size_t i = 0; i < numTextureChannels; ++i) {
+        const Channel* chan = i < channelNames.size() ? sourceChannel(channelNames[i]) : nullptr;
+        switch (texture->component_format()) {
+            case Texture::ComponentFormat::Float16:
+                tasks.emplace_back(prepareTextureChannel(dataPtr->data<half>(), chan, {size()}, i, numTextureChannels));
+                break;
+            case Texture::ComponentFormat::Float32:
+                tasks.emplace_back(prepareTextureChannel(dataPtr->data<float>(), chan, {size()}, i, numTextureChannels));
+                break;
+            default: throw runtime_error{"Unsupported component format for texture."};
+        }
+    }
+
+    waitAll(tasks);
+
+    texture->upload_async(dataPtr->dataBytes(), [](void* p) { delete (shared_ptr<PixelBuffer>*)p; }, new shared_ptr<PixelBuffer>(dataPtr));
+
+    if (minFilter == EInterpolationMode::Trilinear) {
+        texture->generate_mipmap();
+    }
+
+    return texture.get();
+}
+
+span<const string> Image::channelsInGroup(string_view groupName) const & {
+    for (const auto& group : mChannelGroups) {
+        if (group.name == groupName) {
+            return group.channels;
+        }
+    }
+
+    return {};
+}
+
+void Image::ungroup(string_view groupName) {
+    // Takes all channels of a given group and turns them into individual groups.
+
+    const auto group = ranges::find(mChannelGroups, groupName, [](const auto& g) -> string_view { return g.name; });
+    if (group == mChannelGroups.end()) {
+        return;
+    }
+
+    const auto& channels = group->channels;
+    if (channels.empty()) {
+        return;
+    }
+
+    const auto newGroups = channels | views::transform([](const auto& c) { return ChannelGroup{c, {c}}; });
+    mChannelGroups.insert(group + 1, newGroups.begin(), newGroups.end());
+
+    // Duplicates may have appeared here. (E.g. when trying to decompose a single channel or when single-color channels appear multiple
+    // times in their group to render as RGB rather than pure red.) Don't insert those.
+    removeDuplicates(mChannelGroups);
+}
+
+vector<ChannelGroup> Image::getGroupedChannels(string_view layerName) const {
+    vector<vector<string>> groups = {
+        {"R", "G", "B"},
+        {"r", "g", "b"},
+        {"X", "Y", "Z"},
+        {"x", "y", "z"},
+        {"U", "V"},
+        {"u", "v"},
+        {"Z"},
+        {"z"},
+    };
+
+    static constexpr auto createChannelGroup = [](string_view layer, vector<string> channels) {
+        TEV_ASSERT(!channels.empty(), "Can't create a channel group without channels.");
+
+        vector<string_view> channelTails = {channels.begin(), channels.end()};
+        channelTails.erase(unique(begin(channelTails), end(channelTails)), end(channelTails));
+        transform(begin(channelTails), end(channelTails), begin(channelTails), Channel::tail);
+
+        const string channelsString = join(channelTails, ",");
+        const string name = layer.empty() ?
+            channelsString :
+            (channelTails.size() == 1 ? format("{}{}", layer, channelsString) : format("{}({})", layer, channelsString));
+
+        return ChannelGroup{name, std::move(channels)};
+    };
+
+    string alphaChannelName = format("{}A", layerName);
+
+    vector<string> allChannels = mData.channelsInLayer(layerName);
+
+    auto alphaIt = find(begin(allChannels), end(allChannels), alphaChannelName);
+    bool hasAlpha = alphaIt != end(allChannels);
+    if (hasAlpha) {
+        allChannels.erase(alphaIt);
+    }
+
+    vector<ChannelGroup> result;
+
+    for (const auto& group : groups) {
+        vector<string> groupChannels;
+        for (string_view channel : group) {
+            string name = format("{}{}", layerName, channel);
+            auto it = find(begin(allChannels), end(allChannels), name);
+            if (it != end(allChannels)) {
+                groupChannels.emplace_back(name);
+                allChannels.erase(it);
+            }
+        }
+
+        if (!groupChannels.empty()) {
+            if (hasAlpha) {
+                groupChannels.emplace_back(alphaChannelName);
+            }
+
+            result.emplace_back(createChannelGroup(layerName, std::move(groupChannels)));
+        }
+    }
+
+    for (const auto& name : allChannels) {
+        if (hasAlpha) {
+            result.emplace_back(createChannelGroup(layerName, vector<string>{name, alphaChannelName}));
+        } else {
+            result.emplace_back(createChannelGroup(layerName, vector<string>{name}));
+        }
+    }
+
+    if (hasAlpha && result.empty()) {
+        result.emplace_back(createChannelGroup(layerName, vector<string>{alphaChannelName}));
+    }
+
+    TEV_ASSERT(!result.empty(), "Images with no channels should never exist.");
+
+    return result;
+}
+
+void Image::updateChannel(const string_view channelName, const Box2i bounds, span<const float> data) {
+    Channel* const chan = mutableChannel(channelName);
+    if (!chan) {
+        tlog::warning("Channel {} could not be updated, because it does not exist.", channelName);
+        return;
+    }
+
+    chan->updateTile(bounds, data);
+
+    // Update textures that are cached for this channel
+    for (auto&& kv : mTextures) {
+        auto& imageTexture = kv.second;
+        if (find(begin(imageTexture.channels), end(imageTexture.channels), channelName) == end(imageTexture.channels)) {
+            continue;
+        }
+
+        const auto numPixels = bounds.area();
+        const size_t numTextureChannels = nChannelsInPixelFormat(imageTexture.nanoguiTexture->pixel_format());
+        auto textureData = PixelBuffer::alloc(
+            numPixels * numTextureChannels, pixelFormatForComponentFormat(imageTexture.nanoguiTexture->component_format())
+        );
+
+        vector<Task<void>> tasks;
+        for (size_t i = 0; i < numTextureChannels; ++i) {
+            const Channel* textureChan = i < imageTexture.channels.size() ? channel(imageTexture.channels[i]) : nullptr;
+            switch (imageTexture.nanoguiTexture->component_format()) {
+                case Texture::ComponentFormat::Float16:
+                    tasks.emplace_back(prepareTextureChannel(textureData.data<half>(), textureChan, bounds, i, numTextureChannels));
+                    break;
+                case Texture::ComponentFormat::Float32:
+                    tasks.emplace_back(prepareTextureChannel(textureData.data<float>(), textureChan, bounds, i, numTextureChannels));
+                    break;
+                default: throw runtime_error{"Unsupported component format for texture."};
+            }
+        }
+
+        waitAll(tasks);
+        imageTexture.nanoguiTexture->upload_sub_region(textureData.dataBytes(), bounds.min, bounds.size());
+        imageTexture.mipmapDirty = true;
+    }
+}
+
+void Image::updateVectorGraphics(bool append, span<const VgCommand> commands) {
+    if (!append) {
+        mVgCommands.clear();
+    }
+
+    copy(begin(commands), end(commands), back_inserter(mVgCommands));
+}
+
+Task<vector<Channel>> Image::getHdrImageData(shared_ptr<Image> reference, string_view requestedChannelGroup, EMetric metric, int priority, bool useSource) const {
+    const auto size = this->size();
+    const auto numPixels = this->numPixels();
+
+    vector<Channel> result;
+    const auto channelNames = channelsInGroup(requestedChannelGroup);
+    for (size_t i = 0; i < channelNames.size(); ++i) {
+        result.emplace_back(toUpper(Channel::tail(channelNames[i])), size, EPixelFormat::F32, EPixelFormat::F32);
+    }
+
+    const auto views = result | views::transform([](Channel& c) { return c.view<float>(); }) | toVector;
+    const auto channels = [&] {
+        vector<const Channel*> result;
+        result.reserve(channelNames.size());
+        for (const auto& channelName : channelNames) {
+            result.push_back(useSource && hasSourceChannels() ? sourceChannel(channelName) : channel(channelName));
+        }
+        return result;
+    }();
+    if (!reference) {
+        co_await ThreadPool::global().parallelFor(
+            0uz,
+            numPixels,
+            numPixels * channels.size(),
+            [&](size_t j) {
+                for (size_t c = 0; c < channels.size(); ++c) {
+                    views[c][j] = channels[c]->dynamicAt(j);
+                }
+            },
+            priority
+        );
+    } else {
+        const auto referenceChannels = [&] {
+            vector<const Channel*> result;
+            result.reserve(channelNames.size());
+            for (const auto& channelName : channelNames) {
+                result.push_back(
+                    useSource && reference->hasSourceChannels() ? reference->sourceChannel(channelName) : reference->channel(channelName)
+                );
+            }
+            return result;
+        }();
+        const auto offset = (reference->size() - size) / 2;
+
+        vector<bool> isAlpha(channelNames.size());
+        for (size_t i = 0; i < channelNames.size(); ++i) {
+            isAlpha[i] = Channel::isAlpha(channelNames[i]);
+        }
+
+        co_await ThreadPool::global().parallelFor(
+            0,
+            size.y(),
+            numPixels * channels.size(),
+            [&](int y) {
+                for (size_t c = 0; c < channels.size(); ++c) {
+                    const auto* channel = channels[c];
+                    const auto* referenceChannel = referenceChannels[c];
+
+                    if (isAlpha[c]) {
+                        for (int x = 0; x < size.x(); ++x) {
+                            views[c][x, y] = 0.5f *
+                                (channel->evalOrZero({x, y}) +
+                                 (referenceChannel ? referenceChannel->evalOrZero({x + offset.x(), y + offset.y()}) : 1.0f));
+                        }
+                    } else {
+                        for (int x = 0; x < size.x(); ++x) {
+                            views[c][x, y] = applyMetric(
+                                channel->evalOrZero({x, y}),
+                                referenceChannel ? referenceChannel->evalOrZero({x + offset.x(), y + offset.y()}) : 0.0f,
+                                metric
+                            );
+                        }
+                    }
+                }
+            },
+            priority
+        );
+    }
+
+    co_return result;
+}
+
+Task<HeapArray<float>> Image::getRgbaHdrImageData(
+    shared_ptr<Image> reference,
+    Box2i imageRegion,
+    string_view requestedChannelGroup,
+    EMetric metric,
+    EChannelMask mask,
+    Color bg,
+    bool divideAlpha,
+    int priority
+) const {
+    const auto channels = co_await getHdrImageData(reference, requestedChannelGroup, metric, priority);
+    if (channels.empty()) {
+        co_return {};
+    }
+
+    const Channel* alphaChannel = nullptr;
+
+    // Only treat the alpha channel specially if it is not the only channel of the image.
+    if (!all_of(begin(channels), end(channels), [](const Channel& c) { return c.isAlpha(); })) {
+        if (channels.back().isAlpha()) {
+            alphaChannel = &channels.back();
+        }
+    }
+
+    const size_t nColorChannels = alphaChannel ? (channels.size() - 1) : channels.size();
+
+    const auto numPixels = imageRegion.area();
+    const auto nColorChannelsToSave = std::min(nColorChannels, 3uz);
+
+    // Flatten image into vector
+    HeapArray<float> result{4 * numPixels};
+
+    co_await ThreadPool::global().parallelFor(
+        imageRegion.min.y(),
+        imageRegion.max.y(),
+        numPixels * 4,
+        [nColorChannelsToSave, &bg, &channels, alphaChannel, mask, divideAlpha, &result, &imageRegion](int y) {
+            const auto yoffset = (size_t)(y - imageRegion.min.y()) * imageRegion.size().x();
+            for (int x = imageRegion.min.x(); x < imageRegion.max.x(); ++x) {
+                const auto xoffset = x - imageRegion.min.x();
+
+                const float alpha = alphaChannel && hasFlag(mask, EChannelMask::Alpha) ? alphaChannel->evalOrZero({x, y}) : 1.0f;
+                for (size_t c = 0; c < 3; ++c) {
+                    const float val = !hasFlag(mask, static_cast<EChannelMask>(1 << c)) ?
+                        0.0f :
+                        (nColorChannelsToSave == 1 ? channels[0].evalOrZero({x, y}) :
+                                                     (c < nColorChannelsToSave ? channels[c].evalOrZero({x, y}) : 0.0f));
+
+                    const float blended = val + (1.0f - alpha) * bg[c];
+                    result[(yoffset + xoffset) * 4 + c] = divideAlpha ? (alpha != 0 ? blended / alpha : 0) : blended;
+                }
+
+                result[(yoffset + xoffset) * 4 + 3] = alpha + (1.0f - alpha) * bg[3];
+            }
+        },
+        priority
+    );
+
+    co_return result;
+}
+
+Task<HeapArray<uint8_t>> Image::getRgbaLdrImageData(
+    const HeapArray<float>& rgbaHdrData, ETonemap tonemap, float gamma, float exposure, float offset, int priority
+) const {
+    if (rgbaHdrData.size() % 4 != 0) {
+        throw runtime_error{"RGBA HDR data must have a size that is a multiple of 4."};
+    }
+
+    HeapArray<uint8_t> result(rgbaHdrData.size());
+
+    co_await ThreadPool::global().parallelFor(
+        0uz,
+        rgbaHdrData.size() / 4,
+        rgbaHdrData.size(),
+        [&](const size_t i) {
+            const size_t start = 4 * i;
+            const Vector3f rgb = applyTonemap(
+                {
+                    applyExposureAndOffset(rgbaHdrData[start + 0], exposure, offset),
+                    applyExposureAndOffset(rgbaHdrData[start + 1], exposure, offset),
+                    applyExposureAndOffset(rgbaHdrData[start + 2], exposure, offset),
+                },
+                gamma,
+                tonemap
+            );
+
+            const auto rgba = Vector4f{rgb.x(), rgb.y(), rgb.z(), rgbaHdrData[start + 3]};
+
+            for (int j = 0; j < 4; ++j) {
+                result[start + j] = (uint8_t)(clamp(rgba[j], 0.0f, 1.0f) * 255 + 0.5f);
+            }
+        },
+        priority
+    );
+
+    co_return result;
+}
+
+Task<HeapArray<uint8_t>> Image::getRgbaLdrImageData(
+    shared_ptr<Image> reference,
+    Box2i imageRegion,
+    string_view requestedChannelGroup,
+    EMetric metric,
+    EChannelMask mask,
+    Color bg,
+    bool divideAlpha,
+    ETonemap tonemap,
+    float gamma,
+    float exposure,
+    float offset,
+    int priority
+) const {
+    co_return co_await getRgbaLdrImageData(
+        co_await getRgbaHdrImageData(reference, imageRegion, requestedChannelGroup, metric, mask, bg, divideAlpha, priority),
+        tonemap,
+        gamma,
+        exposure,
+        offset,
+        priority
+    );
+}
+
+Task<void> Image::save(
+    const fs::path& path,
+    shared_ptr<Image> reference,
+    Box2i imageRegion,
+    string_view requestedChannelGroup,
+    EMetric metric,
+    EChannelMask mask,
+    Color bg,
+    ETonemap tonemap,
+    float gamma,
+    float exposure,
+    float offset,
+    int priority
+) const {
+    if (path.empty()) {
+        throw ImageSaveError{"You must specify a file name to save the image."};
+    }
+
+    if (path.extension().empty()) {
+        throw ImageSaveError{"You must specify a file extension or select one from the dropdown to save the image."};
+    }
+
+    const auto size = imageRegion.size();
+    if (size.x() == 0 || size.y() == 0) {
+        throw ImageSaveError{"Can not save image with zero pixels."};
+    }
+
+    ofstream f{path, ios_base::binary};
+    if (!f) {
+        throw ImageSaveError{format("Could not open file {}", path)};
+    }
+
+    for (const auto& saver : ImageSaver::getSavers()) {
+        if (!saver->canSaveFile(path)) {
+            continue;
+        }
+
+        const auto start = chrono::steady_clock::now();
+
+        const auto* hdrSaver = dynamic_cast<const TypedImageSaver<float>*>(saver.get());
+        const auto* ldrSaver = dynamic_cast<const TypedImageSaver<uint8_t>*>(saver.get());
+
+        const bool divideAlpha = saver->alphaKind(path) == EAlphaKind::Straight;
+        const auto rgbaHdrData =
+            co_await getRgbaHdrImageData(reference, imageRegion, requestedChannelGroup, metric, mask, bg, divideAlpha, priority);
+
+        if (hdrSaver) {
+            co_await hdrSaver->save(f, path, rgbaHdrData, size, 4);
+        } else if (ldrSaver) {
+            const auto rgbaLdrData = co_await getRgbaLdrImageData(rgbaHdrData, tonemap, gamma, exposure, offset, priority);
+            co_await ldrSaver->save(f, path, rgbaLdrData, size, 4);
+        } else {
+            TEV_ASSERT(false, "Each image saver must either be a HDR or an LDR saver.");
+        }
+
+        const auto duration = chrono::duration_cast<chrono::duration<double>>(chrono::steady_clock::now() - start).count();
+        tlog::debug("Saved {} bytes to {} after {:.3f} seconds", (size_t)f.tellp(), path, duration);
+
+        co_return;
+    }
+
+    throw ImageSaveError{format("No save routine for image type {} found.", path.extension())};
+}
+
+template <typename T> time_t to_time_t(T timePoint) {
+    // `clock_cast` appears to throw errors on some systems, so we're using this slightly hacky inaccurate/random time conversion (now() is
+    // not called simultaneously for both clocks) in order to convert to system time.
+    using namespace chrono;
+    return system_clock::to_time_t(time_point_cast<system_clock::duration>(timePoint - T::clock::now() + system_clock::now()));
+}
+
+string Image::toString() const {
+    ostringstream sstream;
+    sstream << mName << "\n\n";
+
+    {
+        const time_t cftime = to_time_t(mFileLastModified);
+        sstream << "Last modified:\n" << asctime(localtime(&cftime)) << "\n";
+    }
+
+    sstream << "Resolution: (" << size().x() << ", " << size().y() << ")\n";
+    if (displayWindow() != dataWindow() || displayWindow().min != Vector2i{0}) {
+        sstream << "Display window: (" << displayWindow().min.x() << ", " << displayWindow().min.y() << ")(" << displayWindow().max.x()
+                << ", " << displayWindow().max.y() << ")\n";
+        sstream << "Data window: (" << dataWindow().min.x() << ", " << dataWindow().min.y() << ")(" << dataWindow().max.x() << ", "
+                << dataWindow().max.y() << ")\n";
+    }
+
+    sstream << "\nChannels:\n";
+
+    auto localLayers = mData.layers;
+    transform(begin(localLayers), end(localLayers), begin(localLayers), [this](string layer) {
+        auto channels = mData.channelsInLayer(layer);
+        transform(begin(channels), end(channels), begin(channels), [](string channel) { return Channel::tail(channel); });
+
+        if (layer.empty()) {
+            return join(channels, ",");
+        } else if (channels.size() == 1) {
+            return layer + channels.front();
+        } else {
+            return layer + "("s + join(channels, ",") + ")"s;
+        }
+    });
+
+    sstream << join(localLayers, "\n");
+    return std::move(sstream).str();
+}
+
+// Modifies `data` and returns the new size of the data after reorientation.
+Task<nanogui::Vector2i> orientToTopLeft(PixelBuffer& data, nanogui::Vector2i size, EOrientation orientation, int priority) {
+    if (orientation == EOrientation::None || orientation == EOrientation::TopLeft) {
+        co_return size;
+    }
+
+    const bool swapAxes = orientation >= EOrientation::LeftTop;
+    size = swapAxes ? nanogui::Vector2i{size.y(), size.x()} : size;
+    nanogui::Vector2i otherSize = swapAxes ? nanogui::Vector2i{size.y(), size.x()} : size;
+
+    const size_t numBytesPerSample = nBytes(data.format());
+    const size_t numPixels = posProd(size);
+
+    if (numPixels == 0) {
+        co_return size;
+    } else if (data.size() % numPixels != 0) {
+        throw ImageModifyError{"Image data size is not a multiple of the number of pixels."};
+    }
+
+    const size_t numSamplesPerPixel = data.size() / numPixels;
+    const size_t numBytesPerPixel = numSamplesPerPixel * numBytesPerSample;
+
+    auto reorientedData = PixelBuffer::alloc(data.size(), data.format());
+    co_await ThreadPool::global().parallelFor(
+        0,
+        size.y(),
+        numPixels,
+        [&](int y) {
+            for (int x = 0; x < size.x(); ++x) {
+                const auto i = y * (size_t)size.x() + x;
+
+                const auto other = applyOrientation(orientation, nanogui::Vector2i{x, y}, size);
+                const auto j = other.y() * (size_t)otherSize.x() + other.x();
+
+                memcpy(reorientedData.dataBytes() + i * numBytesPerPixel, data.dataBytes() + j * numBytesPerPixel, numBytesPerPixel);
+            }
+        },
+        priority
+    );
+
+    swap(data, reorientedData);
+    co_return size;
+}
+
+Task<vector<shared_ptr<Image>>> tryLoadImage(
+    int taskPriority, fs::path path, istream& iStream, string_view channelSelector, const ImageLoaderSettings& settings, bool groupChannels
+) {
+    const auto handleException = [&](const exception& e) {
+        if (channelSelector.empty()) {
+            tlog::error("Could not load {}: {}", path, e.what());
+        } else {
+            tlog::error("Could not load {}:{}: {}", path, channelSelector, e.what());
+        }
+    };
+
+    // No need to keep loading images if tev is already shutting down again.
+    if (shuttingDown()) {
+        co_return {};
+    }
+
+    try {
+        const auto start = chrono::system_clock::now();
+
+        if (!iStream) {
+            throw ImageLoadError{format("Image {} could not be opened.", path)};
+        }
+
+        fs::file_time_type fileLastModified = fs::file_time_type::clock::now();
+        if (fs::exists(path)) {
+            // Unlikely, but the file could have been deleted, moved, or something else might have happened to it that makes obtaining its
+            // last modified time impossible. Ignore such errors.
+            try {
+                fileLastModified = fs::last_write_time(path);
+            } catch (...) {}
+        }
+
+        string loadMethod;
+        vector<ImageData> imageData;
+        bool success = false;
+
+        const auto tryLoader = [&](const ImageLoader& imageLoader) -> Task<bool> {
+            try {
+                loadMethod = imageLoader.name();
+                imageData = co_await imageLoader.load(iStream, path, channelSelector, settings, taskPriority);
+                co_return true;
+            } catch (const ImageLoader::FormatNotSupported& e) {
+                tlog::debug("Image loader {} does not support loading {}: {} Trying next loader.", loadMethod, path, e.what());
+
+                // Reset file cursor to beginning and try next loader.
+                iStream.clear();
+                iStream.seekg(0);
+                co_return false;
+            }
+        };
+
+        const auto extension = toLower(path.extension().string());
+        if (extension == ".hdr" || extension == ".pic" || extension == ".rgbe") {
+            try {
+                loadMethod = "STBI (path)";
+                imageData = co_await loadRadianceHdrWithStbiPath(path, taskPriority);
+                success = true;
+            } catch (const runtime_error& e) {
+                tlog::debug("Path-based HDR load failed for {}: {} Trying regular loaders.", path, e.what());
+            }
+        }
+
+        if (!success) {
+            for (const auto& imageLoader : ImageLoader::getLoaders()) {
+                success = co_await tryLoader(*imageLoader);
+                if (success) {
+                    break;
+                }
+            }
+        }
+
+        if (!success) {
+            throw ImageLoadError{"No suitable image loader found."};
+        }
+
+        vector<shared_ptr<Image>> images;
+        for (auto& i : imageData) {
+            co_await i.ensureValid(channelSelector, taskPriority);
+
+            if (i.channels.empty()) {
+                continue;
+            }
+
+            // If *multiple* image "parts" were loaded and they have names, ensure that these names are present in the channel selector. If
+            // there's just a single part, it'll already be represented in the image's top-level layer name, so no need to clutter the UI by
+            // explicitly listing it.
+            string localChannelSelector;
+            if (i.partName.empty() || imageData.size() == 1) {
+                localChannelSelector = string{channelSelector};
+            } else {
+                const auto selectorParts = split(channelSelector, ",");
+                if (channelSelector.empty()) {
+                    localChannelSelector = i.partName;
+                } else if (find(begin(selectorParts), end(selectorParts), i.partName) == end(selectorParts)) {
+                    localChannelSelector = format("{},{}", i.partName, channelSelector);
+                } else {
+                    localChannelSelector = string{channelSelector};
+                }
+            }
+
+            images.emplace_back(make_shared<Image>(path, fileLastModified, std::move(i), localChannelSelector, groupChannels));
+        }
+
+        if (images.empty()) {
+            throw ImageLoadError{format("No parts/channels match channel selector :{}", channelSelector)};
+        }
+
+        const auto end = chrono::system_clock::now();
+        const chrono::duration<double> elapsedSeconds = end - start;
+
+        tlog::success("Loaded {} via {} after {:.3f} seconds.", path, loadMethod, elapsedSeconds.count());
+
+        co_return images;
+    } catch (const runtime_error& e) { handleException(e); }
+
+    co_return {};
+}
+
+Task<vector<shared_ptr<Image>>>
+    tryLoadImage(fs::path path, istream& iStream, string_view channelSelector, const ImageLoaderSettings& settings, bool groupChannels) {
+    co_return co_await tryLoadImage(-Image::drawId(), path, iStream, channelSelector, settings, groupChannels);
+}
+
+Task<vector<shared_ptr<Image>>>
+    tryLoadImage(int taskPriority, fs::path path, string_view channelSelector, const ImageLoaderSettings& settings, bool groupChannels) {
+    try {
+        path = fs::absolute(path);
+    } catch (const runtime_error&) {
+        // If for some strange reason we can not obtain an absolute path, let's still try to open the image at the given path just to make
+        // sure.
+    }
+
+    ifstream fileStream{path, ios_base::binary};
+    co_return co_await tryLoadImage(taskPriority, path, fileStream, channelSelector, settings, groupChannels);
+}
+
+Task<vector<shared_ptr<Image>>>
+    tryLoadImage(fs::path path, string_view channelSelector, const ImageLoaderSettings& settings, bool groupChannels) {
+    co_return co_await tryLoadImage(-Image::drawId(), path, channelSelector, settings, groupChannels);
+}
+
+} // namespace tev

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=tev
+GenericName=Image Viewer
+Comment=High dynamic range (HDR) image viewer for people who care about colors
+Exec=tev %F
+Icon=@TEV_LINUX_APP_ID@
+Terminal=false
+MimeType=image/*;
+Categories=Graphics;

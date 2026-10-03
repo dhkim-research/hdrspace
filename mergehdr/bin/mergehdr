@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+SELF=$(python3 - <<'PY' "$0"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$SELF")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+exec "$ROOT_DIR/build-mergehdr/mergehdr" "$@"

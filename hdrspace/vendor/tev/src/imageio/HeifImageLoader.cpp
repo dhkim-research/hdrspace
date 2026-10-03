@@ -1,0 +1,867 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <tev/Common.h>
+#include <tev/ThreadPool.h>
+#include <tev/imageio/Colors.h>
+#include <tev/imageio/Exif.h>
+#include <tev/imageio/GainMap.h>
+#include <tev/imageio/HeifImageLoader.h>
+#include <tev/imageio/Ifd.h>
+#include <tev/imageio/IsoGainMapMetadata.h>
+#include <tev/imageio/Xmp.h>
+
+#include <nanogui/vector.h>
+
+#include <libheif/heif.h>
+#include <libheif/heif_image_handle.h>
+#include <libheif/heif_sequences.h>
+
+#include <optional>
+#include <unordered_set>
+
+using namespace nanogui;
+using namespace std;
+
+namespace tev {
+
+Task<vector<ImageData>> HeifImageLoader::load(
+    istream& iStream, const fs::path&, string_view channelSelector, const ImageLoaderSettings& settings, int priority
+) const {
+    // libheif's spec says it needs the first 12 bytes to determine whether the image can be read.
+    uint8_t header[12];
+    iStream.read((char*)header, 12);
+
+    if (!iStream || iStream.gcount() != 12) {
+        throw FormatNotSupported{"File is too short to be an HEIF image."};
+    }
+
+    if (header[4] != 'f' || header[5] != 't' || header[6] != 'y' || header[7] != 'p') {
+        throw FormatNotSupported{"Invalid HEIF file: missing 'ftyp' box."};
+    }
+
+    const heif_brand2 brand = heif_read_main_brand(header, 12);
+
+    const unordered_set<heif_brand2> supportedFormats = {
+        // HEIC
+        heif_brand2_heic,
+        heif_brand2_heix,
+        heif_brand2_heim,
+        heif_brand2_heis,
+        // HEIF
+        heif_brand2_mif1,
+        heif_brand2_mif2,
+        heif_brand2_mif3,
+        heif_brand2_miaf,
+        // HEIC sequence
+        heif_brand2_hevc,
+        heif_brand2_hevx,
+        heif_brand2_hevm,
+        heif_brand2_hevs,
+        // HEIF sequence
+        heif_brand2_msf1,
+        // AVIF
+        heif_brand2_avif,
+        // AVIF sequence
+        heif_brand2_avis,
+        // JPEG 2000
+        heif_brand2_j2ki,
+        // JPEG 2000 sequence
+        heif_brand2_j2is,
+        // JPEG
+        heif_brand2_jpeg,
+        // JPEG sequence
+        heif_brand2_jpgs,
+    };
+
+    if (!supportedFormats.contains(brand)) {
+        throw FormatNotSupported{format("HEIF format {:08X} is not supported.", brand)};
+    }
+
+    iStream.seekg(0, ios_base::end);
+    const int64_t fileSize = iStream.tellg();
+    iStream.clear();
+    iStream.seekg(0);
+
+    struct ReaderContext {
+        istream& stream;
+        int64_t size;
+    } readerContext = {iStream, fileSize};
+
+    static constexpr heif_reader reader = {
+        .reader_api_version = 1,
+        .get_position = [](void* context) { return (int64_t)static_cast<ReaderContext*>(context)->stream.tellg(); },
+        .read =
+            [](void* data, size_t size, void* context) {
+                auto& stream = static_cast<ReaderContext*>(context)->stream;
+                stream.read((char*)data, size);
+                return stream.good() ? 0 : -1;
+            },
+        .seek =
+            [](int64_t pos, void* context) {
+                auto& stream = static_cast<ReaderContext*>(context)->stream;
+                stream.seekg(pos);
+                return stream.good() ? 0 : -1;
+            },
+        .wait_for_file_size =
+            [](int64_t target_size, void* context) {
+                return static_cast<ReaderContext*>(context)->size < target_size ? heif_reader_grow_status_size_beyond_eof :
+                                                                                  heif_reader_grow_status_size_reached;
+            },
+        // Not used by API version 1
+        .request_range = {},
+        .preload_range_hint = {},
+        .release_file_range = {},
+        .release_error_msg = {},
+    };
+
+    static constexpr auto getIccProfileFromImgAndHandle = [](const heif_image* img,
+                                                             const heif_image_handle* handle) -> optional<HeapArray<uint8_t>> {
+        if (handle) {
+            const size_t handleProfileSize = heif_image_handle_get_raw_color_profile_size(handle);
+            if (handleProfileSize > 0) {
+                HeapArray<uint8_t> handleProfileData(handleProfileSize);
+                if (const auto error = heif_image_handle_get_raw_color_profile(handle, handleProfileData.data());
+                    error.code != heif_error_Ok) {
+                    if (error.code == heif_error_Color_profile_does_not_exist) {
+                        tlog::warning("ICC color profile does not exist in handle.");
+                    } else {
+                        tlog::warning("Failed to read ICC profile from handle: {}", error.message);
+                    }
+
+                    return nullopt;
+                }
+
+                return handleProfileData;
+            }
+        }
+
+        const size_t profileSize = heif_image_get_raw_color_profile_size(img);
+        if (profileSize > 0) {
+            HeapArray<uint8_t> profileData(profileSize);
+            if (const auto error = heif_image_get_raw_color_profile(img, profileData.data()); error.code != heif_error_Ok) {
+                if (error.code == heif_error_Color_profile_does_not_exist) {
+                    tlog::warning("ICC color profile does not exist in img.");
+                } else {
+                    tlog::warning("Failed to read ICC profile from img: {}", error.message);
+                }
+
+                return nullopt;
+            }
+
+            return profileData;
+        }
+
+        return nullopt;
+    };
+
+    const auto decodeImage = [priority](
+                                 const heif_image* img,
+                                 const heif_image_handle* imgHandle, // may be nullptr
+                                 int numChannels,
+                                 bool hasAlpha,
+                                 bool skipColorProcessing,
+                                 string_view layer = "",
+                                 string_view partName = ""
+                             ) -> Task<ImageData> {
+        tlog::debug("Decoding HEIF image '{}'", layer);
+
+        if (numChannels < 1 || numChannels > 4) {
+            throw ImageLoadError{format("Unsupported number of channels: {}", numChannels)};
+        }
+
+        const int numColorChannels = hasAlpha ? numChannels - 1 : numChannels;
+
+        ImageData resultData;
+        resultData.hasPremultipliedAlpha = !hasAlpha || heif_image_is_premultiplied_alpha(img);
+        resultData.partName = partName;
+
+        const Vector2i size = {heif_image_get_primary_width(img), heif_image_get_primary_height(img)};
+        if (size.x() == 0 || size.y() == 0) {
+            throw ImageLoadError{"Image has zero pixels."};
+        }
+
+        const heif_channel channelType = numChannels == 1 ? heif_channel_Y : heif_channel_interleaved;
+
+        const int bitDepth = heif_image_get_bits_per_pixel(img, channelType) / numChannels;
+        if (bitDepth != 8 && bitDepth != 16) {
+            throw ImageLoadError{format("Unsupported HEIF bit depth: {}", bitDepth)};
+        }
+
+        const int bitsPerSample = heif_image_get_bits_per_pixel_range(img, channelType);
+        const float channelScale = 1.0f / float((1 << bitsPerSample) - 1);
+
+        if (bitsPerSample > bitDepth) {
+            throw ImageLoadError{format("Image has {} bits per sample, but expected at most {} bits.", bitsPerSample, bitDepth)};
+        }
+
+        struct PlaneData {
+            size_t bytesPerRow;
+            span<const uint8_t> data;
+        };
+
+        const auto getPlaneData = [&]() -> PlaneData {
+            int bytesPerRowInt = 0;
+            const uint8_t* d = heif_image_get_plane_readonly(img, channelType, &bytesPerRowInt);
+            if (!d) {
+                throw ImageLoadError{"Faild to get image data."};
+            }
+
+            if (bytesPerRowInt % (bitDepth / 8) != 0 || bytesPerRowInt <= 0) {
+                throw ImageLoadError{"Invalid bytes per row"};
+            }
+
+            return PlaneData{
+                .bytesPerRow = (size_t)bytesPerRowInt, .data = span<const uint8_t>{d, (size_t)bytesPerRowInt * size.y()}
+            };
+        };
+
+        const auto [bytesPerRow, data] = getPlaneData();
+
+        if (heif_image_has_content_light_level(img)) {
+            heif_content_light_level cll;
+            heif_image_get_content_light_level(img, &cll);
+
+            resultData.hdrMetadata.maxCLL = cll.max_content_light_level;
+            resultData.hdrMetadata.maxFALL = cll.max_pic_average_light_level;
+
+            tlog::debug(
+                "Found content light level information: maxCLL={} maxFALL={}", resultData.hdrMetadata.maxCLL, resultData.hdrMetadata.maxFALL
+            );
+        }
+
+        heif_decoded_mastering_display_colour_volume mdcv;
+        if (heif_image_has_mastering_display_colour_volume(img)) {
+            heif_mastering_display_colour_volume codedMdcv;
+            heif_image_get_mastering_display_colour_volume(img, &codedMdcv);
+
+            if (const auto error = heif_mastering_display_colour_volume_decode(&codedMdcv, &mdcv); error.code != heif_error_Ok) {
+                tlog::debug("Failed to decode mastering display color volume: {}", error.message);
+            } else {
+                resultData.hdrMetadata.masteringChroma = {
+                    {
+                     {mdcv.display_primaries_x[0], mdcv.display_primaries_y[0]},
+                     {mdcv.display_primaries_x[1], mdcv.display_primaries_y[1]},
+                     {mdcv.display_primaries_x[2], mdcv.display_primaries_y[2]},
+                     {mdcv.white_point_x, mdcv.white_point_y},
+                     }
+                };
+                resultData.hdrMetadata.masteringMinLum = (float)mdcv.min_display_mastering_luminance;
+                resultData.hdrMetadata.masteringMaxLum = (float)mdcv.max_display_mastering_luminance;
+
+                tlog::debug(
+                    "Found mastering display color volume: minLum={} maxLum={} chroma={}",
+                    resultData.hdrMetadata.masteringMinLum,
+                    resultData.hdrMetadata.masteringMaxLum,
+                    resultData.hdrMetadata.masteringChroma
+                );
+            }
+        }
+
+        const int numInterleavedChannels = nextSupportedTextureChannelCount(numChannels);
+
+        // HEIF images have a fixed point representation of up to 16 bits per channel in TF space. FP16 is perfectly adequate to represent
+        // such values after conversion to linear space.
+        resultData.channels = co_await makeRgbaInterleavedChannels(
+            numChannels, numInterleavedChannels, hasAlpha, size, EPixelFormat::F32, EPixelFormat::F16, layer, priority
+        );
+
+        const auto outView = MultiChannelView<float>{resultData.channels};
+
+        if (bitDepth == 16) {
+            // libheif returns 16-byte aligned uint8_t* data, regardless of the actual bit depth. The alignment and uint8_t type mean it's
+            // well-defined behavior to reinterpret the data as uint16_t.
+            const auto uint16Data = span<const uint16_t>{reinterpret_cast<const uint16_t*>(data.data()), data.size() / sizeof(uint16_t)};
+            co_await toFloat32(uint16Data, numChannels, outView, hasAlpha, priority, channelScale, bytesPerRow / sizeof(uint16_t));
+        } else {
+            co_await toFloat32(data, numChannels, outView, hasAlpha, priority, channelScale, bytesPerRow / sizeof(uint8_t));
+        }
+
+        // If we've got an ICC color profile, apply that because it's the most detailed / standardized.
+        const auto iccProfileData = skipColorProcessing ? nullopt : getIccProfileFromImgAndHandle(img, imgHandle);
+        if (!skipColorProcessing && iccProfileData) {
+            tlog::debug("Found ICC color profile. Attempting to apply...");
+
+            try {
+                const auto profile = ColorProfile::fromIcc(*iccProfileData);
+                co_await toLinearSrgbPremul(
+                    profile,
+                    hasAlpha ? (resultData.hasPremultipliedAlpha ? EAlphaKind::PremultipliedNonlinear : EAlphaKind::Straight) :
+                               EAlphaKind::None,
+                    outView,
+                    outView,
+                    nullopt,
+                    priority
+                );
+                resultData.hasPremultipliedAlpha = true;
+                resultData.readMetadataFromIcc(profile);
+                co_return resultData;
+            } catch (const runtime_error& e) { tlog::warning("Failed to apply ICC color profile: {}", e.what()); }
+        }
+
+        if (skipColorProcessing) {
+            tlog::debug("Skipping color processing.");
+            co_return resultData;
+        }
+
+        // Otherwise, check for an NCLX color profile and, if not present, assume the image is in Rec.709/sRGB.
+        // See: https://github.com/AOMediaCodec/libavif/wiki/CICP
+        heif_color_profile_nclx* nclx = nullptr;
+        if (const auto imgHandleError = imgHandle ? heif_image_handle_get_nclx_color_profile(imgHandle, &nclx) :
+                                                    heif_error{heif_error_Color_profile_does_not_exist, heif_suberror_Unspecified, ""};
+            imgHandleError.code != heif_error_Ok) {
+            if (imgHandleError.code != heif_error_Color_profile_does_not_exist) {
+                tlog::warning("Failed to read NCLX color profile from handle: {}", imgHandleError.message);
+            }
+        } else if (const auto imgError = heif_image_get_nclx_color_profile(img, &nclx); imgError.code != heif_error_Ok) {
+            if (imgError.code != heif_error_Color_profile_does_not_exist) {
+                tlog::warning("Failed to read NCLX color profile from img: {}", imgError.message);
+            }
+        } else {
+            tlog::debug("Found NCLX color profile. Deriving CICP from it.");
+        }
+
+        const auto nclxGuard = ScopeGuard{[nclx] { heif_nclx_color_profile_free(nclx); }};
+
+        LimitedRange range = LimitedRange::full();
+        if (nclx && nclx->full_range_flag == 0) {
+            range = limitedRangeForBitsPerSample(bitsPerSample);
+        }
+
+        auto cicpTransfer = nclx ? static_cast<ituth273::ETransfer>(nclx->transfer_characteristics) : ituth273::ETransfer::SRGB;
+
+        const auto primaries = (ituth273::EColorPrimaries)(nclx ? nclx->color_primaries : heif_color_primaries_ITU_R_BT_709_5);
+
+        tlog::debug(
+            "CICP: primaries={}, transfer={}, full_range={}",
+            ituth273::toString(primaries),
+            ituth273::toString(cicpTransfer),
+            range == LimitedRange::full() ? "yes" : "no"
+        );
+
+        if (!ituth273::isTransferImplemented(cicpTransfer)) {
+            tlog::warning("Unsupported transfer '{}' in NCLX. Using sRGB instead.", ituth273::toString(cicpTransfer));
+            cicpTransfer = ituth273::ETransfer::SRGB;
+        }
+
+        const size_t numPixels = posProd(size);
+        co_await ThreadPool::global().parallelFor(
+            0uz,
+            numPixels,
+            numPixels * numInterleavedChannels,
+            [&](size_t i) {
+                // HEIF/AVIF unfortunately tends to have the alpha channel premultiplied in non-linear space (after application of the
+                // transfer), so we must unpremultiply prior to the color space conversion and transfer function inversion.
+                const float alpha = hasAlpha ? outView[-1, i] : 1.0f;
+                const float factor = resultData.hasPremultipliedAlpha && alpha > 0.0001f ? (1.0f / alpha) : 1.0f;
+                const float invFactor = resultData.hasPremultipliedAlpha && alpha > 0.0001f ? alpha : 1.0f;
+
+                Vector3f color;
+                for (int c = 0; c < numColorChannels; ++c) {
+                    color[c] = (outView[c, i] - range.offset) * range.scale;
+                }
+
+                color = ituth273::invTransfer(cicpTransfer, color * factor) * invFactor;
+                for (int c = 0; c < numColorChannels; ++c) {
+                    outView[c, i] = color[c];
+                }
+            },
+            priority
+        );
+
+        // Assume heic/avif image is display referred and wants white point adaptation if mismatched. Matches browser behavior.
+        resultData.renderingIntent = ERenderingIntent::RelativeColorimetric;
+
+        resultData.hdrMetadata.bestGuessWhiteLevel = ituth273::bestGuessReferenceWhiteLevel(cicpTransfer);
+        resultData.nativeMetadata.transfer = cicpTransfer;
+
+        // Only convert color space if not already in Rec.709/sRGB *and* if primaries are actually specified
+        if (nclx && nclx->color_primaries != heif_color_primaries_ITU_R_BT_709_5 &&
+            nclx->color_primaries != heif_color_primaries_unspecified) {
+
+            const chroma_t chroma = {
+                {
+                 {nclx->color_primary_red_x, nclx->color_primary_red_y},
+                 {nclx->color_primary_green_x, nclx->color_primary_green_y},
+                 {nclx->color_primary_blue_x, nclx->color_primary_blue_y},
+                 {nclx->color_primary_white_x, nclx->color_primary_white_y},
+                 }
+            };
+
+            resultData.toRec709 = convertColorspaceMatrix(chroma, rec709Chroma(), resultData.renderingIntent);
+            resultData.nativeMetadata.chroma = chroma;
+        } else {
+            resultData.nativeMetadata.chroma = rec709Chroma();
+        }
+
+        co_return resultData;
+    };
+
+    static constexpr auto idealThreadCount = [](size_t numSamples) {
+        // 1 thread per 4 million samples (rgba megapixel) seems to be a good heuristic for parallel decoding. Spawning threads is *really*
+        // expensive, so even taking into account that decoding does quite a bit of processing per sample, we still need a much larger chunk
+        // size than our task-based thread pool. Would be better if libheif exposed a way for us to supply a custom thread pool, but oh well.
+        return clamp(numSamples / (1024 * 1024 * 4), 1uz, (size_t)thread::hardware_concurrency());
+    };
+
+    using HeifDecodingOptionsPtr = unique_ptr<heif_decoding_options, decltype(&heif_decoding_options_free)>;
+    using HeifImageHandlePtr = unique_ptr<heif_image_handle, decltype(&heif_image_handle_release)>;
+
+    const auto decodeImageHandle =
+        [&decodeImage](
+            const heif_image_handle* imgHandle, bool skipColorProcessing, string_view layer = "", string_view partName = ""
+        ) -> Task<ImageData> {
+        tlog::debug("Decoding HEIF image handle '{}'", layer);
+
+        heif_colorspace preferredColorspace = heif_colorspace_undefined;
+        heif_chroma preferredChroma = heif_chroma_undefined;
+        if (auto error = heif_image_handle_get_preferred_decoding_colorspace(imgHandle, &preferredColorspace, &preferredChroma);
+            error.code != heif_error_Ok) {
+            throw ImageLoadError{format("Failed to get preferred decoding colorspace: {}", error.message)};
+        }
+
+        const bool hasAlpha = heif_image_handle_has_alpha_channel(imgHandle);
+
+        bool isMonochrome = preferredColorspace == heif_colorspace_monochrome;
+        if (isMonochrome != (preferredChroma == heif_chroma_monochrome)) {
+            throw ImageLoadError{"Monochrome colorspace and chroma mismatch."};
+        }
+
+        if (hasAlpha) {
+            // We could handle monochrome images with an alpha channel ourselves, but our life becomes easier if we let libheif convert
+            // these to RGBA for us.
+            isMonochrome = false;
+        }
+
+        const int numColorChannels = isMonochrome ? 1 : 3;
+        const int numChannels = numColorChannels + (hasAlpha ? 1 : 0);
+
+        const bool is_little_endian = endian::native == endian::little;
+
+        heif_chroma decodingChroma = heif_chroma_undefined;
+        switch (numChannels) {
+            case 1: decodingChroma = heif_chroma_monochrome; break;
+            case 2: throw ImageLoadError{"Heif images with 2 channels are not supported."};
+            case 3: decodingChroma = is_little_endian ? heif_chroma_interleaved_RRGGBB_LE : heif_chroma_interleaved_RRGGBB_BE; break;
+            case 4: decodingChroma = is_little_endian ? heif_chroma_interleaved_RRGGBBAA_LE : heif_chroma_interleaved_RRGGBBAA_BE; break;
+            default: throw ImageLoadError{"Unsupported number of channels."};
+        }
+
+        // If the preferred colorspace isn't monochrome (even if undefined or YCC), we specify RGB and let libheif handle the conversion.
+        const heif_colorspace decodingColorspace = isMonochrome ? heif_colorspace_monochrome : heif_colorspace_RGB;
+
+        const auto decodingOptions = HeifDecodingOptionsPtr{heif_decoding_options_alloc(), heif_decoding_options_free};
+        if (!decodingOptions) {
+            throw ImageLoadError{"Failed to allocate decoding options."};
+        }
+
+        const auto sizeGuess = Vector2i{heif_image_handle_get_width(imgHandle), heif_image_handle_get_height(imgHandle)};
+        const auto numPixels = posProd(sizeGuess);
+        const auto numSamples = numChannels * numPixels;
+        const auto numThreads = idealThreadCount(numSamples);
+
+        tlog::debug("Decoding with {} threads (numChannels={} numPixels={} numSamples={})", numThreads, numChannels, numPixels, numSamples);
+
+        decodingOptions->num_codec_threads = numThreads;
+        decodingOptions->num_library_threads = numThreads;
+
+        heif_image* img = nullptr;
+        const auto imgGuard = ScopeGuard{[img] { heif_image_release(img); }};
+        if (const auto error = heif_decode_image(imgHandle, &img, decodingColorspace, decodingChroma, decodingOptions.get());
+            error.code != heif_error_Ok) {
+            throw ImageLoadError{format("Failed to decode image: {}", error.message)};
+        }
+
+        co_return co_await decodeImage(img, imgHandle, numChannels, hasAlpha, skipColorProcessing, layer, partName);
+    };
+
+    const auto decodeSingleTrackImage = [&decodeImage](heif_track* track, string_view partName = "") -> Task<optional<ImageData>> {
+        tlog::debug("Decoding HEIF track '{}'", partName);
+
+        const bool hasAlpha = heif_track_has_alpha_channel(track);
+        const bool isMonochrome = false; // TODO: libheif doesn't seem to support monochrome tracks
+
+        const int numColorChannels = 3;
+        const int numChannels = numColorChannels + (hasAlpha ? 1 : 0);
+
+        const bool is_little_endian = endian::native == endian::little;
+
+        heif_chroma decodingChroma = heif_chroma_undefined;
+        switch (numChannels) {
+            case 1: decodingChroma = heif_chroma_monochrome; break;
+            case 2: throw ImageLoadError{"Heif images with 2 channels are not supported."};
+            case 3: decodingChroma = is_little_endian ? heif_chroma_interleaved_RRGGBB_LE : heif_chroma_interleaved_RRGGBB_BE; break;
+            case 4: decodingChroma = is_little_endian ? heif_chroma_interleaved_RRGGBBAA_LE : heif_chroma_interleaved_RRGGBBAA_BE; break;
+            default: throw ImageLoadError{"Unsupported number of channels."};
+        }
+
+        // If the preferred colorspace isn't monochrome (even if undefined or YCC), we specify RGB and let libheif handle the conversion.
+        const heif_colorspace decodingColorspace = isMonochrome ? heif_colorspace_monochrome : heif_colorspace_RGB;
+
+        const auto decodingOptions = HeifDecodingOptionsPtr{heif_decoding_options_alloc(), heif_decoding_options_free};
+        if (!decodingOptions) {
+            throw ImageLoadError{"Failed to allocate decoding options."};
+        }
+
+        uint16_t widthGuess = 1, heightGuess = 1;
+        if (const auto error = heif_track_get_image_resolution(track, &widthGuess, &heightGuess); error.code != heif_error_Ok) {
+            tlog::warning("Failed to get track image resolution: {}", error.message);
+        }
+
+        const auto numPixels = posProd(Vector2i{widthGuess, heightGuess});
+        const auto numSamples = numChannels * numPixels;
+        const auto numThreads = idealThreadCount(numSamples);
+
+        tlog::debug(
+            "Decoding sequence frame with {} threads (numChannels={} numPixels={} numSamples={})", numThreads, numChannels, numPixels, numSamples
+        );
+
+        decodingOptions->num_codec_threads = numThreads;
+        decodingOptions->num_library_threads = numThreads;
+
+        heif_image* img = nullptr;
+        const auto imgGuard = ScopeGuard{[img] { heif_image_release(img); }};
+        if (const auto error = heif_track_decode_next_image(track, &img, decodingColorspace, decodingChroma, decodingOptions.get());
+            error.code != heif_error_Ok) {
+            if (error.code == heif_error_End_of_sequence) {
+                tlog::debug("End of sequence reached for track.");
+                co_return nullopt;
+            }
+
+            throw ImageLoadError{format("Failed to decode track image: {}", error.message)};
+        }
+
+        co_return co_await decodeImage(img, nullptr, numChannels, hasAlpha, false, partName, partName);
+    };
+
+    using HeifCtxPtr = unique_ptr<heif_context, decltype(&heif_context_free)>;
+
+    const auto ctx = HeifCtxPtr{heif_context_alloc(), heif_context_free};
+    if (!ctx) {
+        throw ImageLoadError{"Failed to allocate libheif context."};
+    }
+
+    if (const auto error = heif_context_read_from_reader(ctx.get(), &reader, &readerContext, nullptr); error.code != heif_error_Ok) {
+        throw ImageLoadError{format("Failed to read image: {}", error.message)};
+    }
+
+    // If we're an image *sequence*, load the sequence tracks instead of individual images.
+    const auto seqTrackCount = heif_context_number_of_sequence_tracks(ctx.get());
+    if (seqTrackCount > 0) {
+        tlog::debug("HEIF image contains {} sequence track(s). Loading tracks instead of image.", seqTrackCount);
+
+        vector<uint32_t> trackIds(seqTrackCount);
+        heif_context_get_track_ids(ctx.get(), trackIds.data());
+
+        vector<ImageData> result;
+
+        for (int i = 0; i < seqTrackCount; ++i) {
+            heif_track* track = heif_context_get_track(ctx.get(), trackIds[i]);
+
+            for (size_t frameIdx = 0;; ++frameIdx) {
+                const auto partName = seqTrackCount > 1 ? format("tracks.{}.frames.{}", trackIds[i], frameIdx) :
+                                                          format("frames.{}", frameIdx);
+
+                auto imageData = co_await decodeSingleTrackImage(track, partName);
+                if (!imageData) {
+                    break;
+                }
+
+                result.emplace_back(std::move(*imageData));
+            }
+        }
+
+        // We're done loading the sequence tracks. The below code for handling the primary image would work, but it'd be a fallback
+        // implemented in libheif that just redundantly loads the first image of the first sequence track again.
+        co_return result;
+    }
+
+    const size_t numImages = heif_context_get_number_of_top_level_images(ctx.get());
+    vector<heif_item_id> imageIds(numImages);
+    heif_context_get_list_of_top_level_image_IDs(ctx.get(), imageIds.data(), (int)numImages);
+
+    const auto decodeTopLevelImgIdAndAuxImages = [&](heif_item_id id, string partName) -> Task<ImageData> {
+        tlog::debug("Spawning decoding task for top-level HEIF image ID '{}'", id);
+
+        heif_image_handle* imgHandle;
+        if (const auto error = heif_context_get_image_handle(ctx.get(), id, &imgHandle); error.code != heif_error_Ok) {
+            throw ImageLoadError{format("Failed to get image handle for top-level image ID {}: {}", id, error.message)};
+        }
+
+        auto mainImageTask = ThreadPool::global().enqueueCoroutine(bind(decodeImageHandle, imgHandle, false, partName, partName), priority);
+
+        struct AuxInfo {
+            heif_item_id id;
+            HeifImageHandlePtr handle;
+        };
+
+        vector<AuxInfo> aux;
+
+        if (const int numAux = heif_image_handle_get_number_of_auxiliary_images(imgHandle, LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA); numAux > 0) {
+            vector<heif_item_id> auxIds((size_t)numAux);
+            heif_image_handle_get_list_of_auxiliary_image_IDs(imgHandle, LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA, auxIds.data(), numAux);
+
+            for (const auto auxId : auxIds) {
+                if (heif_image_handle* auxImgHandle;
+                    heif_image_handle_get_auxiliary_image_handle(imgHandle, auxId, &auxImgHandle).code == heif_error_Ok) {
+                    aux.emplace_back(auxId, HeifImageHandlePtr{auxImgHandle, heif_image_handle_release});
+                } else {
+                    tlog::warning("Failed to get auxiliary image handle for ID {}.", auxId);
+                }
+            }
+        }
+
+        heif_image_handle* gainmapImgHandle = nullptr;
+        if (heif_image_handle_get_gain_map_image_handle(imgHandle, &gainmapImgHandle).code == heif_error_Ok) {
+            const auto gainmapItemId = heif_image_handle_get_item_id(gainmapImgHandle);
+            tlog::debug("Found ISO 21496-1 gain map image with ID '{}'. Will be processed while reading auxiliary images.", gainmapItemId);
+
+            // If gainmap isn't an aux image, but a separate item, add it to the aux image list to be processed below.
+            const auto it = ranges::find(aux, gainmapItemId, [](const auto& a) { return a.id; });
+            if (it == aux.end()) {
+                aux.emplace_back(gainmapItemId, HeifImageHandlePtr{gainmapImgHandle, heif_image_handle_release});
+            } else {
+                heif_image_handle_release(gainmapImgHandle);
+                gainmapImgHandle = it->handle.get();
+            }
+        }
+
+        tlog::debug("Spawning decoding tasks for {} auxiliary image(s)", aux.size());
+
+        struct AuxImageData {
+            ImageData data;
+            bool isIsoGainmap = false;
+            bool isAppleGainmap = false;
+            bool retain = false;
+            string name = "";
+
+            bool isGainmap() const { return isIsoGainmap || isAppleGainmap; }
+        };
+
+        vector<Task<optional<AuxImageData>>> auxImageDataTasks;
+        for (const auto& a : aux) {
+            auxImageDataTasks.emplace_back(
+                ThreadPool::global().enqueueCoroutine(
+                    [auxImgHandle = a.handle.get(), gainmapImgHandle, &decodeImageHandle, channelSelector, partName]()
+                        -> Task<optional<AuxImageData>> {
+                        const char* auxType = nullptr;
+                        const auto typeGuard = ScopeGuard{[auxImgHandle, &auxType] {
+                            heif_image_handle_release_auxiliary_type(auxImgHandle, &auxType);
+                        }};
+
+                        if (auto error = heif_image_handle_get_auxiliary_type(auxImgHandle, &auxType); error.code != heif_error_Ok) {
+                            tlog::warning("Failed to get auxiliary image type: {}", error.message);
+                            co_return nullopt;
+                        }
+
+                        string auxLayerName = auxType ? auxType : "";
+                        ranges::replace(auxLayerName, ':', '.');
+
+                        const bool isIsoGainmap = auxImgHandle == gainmapImgHandle;
+                        if (auxLayerName.empty()) {
+                            const heif_item_id auxId = heif_image_handle_get_item_id(auxImgHandle);
+                            auxLayerName = isIsoGainmap ? "gainmap" : format("aux.{}", auxId);
+                        }
+
+                        const bool isAppleGainmap = auxLayerName.find("apple") != string::npos &&
+                            auxLayerName.find("hdrgainmap") != string::npos;
+                        const bool isGainmap = isIsoGainmap || isAppleGainmap;
+                        const bool retainAuxLayer = matchesFuzzy(auxLayerName, channelSelector);
+
+                        if (!retainAuxLayer && !isGainmap) {
+                            co_return nullopt;
+                        }
+
+                        auto data = co_await decodeImageHandle(auxImgHandle, isGainmap, auxLayerName, partName);
+                        co_return AuxImageData{
+                            .data = std::move(data),
+                            .isIsoGainmap = isIsoGainmap,
+                            .isAppleGainmap = isAppleGainmap,
+                            .retain = retainAuxLayer,
+                            .name = auxLayerName,
+                        };
+                    },
+                    priority
+                )
+            );
+        }
+
+        // At this point, tasks have been spawned for decoding the main image and all aux images. Wait for them to complete before
+        // postprocessing.
+        auto mainImage = co_await mainImageTask;
+        auto auxImageData = co_await awaitAll(span{auxImageDataTasks});
+
+        // Read metadata before handling aux images that finished decoding. This metadata can be relevant for interpreting the aux images
+        // (e.g. gain map metadata) and we want to make sure we have it before we start applying gain maps or similar.
+        optional<Exif> exif;
+        optional<IsoGainMapMetadata> isoGainMapMetadata;
+
+        const int numMetadataBlocks = heif_image_handle_get_number_of_metadata_blocks(imgHandle, nullptr);
+        vector<heif_item_id> metadataIds((size_t)numMetadataBlocks);
+
+        if (numMetadataBlocks > 0) {
+            tlog::debug("Found {} metadata block(s).", numMetadataBlocks);
+        }
+
+        heif_image_handle_get_list_of_metadata_block_IDs(imgHandle, nullptr, metadataIds.data(), numMetadataBlocks);
+        for (heif_item_id metaId : metadataIds) {
+            const string_view type = heif_image_handle_get_metadata_type(imgHandle, metaId);
+            const string_view contentType = heif_image_handle_get_metadata_content_type(imgHandle, metaId);
+            const size_t size = heif_image_handle_get_metadata_size(imgHandle, metaId);
+
+            if (size <= 4) {
+                tlog::warning("Failed to get size of metadata.");
+                continue;
+            }
+
+            HeapArray<uint8_t> metadata(size);
+            if (const auto error = heif_image_handle_get_metadata(imgHandle, metaId, metadata.data()); error.code != heif_error_Ok) {
+                tlog::warning("Failed to read metadata: {}", error.message);
+                continue;
+            }
+
+            if (type == "Exif") {
+                tlog::debug("Found EXIF data of size {} bytes", metadata.size());
+
+                try {
+                    // The first four bytes are the length of the exif data and not strictly part of the exif data.
+                    exif = Exif{span<uint8_t>{metadata}.subspan(4)};
+                    mainImage.attributes.emplace_back(exif->toAttributes());
+                } catch (const invalid_argument& e) { tlog::warning("Failed to read EXIF metadata: {}", e.what()); }
+            } else if (contentType == "application/rdf+xml") {
+                tlog::debug("Found XMP data '{}/{}' of size {} bytes", type, contentType, metadata.size());
+
+                try {
+                    Xmp xmp{
+                        string_view{(const char*)metadata.data(), metadata.size()}
+                    };
+
+                    if (!isoGainMapMetadata) {
+                        isoGainMapMetadata = xmp.isoGainMapMetadata();
+                    }
+
+                    mainImage.attributes.emplace_back(xmp.attributes());
+                } catch (const invalid_argument& e) { tlog::warning("Failed to read XMP metadata: {}", e.what()); }
+            } else if (type == "tmap") {
+                tlog::debug("Found tmap data of size {} bytes", metadata.size());
+
+                try {
+                    isoGainMapMetadata = IsoGainMapMetadata{metadata};
+                    tlog::debug("Successfully parsed tmap ISO 21496-1 gain map metadata.");
+                } catch (const invalid_argument& e) { tlog::warning("Failed to read tmap metadata: {}", e.what()); }
+            } else {
+                tlog::debug("Skipping unknown metadata block of type '{}/{}' ({} bytes).", type, contentType, size);
+            }
+        }
+
+        for (auto&& auxImg : viewOptionals(span{auxImageData})) {
+            if (auxImg.isGainmap()) {
+                optional<chroma_t> altImgChroma = nullopt;
+
+                if (auxImg.isIsoGainmap) {
+                    tlog::debug("Found ISO 21496-1 gain map image: {}. Checking for metadata.", auxImg.name);
+
+                    HeapArray<uint8_t> metadataData(heif_image_handle_get_gain_map_metadata_size(imgHandle));
+                    if (metadataData.size() > 0 &&
+                        heif_image_handle_get_gain_map_metadata(imgHandle, metadataData.data()).code == heif_error_Ok) {
+
+                        tlog::debug("Read {} bytes of gainmap metadata. Attempting to override if existing.", metadataData.size());
+
+                        try {
+                            isoGainMapMetadata = IsoGainMapMetadata{
+                                span<uint8_t>{metadataData.data(), metadataData.size()}
+                            };
+
+                            tlog::debug("Successfully parsed ISO 21496-1 gain map metadata.");
+                        } catch (const invalid_argument& e) { tlog::warning("Failed to read gainmap metadata: {}", e.what()); }
+                    } else if (!isoGainMapMetadata) {
+                        tlog::warning("No gainmap metadata found for ISO 21496-1 gain map image.");
+                    }
+
+                    HeapArray<uint8_t> profileData(heif_image_handle_get_derived_image_raw_color_profile_size(imgHandle));
+                    if (profileData.size() > 0 &&
+                        heif_image_handle_get_derived_image_raw_color_profile(imgHandle, profileData.data()).code == heif_error_Ok) {
+
+                        try {
+                            altImgChroma = ColorProfile::fromIcc(profileData).chroma();
+                            if (altImgChroma) {
+                                tlog::debug("ISO 21496-1 alt. image chroma from ICC: {}", *altImgChroma);
+                            }
+                        } catch (const invalid_argument& e) { tlog::warning("Failed to read alt. image ICC profile: {}", e.what()); }
+                    } else if (heif_color_profile_nclx* nclx;
+                               heif_image_handle_get_derived_image_nclx_color_profile(imgHandle, &nclx).code == heif_error_Ok &&
+                               nclx->color_primaries != heif_color_primaries_unspecified) {
+
+                        const auto nclxGuard = ScopeGuard{[nclx] { heif_nclx_color_profile_free(nclx); }};
+
+                        altImgChroma = {
+                            {
+                             {nclx->color_primary_red_x, nclx->color_primary_red_y},
+                             {nclx->color_primary_green_x, nclx->color_primary_green_y},
+                             {nclx->color_primary_blue_x, nclx->color_primary_blue_y},
+                             {nclx->color_primary_white_x, nclx->color_primary_white_y},
+                             }
+                        };
+
+                        tlog::debug("ISO 21496-1 alt. image chroma from NCLX: {}", *altImgChroma);
+                    }
+                }
+
+                // Prioritize ISO 21496-1 gain map application if both types are present. If the gain map is of Apple's type, we can
+                // fall back to their vendor-specific handling (optionally with maker note parameters, but also handles default).
+                if (isoGainMapMetadata) {
+                    tlog::debug("Found ISO 21496-1 gain map w/ metadata: '{}'. Applying.", auxImg.name);
+                    co_await preprocessAndApplyIsoGainMap(
+                        mainImage, auxImg.data, *isoGainMapMetadata, mainImage.nativeMetadata.chroma, altImgChroma, settings.gainmapHeadroom, priority
+                    );
+                } else if (auxImg.isAppleGainmap) {
+                    const auto appleMakerNote = exif ? exif->tryGetAppleMakerNote() : nullopt;
+                    tlog::debug("Found Apple HDR gain map: {} appleMakerNote={}", auxImg.name, appleMakerNote ? "yes" : "no");
+                    co_await preprocessAndApplyAppleGainMap(mainImage, auxImg.data, appleMakerNote, settings.gainmapHeadroom, priority);
+                } else {
+                    tlog::warning("Found ISO 21496-1 gain map '{}' but no associated metadata. Skipping gain map application.", auxImg.name);
+                }
+            }
+
+            if (auxImg.retain) {
+                co_await auxImg.data.matchColorsAndSizeOf(mainImage, priority);
+
+                // TODO: Handle the case where the auxiliary image has different attributes
+                ranges::move(auxImg.data.channels, back_inserter(mainImage.channels));
+            }
+        }
+
+        if (isoGainMapMetadata) {
+            mainImage.attributes.emplace_back(isoGainMapMetadata->toAttributes());
+        }
+
+        co_return mainImage;
+    };
+
+    vector<Task<ImageData>> decodeTasks;
+    for (size_t i = 0; i < numImages; ++i) {
+        const heif_item_id id = imageIds[i];
+        const string partName = numImages > 1 ? format("frames.{}", id) : "";
+
+        decodeTasks.emplace_back(ThreadPool::global().enqueueCoroutine(bind(decodeTopLevelImgIdAndAuxImages, id, partName), priority));
+    }
+
+    co_return co_await awaitAll(span{decodeTasks});
+}
+
+} // namespace tev

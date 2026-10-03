@@ -1,0 +1,43 @@
+/*
+ * tev -- the EDR viewer
+ *
+ * Copyright (C) 2025 Thomas Müller <contact@tom94.net>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <tev/Common.h>
+#include <tev/imageio/ImageSaver.h>
+
+#include <ostream>
+#include <string_view>
+
+namespace tev {
+
+class JxlImageSaver final : public TypedImageSaver<float> {
+public:
+    Task<void> save(
+        std::ostream& oStream, const fs::path& path, std::span<const float> data, nanogui::Vector2i imageSize, int nChannels
+    ) const override;
+
+    // JXL images technically support straight alpha. And, if a non-linear transfer function is used, premultiplied alpha is of the
+    // non-linear kind. However, tev saves JXLs only as lossless HDR image storage, which always uses linear transfer functions and
+    // premultiplied alpha.
+    EAlphaKind alphaKind(std::string_view) const override { return EAlphaKind::Premultiplied; }
+
+    bool canSaveFile(std::string_view extension) const override { return toLower(extension) == ".jxl"; }
+};
+
+} // namespace tev

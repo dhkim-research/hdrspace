@@ -1,0 +1,112 @@
+[submodule "dependencies/args"]
+	path = dependencies/args
+	url = https://github.com/Taywee/args
+	shallow = true
+[submodule "dependencies/Imath"]
+	path = dependencies/Imath
+	url = https://github.com/tom94/Imath
+	shallow = true
+[submodule "dependencies/openexr"]
+	path = dependencies/openexr
+	url = https://github.com/AcademySoftwareFoundation/openexr
+	shallow = true
+[submodule "dependencies/zlib"]
+	path = dependencies/zlib
+	url = https://github.com/madler/zlib
+	shallow = true
+[submodule "dependencies/utfcpp"]
+	path = dependencies/utfcpp
+	url = https://github.com/Tom94/utfcpp
+	shallow = true
+[submodule "dependencies/tinylogger"]
+	path = dependencies/tinylogger
+	url = https://github.com/Tom94/tinylogger
+	shallow = true
+[submodule "dependencies/clip"]
+	path = dependencies/clip
+	url = https://github.com/Tom94/clip
+	shallow = true
+[submodule "dependencies/DirectXTex"]
+	path = dependencies/DirectXTex
+	url = https://github.com/Tom94/DirectXTex
+	shallow = true
+[submodule "dependencies/nanogui"]
+	path = dependencies/nanogui
+	url = https://github.com/Tom94/nanogui-1
+	shallow = true
+[submodule "dependencies/qoi"]
+	path = dependencies/qoi
+	url = https://github.com/phoboslab/qoi.git
+	shallow = true
+[submodule "dependencies/libdeflate"]
+	path = dependencies/libdeflate
+	url = https://github.com/ebiggers/libdeflate
+	shallow = true
+[submodule "dependencies/libheif"]
+	path = dependencies/libheif
+	url = https://github.com/Tom94/libheif
+	shallow = true
+[submodule "dependencies/libde265"]
+	path = dependencies/libde265
+	url = https://github.com/strukturag/libde265
+	shallow = true
+[submodule "dependencies/aom"]
+	path = dependencies/aom
+	url = https://github.com/Tom94/aom
+	shallow = true
+[submodule "dependencies/Little-CMS"]
+	path = dependencies/Little-CMS
+	url = https://github.com/mm2/Little-CMS
+	shallow = true
+[submodule "dependencies/libexif"]
+	path = dependencies/libexif
+	url = https://github.com/Tom94/libexif
+	shallow = true
+[submodule "dependencies/libjpeg-turbo"]
+	path = dependencies/libjpeg-turbo
+	url = https://github.com/tom94/libjpeg-turbo
+	shallow = true
+[submodule "dependencies/libjxl"]
+	path = dependencies/libjxl
+	url = https://github.com/libjxl/libjxl
+	shallow = true
+[submodule "dependencies/libpng"]
+	path = dependencies/libpng
+	url = https://github.com/pnggroup/libpng
+	shallow = true
+[submodule "dependencies/libwebp"]
+	path = dependencies/libwebp
+	url = https://chromium.googlesource.com/webm/libwebp
+	shallow = true
+[submodule "dependencies/LibRaw"]
+	path = dependencies/LibRaw
+	url = https://github.com/LibRaw/LibRaw
+	shallow = true
+[submodule "dependencies/LibRaw-cmake"]
+	path = dependencies/LibRaw-cmake
+	url = https://github.com/LibRaw/LibRaw-cmake
+	shallow = true
+[submodule "dependencies/xmp"]
+	path = dependencies/xmp
+	url = https://github.com/tom94/xmp
+	shallow = true
+[submodule "dependencies/libexpat"]
+	path = dependencies/libexpat
+	url = https://github.com/libexpat/libexpat
+	shallow = true
+[submodule "dependencies/concurrentqueue"]
+	path = dependencies/concurrentqueue
+	url = https://github.com/cameron314/concurrentqueue
+	shallow = true
+[submodule "dependencies/openjpeg"]
+	path = dependencies/openjpeg
+	url = https://github.com/tom94/openjpeg
+	shallow = true
+[submodule "dependencies/libtiff"]
+	path = dependencies/libtiff
+	url = https://github.com/Tom94/libtiff
+	shallow = true
+[submodule "dependencies/small_vector"]
+	path = dependencies/small_vector
+	url = https://github.com/gharveymn/small_vector
+	shallow = true
