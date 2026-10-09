@@ -191,6 +191,29 @@ jobs:
         with:
           sparse-checkout: mergehdr/tests/crossplatform/data
           path: src
+      - name: Package self-test (shell jobs, mergehdr, Radiance)
+        shell: pwsh
+        run: |
+          # The app runs its jobs as POSIX command lines in bin\busybox.exe; do the same here.
+          $root = (Resolve-Path hdrspace-windows-x64).Path
+          $data = (Resolve-Path src/mergehdr/tests/crossplatform/data).Path
+          New-Item -ItemType Directory -Force selftest | Out-Null
+          $work = (Resolve-Path selftest).Path
+          $script = @"
+          set -e
+          export PATH='$root\Resources\radiance\bin';"`$PATH"
+          export RAYPATH='$root\Resources\radiance\lib'
+          cd '$work'
+          cp '$data\a47.hdr' 'a47 copy.hdr'
+          '$root\tools\mergehdr\bin\mergehdr.exe' evalglare 'a47 copy.hdr' > glare.txt
+          getinfo -d 'a47 copy.hdr'
+          pfilt -1 -x /2 -y /2 'a47 copy.hdr' > half.hdr && getinfo -d half.hdr
+          pcond -h 'a47 copy.hdr' > pcond.hdr && getinfo -d pcond.hdr
+          echo "evalglare: `$(cat glare.txt)"
+          "@
+          & "$root/bin/busybox.exe" sh -c $script
+          if ($LASTEXITCODE -ne 0) { throw "self-test failed" }
+
       - name: Start the app (software OpenGL) and take a screenshot
         shell: pwsh
         run: |
@@ -204,11 +227,27 @@ jobs:
             -RedirectStandardOutput smoke-stdout.txt -RedirectStandardError smoke-stderr.txt
           Start-Sleep -Seconds 30
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-          [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          Add-Type -Namespace Win -Name Mouse -MemberDefinition @"
+          [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+          [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extra);
+          "@
           New-Item -ItemType Directory -Force smoke-result | Out-Null
-          $bitmap.Save("$pwd/smoke-result/screenshot.png")
+          function Shot($name) {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save("$pwd/smoke-result/$name.png")
+          }
+          function Click($x, $y, $wait) {
+            [Win.Mouse]::SetCursorPos($x, $y) | Out-Null
+            [Win.Mouse]::mouse_event(2, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [Win.Mouse]::mouse_event(4, 0, 0, 0, 0)
+            Start-Sleep -Seconds $wait
+          }
+          Shot "screenshot"
+          # Tools in the left rail (1024 x 768 screen): Glare, Perceptual maps, Create View
+          Click 61 389 4;  Shot "glare"
+          Click 89 517 4;  Shot "perceptual"
+          Click 78 637 4;  Shot "createview"
           "still running after 30 s: $(-not $app.HasExited)" | Tee-Object smoke-result/status.txt
           if ($app.HasExited) { "exit code: $($app.ExitCode)" | Tee-Object smoke-result/status.txt -Append }
           Copy-Item smoke-stdout.txt, smoke-stderr.txt smoke-result/ -ErrorAction SilentlyContinue
