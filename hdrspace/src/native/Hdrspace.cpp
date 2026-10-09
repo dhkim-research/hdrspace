@@ -6131,7 +6131,7 @@ private:
     std::string createViewShellEnvironmentPrefix() const {
         std::ostringstream env;
 #if defined(_WIN32)
-        const char* separator = ";";
+        const char* separator = "\";\"";  // ";" quoted, or sh would read it as the end of the command
 #else
         const char* separator = ":";
 #endif

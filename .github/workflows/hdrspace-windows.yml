@@ -201,7 +201,7 @@ jobs:
           $work = (Resolve-Path selftest).Path
           $script = @"
           set -e
-          export PATH='$root\Resources\radiance\bin';"`$PATH"
+          export PATH='$root\Resources\radiance\bin;'"`$PATH"
           export RAYPATH='$root\Resources\radiance\lib'
           cd '$work'
           cp '$data\a47.hdr' 'a47 copy.hdr'
