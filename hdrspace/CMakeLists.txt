@@ -182,6 +182,11 @@ if(WIN32)
     "${TEV_SOURCE_DIR}/src/imageio/DdsImageLoader.cpp")
   # tev reads DDS through DirectXTex on Windows (built with the tev dependencies).
   target_link_libraries(hdrspace PRIVATE DirectXTex)
+  # A window app without a console; main() stays the entry point.
+  set_target_properties(hdrspace PROPERTIES WIN32_EXECUTABLE TRUE)
+  if(MSVC)
+    target_link_options(hdrspace PRIVATE /ENTRY:mainCRTStartup)
+  endif()
 endif()
 
 set_source_files_properties("${HDRSPACE_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")

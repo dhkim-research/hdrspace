@@ -79,8 +79,14 @@ jobs:
           Copy-Item build/hdrspace.exe "$stage/bin/"
           Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" "$stage/bin/"
           $redist = "$env:VCToolsRedistDir/x64"
-          Get-ChildItem $redist -Directory | Where-Object { $_.Name -like "Microsoft.VC*.CRT" -or $_.Name -like "Microsoft.VC*.OpenMP*" } |
+          Get-ChildItem $redist -Directory | Where-Object { $_.Name -like "Microsoft.VC*.CRT" } |
             ForEach-Object { Copy-Item "$($_.FullName)/*.dll" "$stage/bin/" }
+          # /openmp:llvm runtime (not in every redist folder)
+          $omp = Get-ChildItem $env:VSINSTALLDIR -Recurse -Filter libomp140.x86_64.dll -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch "debug" } | Select-Object -First 1
+          if (-not $omp) { throw "libomp140.x86_64.dll not found" }
+          "OpenMP runtime: $($omp.FullName)"
+          Copy-Item $omp.FullName "$stage/bin/"
           Copy-Item hdrspace/assets/hdrvdp3-data/* "$stage/Resources/hdrvdp3/data/" -Recurse
           Copy-Item hdrspace/assets/licenses/* "$stage/Resources/licenses/" -Recurse
           Copy-Item hdrspace/assets/branding/hdrspace_icon_1024.png, hdrspace/assets/branding/hdrspace.svg "$stage/Resources/branding/"
@@ -184,3 +190,38 @@ jobs:
         with:
           name: hdrspace-windows-x64
           path: hdrspace-windows-x64/
+
+      # The runner has no GPU; Mesa's software OpenGL (llvmpipe) is put next to a copy of the
+      # app only for this check. Opens a test picture and takes a screenshot of the desktop.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: mergehdr/tests/crossplatform/data
+          path: src
+      - name: Start the app (software OpenGL) and take a screenshot
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z" -OutFile mesa.7z
+          7z x mesa.7z -omesa | Out-Null
+          Copy-Item -Recurse hdrspace-windows-x64 smoke
+          Copy-Item mesa/x64/*.dll smoke/bin/
+          $env:GALLIUM_DRIVER = "llvmpipe"
+          $picture = (Resolve-Path src/mergehdr/tests/crossplatform/data/a47.hdr).Path
+          $app = Start-Process smoke/bin/hdrspace.exe -ArgumentList "`"$picture`"" -PassThru `
+            -RedirectStandardOutput smoke-stdout.txt -RedirectStandardError smoke-stderr.txt
+          Start-Sleep -Seconds 30
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          New-Item -ItemType Directory -Force smoke-result | Out-Null
+          $bitmap.Save("$pwd/smoke-result/screenshot.png")
+          "still running after 30 s: $(-not $app.HasExited)" | Tee-Object smoke-result/status.txt
+          if ($app.HasExited) { "exit code: $($app.ExitCode)" | Tee-Object smoke-result/status.txt -Append }
+          Copy-Item smoke-stdout.txt, smoke-stderr.txt smoke-result/ -ErrorAction SilentlyContinue
+          Get-Content smoke-stderr.txt -ErrorAction SilentlyContinue | Select-Object -First 40
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test
+          path: smoke-result/
