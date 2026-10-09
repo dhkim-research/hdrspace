@@ -188,7 +188,7 @@ set_source_files_properties(${HDRSPACE_BRAND_MISC} PROPERTIES MACOSX_PACKAGE_LOC
 if(MSVC)
   target_compile_options(hdrspace PRIVATE /W1 /utf-8 /bigobj /permissive- /Zc:__cplusplus)
   target_compile_definitions(hdrspace PRIVATE
-    _USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
   target_link_libraries(hdrspace PRIVATE wsock32 ws2_32)
 else()
   target_compile_options(hdrspace PRIVATE

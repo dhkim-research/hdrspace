@@ -245,12 +245,14 @@ Task<vector<ImageData>> loadRadianceHdrWithStbiPath(const fs::path& path, int pr
     int height = 0;
     int numChannels = 0;
 
-    if (!stbi_is_hdr(path.c_str())) {
+    // stb_image takes a char path (UTF-8 on Windows through the app manifest).
+    const std::string pathString = path.string();
+    if (!stbi_is_hdr(pathString.c_str())) {
         throw ImageLoadError{"File is not recognized as Radiance HDR."};
     }
 
     using DataPtr = unique_ptr<void, decltype(&stbi_image_free)>;
-    DataPtr data{stbi_loadf(path.c_str(), &width, &height, &numChannels, 0), stbi_image_free};
+    DataPtr data{stbi_loadf(pathString.c_str(), &width, &height, &numChannels, 0), stbi_image_free};
     if (!data) {
         throw ImageLoadError{stbi_failure_reason()};
     }

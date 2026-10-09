@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cwctype>
 #include <map>
 #include <mutex>
 #include <stdexcept>

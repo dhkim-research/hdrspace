@@ -1,16 +1,19 @@
 name: hdrspace Windows app
 
-# Builds the hdrspace GUI for Windows with MSVC, like upstream tev. While the port is in
-# progress the job does not fail the run (continue-on-error), so a broken build shows up in
-# the run summary instead of sending failure mails.
+# Builds the hdrspace GUI for Windows with MSVC (like upstream tev), the mergehdr command-line
+# tools with MSYS2/GCC, and puts them together with Radiance and a small POSIX shell (busybox)
+# into one folder. While the port is in progress the jobs do not fail the run
+# (continue-on-error), so problems show up in the run summary instead of failure mails.
 on:
   push:
     paths:
       - 'hdrspace/**'
-      - 'mergehdr/glareeval.*'
-      - 'mergehdr/hdrimage.*'
+      - 'mergehdr/**'
       - '.github/workflows/hdrspace-windows.yml'
   workflow_dispatch:
+
+env:
+  RADIANCE_RELEASE: "39b99660"
 
 jobs:
   app:
@@ -45,7 +48,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
-        id: build
         shell: pwsh
         run: |
           cmake --build build --target hdrspace -- -k 0 2>&1 | Tee-Object -FilePath build-log.txt -Append
@@ -58,7 +60,7 @@ jobs:
           "## Build errors (first 200)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           if (Test-Path build-log.txt) {
-            Select-String -Path build-log.txt -Pattern ': (fatal )?error |CMake Error' | Select-Object -First 200 | ForEach-Object { $_.Line } | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            Select-String -Path build-log.txt -Pattern ': (fatal )?error |CMake Error|error LNK' | Select-Object -First 200 | ForEach-Object { $_.Line } | Out-File $env:GITHUB_STEP_SUMMARY -Append
           }
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
 
@@ -68,3 +70,117 @@ jobs:
           name: hdrspace-windows-build-log
           path: build-log.txt
           if-no-files-found: ignore
+
+      - name: Stage the app (exe, runtime DLLs, resources)
+        shell: pwsh
+        run: |
+          $stage = "stage"
+          New-Item -ItemType Directory -Force "$stage/bin", "$stage/Resources/hdrvdp3/data", "$stage/Resources/licenses", "$stage/Resources/branding", "$stage/profiles" | Out-Null
+          Copy-Item build/hdrspace.exe "$stage/bin/"
+          Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" "$stage/bin/"
+          $redist = "$env:VCToolsRedistDir/x64"
+          Get-ChildItem $redist -Directory | Where-Object { $_.Name -like "Microsoft.VC*.CRT" -or $_.Name -like "Microsoft.VC*.OpenMP*" } |
+            ForEach-Object { Copy-Item "$($_.FullName)/*.dll" "$stage/bin/" }
+          Copy-Item hdrspace/assets/hdrvdp3-data/* "$stage/Resources/hdrvdp3/data/" -Recurse
+          Copy-Item hdrspace/assets/licenses/* "$stage/Resources/licenses/" -Recurse
+          Copy-Item hdrspace/assets/branding/hdrspace_icon_1024.png, hdrspace/assets/branding/hdrspace.svg "$stage/Resources/branding/"
+          Copy-Item mergehdr/profiles/* "$stage/profiles/" -Recurse
+          dumpbin /dependents build/hdrspace.exe | Select-String "\.dll"
+          Get-ChildItem "$stage/bin" | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-stage
+          path: stage/
+
+  mergehdr:
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-libraw mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-openexr mingw-w64-ucrt-x86_64-imath mingw-w64-ucrt-x86_64-exiv2
+            mingw-w64-ucrt-x86_64-eigen3 mingw-w64-ucrt-x86_64-boost mingw-w64-ucrt-x86_64-fftw
+      - name: Build and package mergehdr
+        run: |
+          boost_version=$(pacman -Q mingw-w64-ucrt-x86_64-boost | awk '{print $2}' | cut -d- -f1)
+          cmake -S mergehdr -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_STANDARD=17 \
+            -DCMAKE_C_EXTENSIONS=ON -DMERGEHDR_BOOST_MIN_VERSION="$boost_version"
+          cmake --build build --target mergehdr mergehdrcore
+          pkg=pkg/mergehdr
+          mkdir -p "$pkg/bin"
+          cp build/mergehdr.exe build/mergehdrcore.exe "$pkg/bin/"
+          for exe in "$pkg"/bin/*.exe; do ldd "$exe"; done | awk '/\/ucrt64\// {print $3}' | sort -u \
+            | while read -r dll; do cp "$dll" "$pkg/bin/"; done
+          cp -r mergehdr/profiles mergehdr/hdrvdp3 "$pkg/"
+          cp mergehdr/COPYING mergehdr/COPYING.LESSER mergehdr/THIRD_PARTY_NOTICES.rst "$pkg/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mergehdr-cli
+          path: pkg/
+
+  package:
+    needs: [app, mergehdr]
+    runs-on: windows-2022
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-stage
+          path: hdrspace-windows-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mergehdr-cli
+          path: hdrspace-windows-x64/tools
+
+      - name: Radiance and busybox
+        shell: pwsh
+        run: |
+          $root = "hdrspace-windows-x64"
+          $rel = $env:RADIANCE_RELEASE
+          Invoke-WebRequest "https://github.com/LBNL-ETA/Radiance/releases/download/$rel/Radiance_${rel}_Windows.zip" -OutFile radiance.zip
+          Expand-Archive radiance.zip -DestinationPath radiance-zip
+          Get-ChildItem radiance-zip -Depth 2 | Select-Object FullName | Format-Table -AutoSize | Out-String -Width 300
+          $bin = Get-ChildItem radiance-zip -Recurse -Directory -Filter bin | Select-Object -First 1
+          $lib = Get-ChildItem radiance-zip -Recurse -Directory -Filter lib | Select-Object -First 1
+          New-Item -ItemType Directory -Force "$root/Resources/radiance" | Out-Null
+          Copy-Item $bin.FullName "$root/Resources/radiance/bin" -Recurse
+          Copy-Item $lib.FullName "$root/Resources/radiance/lib" -Recurse
+          Get-ChildItem radiance-zip -Recurse -File | Where-Object { $_.Name -match '^(License|LICENSE|COPYRIGHT)' } |
+            Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName "$root/Resources/licenses/Radiance-$($_.Name)" }
+          # busybox-w32 (GPL-2.0): the POSIX shell that runs hdrspace's command lines on Windows
+          Invoke-WebRequest "https://frippery.org/files/busybox/busybox64u.exe" -OutFile "$root/bin/busybox.exe"
+          @(
+            "busybox-w32 (https://frippery.org/busybox/), GPL-2.0.",
+            "Source code: https://frippery.org/files/busybox/ and https://github.com/rmyorston/busybox-w32"
+          ) | Out-File "$root/Resources/licenses/busybox-w32.txt" -Encoding utf8
+          & "$root/bin/busybox.exe" sh -c "echo busybox shell ok; ls '$((Resolve-Path $root/Resources/radiance/bin).Path)' | head -5"
+
+      - name: Read me
+        shell: pwsh
+        run: |
+          @(
+            "hdrspace for Windows (preview build)",
+            "",
+            "Start bin\hdrspace.exe. Keep the folder together: the app finds mergehdr in tools\mergehdr,",
+            "Radiance in Resources\radiance and the shell it uses for jobs (bin\busybox.exe) by their",
+            "place in this folder.",
+            "",
+            "Not available on Windows yet: AI Segmentation and View Volume (SAM 3, Depth Anything 3),",
+            "and the pfstools tone-mapping operators (Radiance pcond works)."
+          ) | Out-File hdrspace-windows-x64/README-Windows.txt -Encoding utf8
+          Get-ChildItem hdrspace-windows-x64 -Recurse -File | Measure-Object -Property Length -Sum | ForEach-Object { "files: $($_.Count), MB: $([math]::Round($_.Sum/1MB,1))" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdrspace-windows-x64
+          path: hdrspace-windows-x64/
