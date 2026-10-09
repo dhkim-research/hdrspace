@@ -1,0 +1,80 @@
+name: mergehdr Windows
+
+# Builds the mergehdr command-line tools for Windows (MSYS2 UCRT64, GCC), runs the
+# cross-platform checks against the macOS reference results and uploads the package.
+on:
+  push:
+    paths:
+      - 'mergehdr/**'
+      - 'hdrspace/vendor/hdrvdp-mex/**'
+      - '.github/workflows/mergehdr-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-libraw
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-openexr
+            mingw-w64-ucrt-x86_64-imath
+            mingw-w64-ucrt-x86_64-exiv2
+            mingw-w64-ucrt-x86_64-eigen3
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-fftw
+            mingw-w64-ucrt-x86_64-python-numpy
+
+      - name: Configure
+        run: |
+          boost_version=$(pacman -Q mingw-w64-ucrt-x86_64-boost | awk '{print $2}' | cut -d- -f1)
+          echo "Boost $boost_version"
+          cmake -S mergehdr -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMERGEHDR_BOOST_MIN_VERSION="$boost_version"
+
+      - name: Build
+        run: cmake --build build --target mergehdr mergehdrcore
+
+      - name: Package
+        run: |
+          pkg=pkg/mergehdr
+          mkdir -p "$pkg/bin"
+          cp build/mergehdr.exe build/mergehdrcore.exe "$pkg/bin/"
+          for exe in "$pkg"/bin/*.exe; do ldd "$exe"; done | awk '/\/ucrt64\// {print $3}' | sort -u \
+            | while read -r dll; do cp "$dll" "$pkg/bin/"; done
+          cp -r mergehdr/profiles mergehdr/hdrvdp3 "$pkg/"
+          cp mergehdr/README.rst mergehdr/COPYING mergehdr/COPYING.LESSER mergehdr/THIRD_PARTY_NOTICES.rst "$pkg/"
+          ls "$pkg/bin"
+          # Runs without MSYS2 on the PATH, as on a normal Windows PC.
+          env PATH="/c/Windows/System32:/c/Windows" "$pkg/bin/mergehdr.exe" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mergehdr-windows-x64
+          path: pkg/
+
+      - name: Compare with the macOS reference
+        run: |
+          bash mergehdr/tests/crossplatform/run_tests.sh pkg/mergehdr/bin/mergehdr.exe \
+            mergehdr/hdrvdp3 mergehdr/tests/crossplatform/data results
+          python mergehdr/tests/crossplatform/compare.py mergehdr/tests/crossplatform/reference results \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crossplatform-results
+          path: results/

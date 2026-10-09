@@ -1,0 +1,7 @@
+detail	HDR-VDP3
+input_color	rad
+viewsize	263192.575998321758
+refcontrast	0.626634539064
+visibility	0.179010435558
+quality	6.365390780433
+output	viewvis_hdrvdp3.hdr

@@ -1,0 +1,2 @@
+map	Eqv_Luminance
+output	pmap_eqv-luminance.hdr

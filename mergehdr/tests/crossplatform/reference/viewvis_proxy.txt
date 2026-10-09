@@ -1,0 +1,7 @@
+detail	Contrast proxy
+input_color	rad
+viewsize	263192.575998321758
+refcontrast	0.083953930612
+visibility	0.684699527555
+quality	6.046107322740
+output	viewvis_proxy.hdr

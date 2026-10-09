@@ -203,7 +203,7 @@ void writeJPEG(const std::string &filename, size_t w, size_t h, float *data, int
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
 
-    FILE *file = fopen(filename.c_str(), "w");
+    FILE *file = fopen(filename.c_str(), "wb");
     if (!file)
         throw std::runtime_error("Unable to open output file");
 

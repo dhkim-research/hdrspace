@@ -1,0 +1,2 @@
+map	Adaptation
+output	pmap_adaptation.hdr

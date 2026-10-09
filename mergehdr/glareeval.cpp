@@ -38,6 +38,9 @@
 #include <Accelerate/Accelerate.h>
 #include <mach-o/dyld.h>
 #endif
+#if defined(_WIN32)
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void *, wchar_t *, unsigned long);
+#endif
 #if __has_include(<fftw3.h>)
 #include <fftw3.h>
 #define MERGEHDR_HAS_FFTW 1
@@ -3051,6 +3054,13 @@ static std::filesystem::path currentExecutableDirectory() {
     const fs::path executable = fs::read_symlink("/proc/self/exe", ec);
     if (!ec)
         return executable.parent_path();
+#elif defined(_WIN32)
+    std::wstring buffer(32768, L'\0');
+    const unsigned long count = GetModuleFileNameW(nullptr, &buffer[0], static_cast<unsigned long>(buffer.size()));
+    if (count > 0 && count < buffer.size()) {
+        buffer.resize(count);
+        return fs::path(buffer).parent_path();
+    }
 #endif
     return {};
 }
@@ -3078,6 +3088,10 @@ std::string resolveHdrvdpResourcePath(const std::string &anchorPath, const std::
         analysisDir / requested,
         hdrvdpRoot / requested,
         bundledHdrvdpRoot / requested,
+#if defined(_WIN32)
+        // Windows package: bin/mergehdr.exe next to hdrvdp3/data.
+        executableDir.empty() ? fs::path() : executableDir.parent_path() / "hdrvdp3" / requested,
+#endif
     };
 
     if (!requested.has_parent_path()) {

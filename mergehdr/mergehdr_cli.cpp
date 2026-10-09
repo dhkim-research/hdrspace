@@ -22,7 +22,9 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#if !defined(_WIN32)
 #include <glob.h>
+#endif
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -35,8 +37,16 @@
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+// Declared here instead of including <windows.h>, whose macros clash with ordinary names.
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void *, wchar_t *, unsigned long);
+#else
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 #include <Eigen/LU>
@@ -382,6 +392,53 @@ std::string shellQuote(const std::string &value) {
     return result;
 }
 
+// Quoting for the command lines that are actually run (popen). On POSIX this is shellQuote();
+// cmd.exe on Windows needs double quotes with the CommandLineToArgvW escaping rules.
+std::string processQuote(const std::string &value) {
+#if defined(_WIN32)
+    std::string result = "\"";
+    size_t backslashes = 0;
+    for (char ch : value) {
+        if (ch == '\\') {
+            ++backslashes;
+        } else if (ch == '"') {
+            result.append(backslashes * 2 + 1, '\\');
+            result += '"';
+            backslashes = 0;
+            continue;
+        } else {
+            backslashes = 0;
+        }
+        result += ch;
+    }
+    result.append(backslashes, '\\');
+    result += '"';
+    return result;
+#else
+    return shellQuote(value);
+#endif
+}
+
+#if defined(_WIN32)
+// cmd /c strips the outer quotes of a command line that starts with a quote, so wrap it once more.
+FILE *openProcessPipe(const std::string &command) {
+    return _popen(("\"" + command + " 2>&1\"").c_str(), "rb");
+}
+int closeProcessPipe(FILE *pipe) {
+    return _pclose(pipe);
+}
+#else
+FILE *openProcessPipe(const std::string &command) {
+    return popen((command + " 2>&1").c_str(), "r");
+}
+int closeProcessPipe(FILE *pipe) {
+    const int status = pclose(pipe);
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    return -1;
+}
+#endif
+
 std::string getExecutablePath() {
 #if defined(__APPLE__)
     uint32_t len = PATH_MAX;
@@ -397,6 +454,13 @@ std::string getExecutablePath() {
     std::string path(resolved);
     free(resolved);
     return path;
+#elif defined(_WIN32)
+    std::wstring buffer(32768, L'\0');
+    const unsigned long count = GetModuleFileNameW(nullptr, &buffer[0], static_cast<unsigned long>(buffer.size()));
+    if (count == 0 || count >= buffer.size())
+        throw std::runtime_error("Unable to determine executable path.");
+    buffer.resize(count);
+    return fs::path(buffer).string();
 #else
     char buffer[PATH_MAX];
     ssize_t count = readlink("/proc/self/exe", buffer, PATH_MAX);
@@ -535,7 +599,11 @@ VignettingTable loadVignettingTable(const std::string &path) {
 
 std::string coreBinaryPath() {
     fs::path exe = fs::canonical(fs::path(getExecutablePath()));
+#if defined(_WIN32)
+    fs::path candidate = exe.parent_path() / "mergehdrcore.exe";
+#else
     fs::path candidate = exe.parent_path() / "mergehdrcore";
+#endif
     if (!fs::exists(candidate))
         throw std::runtime_error("Unable to locate mergehdrcore.");
     return candidate.string();
@@ -793,6 +861,33 @@ std::vector<std::string> expandPrintfPattern(const std::string &pattern) {
     return results;
 }
 
+#if defined(_WIN32)
+// fnmatch-style match of * and ? (case-insensitive, as Windows file names are).
+bool wildcardMatch(const std::string &pattern, const std::string &name) {
+    size_t p = 0, n = 0, star = std::string::npos, mark = 0;
+    const auto same = [](char a, char b) {
+        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+    };
+    while (n < name.size()) {
+        if (p < pattern.size() && (pattern[p] == '?' || same(pattern[p], name[n]))) {
+            ++p;
+            ++n;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star = p++;
+            mark = n;
+        } else if (star != std::string::npos) {
+            p = star + 1;
+            n = ++mark;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == '*')
+        ++p;
+    return p == pattern.size();
+}
+#endif
+
 std::vector<std::string> expandInputArg(const std::string &arg) {
     if (arg.find('%') != std::string::npos) {
         std::vector<std::string> expanded = expandPrintfPattern(arg);
@@ -800,6 +895,26 @@ std::vector<std::string> expandInputArg(const std::string &arg) {
             return expanded;
     }
 
+#if defined(_WIN32)
+    if (hasWildcard(arg)) {
+        // No glob() on Windows: match * and ? in the file-name part, sorted like glob().
+        const fs::path pattern(arg);
+        const fs::path directory = pattern.has_parent_path() ? pattern.parent_path() : fs::path(".");
+        const std::string namePattern = pattern.filename().string();
+        std::vector<std::string> expanded;
+        if (fs::is_directory(directory)) {
+            for (const fs::directory_entry &entry : fs::directory_iterator(directory)) {
+                const std::string name = entry.path().filename().string();
+                if (wildcardMatch(namePattern, name))
+                    expanded.push_back(pattern.has_parent_path() ? (directory / name).string() : name);
+            }
+        }
+        if (expanded.empty())
+            throw std::runtime_error("Pattern did not match any files: " + arg);
+        std::sort(expanded.begin(), expanded.end());
+        return expanded;
+    }
+#else
     if (hasWildcard(arg)) {
         glob_t matches;
         std::memset(&matches, 0, sizeof(matches));
@@ -814,6 +929,7 @@ std::vector<std::string> expandInputArg(const std::string &arg) {
         globfree(&matches);
         return expanded;
     }
+#endif
 
     return std::vector<std::string>(1, arg);
 }
@@ -2357,14 +2473,18 @@ int matchCoreStage(const std::string &line, const RunOptions &opts) {
 }
 
 int runCoreCommand(const std::string &command, const RunOptions &opts, std::vector<std::string> &captured) {
-    FILE *pipe = popen((command + " 2>&1").c_str(), "r");
+    FILE *pipe = openProcessPipe(command);
     if (!pipe)
         throw std::runtime_error("Unable to launch mergehdrcore.");
 
     std::vector<std::string> stages = plannedCoreStages(opts);
     std::set<int> emittedStages;
     std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+    bool interactive = _isatty(_fileno(stderr)) != 0;
+#else
     bool interactive = isatty(STDERR_FILENO);
+#endif
     bool progressInitialized = false;
     char buffer[4096];
     while (fgets(buffer, sizeof(buffer), pipe)) {
@@ -2380,15 +2500,22 @@ int runCoreCommand(const std::string &command, const RunOptions &opts, std::vect
                 startTime, interactive, progressInitialized);
         }
     }
-    int status = pclose(pipe);
+    const int rc = closeProcessPipe(pipe);
     if (interactive && progressInitialized)
         std::cerr.flush();
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-    return -1;
+    return rc;
 }
 
 std::string temporaryDirectory() {
+#if defined(_WIN32)
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const fs::path candidate = fs::temp_directory_path() / fs::unique_path("mergehdr-%%%%-%%%%-%%%%");
+        boost::system::error_code ec;
+        if (fs::create_directory(candidate, ec) && !ec)
+            return candidate.string();
+    }
+    throw std::runtime_error("Unable to create a temporary directory.");
+#else
     std::string templ = "/tmp/mergehdrXXXXXX";
     std::vector<char> buffer(templ.begin(), templ.end());
     buffer.push_back('\0');
@@ -2396,6 +2523,7 @@ std::string temporaryDirectory() {
     if (!dir)
         throw std::runtime_error("Unable to create a temporary directory.");
     return dir;
+#endif
 }
 
 void removeTree(const fs::path &path) {
@@ -5343,7 +5471,7 @@ CalibrationSampleResult parseCalibrationSample(const std::vector<std::string> &c
 }
 
 int runQuietCommand(const std::string &command, std::vector<std::string> &captured) {
-    FILE *pipe = popen((command + " 2>&1").c_str(), "r");
+    FILE *pipe = openProcessPipe(command);
     if (!pipe)
         throw std::runtime_error("Unable to launch mergehdrcore.");
 
@@ -5355,10 +5483,7 @@ int runQuietCommand(const std::string &command, std::vector<std::string> &captur
         captured.push_back(line);
     }
 
-    int status = pclose(pipe);
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-    return -1;
+    return closeProcessPipe(pipe);
 }
 
 CalibrationSampleResult runCalibrationSample(const CalibrationCommonOptions &opts,
@@ -5412,7 +5537,7 @@ CalibrationSampleResult runCalibrationSample(const CalibrationCommonOptions &opt
 
     std::vector<std::string> quoted;
     for (size_t i = 0; i < commandArgs.size(); ++i)
-        quoted.push_back(shellQuote(commandArgs[i]));
+        quoted.push_back(processQuote(commandArgs[i]));
 
     std::vector<std::string> captured;
     int rc = runQuietCommand(joinStrings(quoted, " "), captured);
@@ -5760,11 +5885,19 @@ fs::path hdrspaceSupportDirectory() {
         if (*configured)
             return fs::path(configured);
     }
+#if defined(_WIN32)
+    const char *localAppData = std::getenv("LOCALAPPDATA");
+    if (!localAppData || !*localAppData)
+        throw std::runtime_error(
+            "LOCALAPPDATA is unavailable; set HDRSPACE_SUPPORT_DIR for the DA3 runtime.");
+    return fs::path(localAppData) / "hdrspace";
+#else
     const char *home = std::getenv("HOME");
     if (!home || !*home)
         throw std::runtime_error(
             "HOME is unavailable; set HDRSPACE_SUPPORT_DIR for the DA3 runtime.");
     return fs::path(home) / "Library" / "Application Support" / "hdrspace";
+#endif
 }
 
 fs::path viewVosRuntimeRoot() {
@@ -5877,6 +6010,21 @@ int runViewVosCalculation(const ViewVosCalculationOptions &opts) {
         command.push_back(resolved.windowMaskPath);
     }
 
+#if defined(_WIN32)
+    _putenv_s("HF_HOME", hfHome.string().c_str());
+    _putenv_s("HF_HUB_CACHE", (hfHome / "hub").string().c_str());
+    std::vector<std::string> quotedCommand;
+    for (const std::string &argument : command)
+        quotedCommand.push_back(processQuote(argument));
+    std::vector<const char *> spawnArgv;
+    for (const std::string &argument : quotedCommand)
+        spawnArgv.push_back(argument.c_str());
+    spawnArgv.push_back(nullptr);
+    const intptr_t spawnStatus = _spawnv(_P_WAIT, python.string().c_str(), spawnArgv.data());
+    if (spawnStatus < 0)
+        throw std::runtime_error("Unable to start the DA3 VOS process: " + std::string(std::strerror(errno)));
+    return static_cast<int>(spawnStatus);
+#else
     const pid_t child = fork();
     if (child < 0)
         throw std::runtime_error("Unable to start the DA3 VOS process: " + std::string(std::strerror(errno)));
@@ -5911,6 +6059,7 @@ int runViewVosCalculation(const ViewVosCalculationOptions &opts) {
         return 128 + signalNumber;
     }
     return 1;
+#endif
 }
 
 int printViewVisibility(const ViewVisibilityCliOptions &opts) {
@@ -6326,7 +6475,7 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
 
     std::vector<std::string> quoted;
     for (const std::string &arg : commandArgs)
-        quoted.push_back(shellQuote(arg));
+        quoted.push_back(processQuote(arg));
 
     std::vector<std::string> captured;
     int rc = runCoreCommand(joinStrings(quoted, " "), resolved, captured);
@@ -6467,6 +6616,10 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
 } // namespace
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    // HDR output can go to stdout; keep it binary (no CR/LF translation).
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
     try {
         if (argc > 0 && argv[0])
             g_invoked_argv0 = argv[0];

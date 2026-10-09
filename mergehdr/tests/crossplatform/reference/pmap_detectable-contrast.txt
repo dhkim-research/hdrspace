@@ -1,0 +1,2 @@
+map	Detectable contrast
+output	pmap_detectable-contrast.hdr

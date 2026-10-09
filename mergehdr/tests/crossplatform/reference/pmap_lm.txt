@@ -1,0 +1,2 @@
+map	L+M
+output	pmap_lm.hdr

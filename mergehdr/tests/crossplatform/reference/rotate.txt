@@ -1,0 +1,1 @@
+Writing rotate.hdr (512x512, 3 channels, Radiance RGBE) .. 
