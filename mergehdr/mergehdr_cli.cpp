@@ -77,6 +77,7 @@ struct RunOptions {
     bool fisheye = false;
     bool bloomPrevent = false;
     bool rawgrid = false;
+    bool demosaicFirst = false;   // --demosaic-first: pylinearhdr --interpfirst order (default off)
     bool fisheyeOverride = false;
     bool colorspaceOverride = false;
     bool demosaicOverride = false;
@@ -2207,6 +2208,8 @@ std::string buildCommandLine(const GlobalOptions &global, const RunOptions &opts
     } else {
         parts.push_back("--demosaic");
         parts.push_back(canonicalDemosaic(opts.demosaic));
+        if (opts.demosaicFirst)
+            parts.push_back("--demosaic-first");
     }
     parts.push_back("--merge-weight");
     parts.push_back(canonicalMergeWeight(opts.mergeWeight));
@@ -2276,6 +2279,8 @@ std::string buildCoreStep(const RunOptions &opts, const std::vector<float> &xyzc
     } else {
         parts.push_back("--demosaic");
         parts.push_back(canonicalDemosaic(opts.demosaic));
+        if (opts.demosaicFirst)
+            parts.push_back("--demosaicfirst");
     }
     parts.push_back("--mergestyle");
     parts.push_back(canonicalMergeWeight(opts.mergeWeight));
@@ -3665,7 +3670,8 @@ ResolvedRawLevels resolveRawLevels(bool blackOverride, int blacklevel,
         levels.headerWhitepoint = rawLevels.whitepoint;
     }
 
-    // The core subtracts each frame's own LibRaw black level unless a black level was given.
+    // LibRaw subtracts each frame's black correction; an explicit black value
+    // sets the common encoding baseline without subtracting it a second time.
     levels.coreBlacklevel = blackOverride ? levels.headerBlacklevel : -1;
     if (levels.headerBlacklevel >= 0 && levels.headerWhitepoint >= 0)
         levels.coreWhitepoint = levels.headerBlacklevel + levels.headerWhitepoint;
@@ -3890,6 +3896,8 @@ std::string runHelp(const std::string &command) {
     oss << "                     Bad pixel coordinates as \"x,y x,y ...\".\n";
     oss << "  --rawgrid           Export a sparse 3-channel raw grid without interpolation.\n";
     oss << "                     Forces colorspace raw and skips fisheye reprojection.\n";
+    oss << "  --demosaic-first    Demosaic each exposure (DHT) before merging, as pylinearhdr\n";
+    oss << "                     --interpfirst; needs --merge-weight linearhdr --demosaic dht.\n";
     oss << "  --demosaic TEXT\n";
     oss << "                     Demosaicing: ahd or dht.\n";
     oss << "  --merge-weight TEXT\n";
@@ -3967,6 +3975,7 @@ RunOptions parseRunOptions(const std::vector<std::string> &args) {
         ("verbose", po::bool_switch(&opts.verbose), "verbose")
         ("bloom-prevent", po::bool_switch(&opts.bloomPrevent), "bloom-prevent")
         ("rawgrid", po::bool_switch(&opts.rawgrid), "rawgrid")
+        ("demosaic-first", po::bool_switch(&opts.demosaicFirst), "demosaic-first")
         ("correct", po::bool_switch()->default_value(false), "correct")
         ("no-correct", po::bool_switch()->default_value(false), "no-correct")
         ("fisheye", po::bool_switch()->default_value(false), "fisheye")
@@ -4070,6 +4079,12 @@ void validateRunOptions(const RunOptions &opts) {
     std::string mergeWeight = canonicalMergeWeight(opts.mergeWeight);
     if (mergeWeight != "hdrmerge" && mergeWeight != "linearhdr")
         throw std::runtime_error("Merge weighting must be 'hdrmerge' or 'linearhdr'.");
+    if (opts.demosaicFirst) {
+        if (opts.rawgrid)
+            throw std::runtime_error("--demosaic-first cannot be combined with --rawgrid.");
+        if (mergeWeight != "linearhdr" || demosaic != "dht")
+            throw std::runtime_error("--demosaic-first needs --merge-weight linearhdr --demosaic dht (e.g. --bloom-prevent).");
+    }
     if (opts.dualFisheye) {
         if (opts.fisheye)
             throw std::runtime_error("dual_fisheye performs its own calibrated projection; disable the regular fisheye option.");
@@ -6395,6 +6410,8 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
     } else {
         commandArgs.push_back("--demosaic");
         commandArgs.push_back(canonicalDemosaic(resolved.demosaic));
+        if (resolved.demosaicFirst)
+            commandArgs.push_back("--demosaicfirst");
     }
     commandArgs.push_back("--mergestyle");
     commandArgs.push_back(canonicalMergeWeight(resolved.mergeWeight));

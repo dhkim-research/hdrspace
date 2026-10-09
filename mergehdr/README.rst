@@ -230,6 +230,13 @@ Notes
 - If ``--xyzcam`` is omitted, ``mergehdr`` reads the matrix from the first RAW
   file natively through LibRaw.
 - Build directories are local artifacts and are ignored by git.
+- RAW black correction and full-scale white are decoded for every exposure.
+  Before merging, each frame is normalized to a common black/white encoding,
+  so mixed ISO values or RAW bit depths do not hide clipped samples.
+  ``--blacklevel`` sets that common baseline after LibRaw's per-frame black
+  correction; it is not subtracted a second time. Profile white/saturation
+  settings then operate on the common encoding. Camera photometric calibration
+  must be checked when changing the RAW normalization workflow.
 
 Acknowledgements
 ----------------

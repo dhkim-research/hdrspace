@@ -301,7 +301,7 @@ int main(int argc, char **argv) {
             "Should contain one parameter per line in key=value format. The command line takes precedence "
             "when an argument is specified multiple times.\n")
         ("blacklevel", po::value<int>(),
-            "Override the sensor black level used to normalize RAW values.\n")
+            "Set the common RAW black baseline after per-frame LibRaw black correction.\n")
         ("whitepoint", po::value<int>(),
             "Override the sensor white point used to normalize RAW values.\n")
         ("saturation", po::value<float>(),
@@ -346,6 +346,8 @@ int main(int argc, char **argv) {
         ("cam2rgb", po::value<std::string>(),
             "Matrix that transforms from camera RGB to the target RGB color space\n")
         ("solid2ang", "Convert a demosaiced 180-degree equisolid fisheye image to equiangular before writing\n")
+        ("demosaicfirst", "Demosaic every exposure (DHT) before merging and merge RGB as linearhdr -B "
+            "(pylinearhdr --interpfirst). Requires --mergestyle linearhdr.\n")
         ("scale", po::value<float>(),
             "Optional scale factor that is applied to the image\n")
         ("crop", po::value<std::string>(),
@@ -629,7 +631,7 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        es.load();
+        es.load(vm.count("blacklevel") ? vm["blacklevel"].as<int>() : -1);
         if (!badpixels.empty())
             es.repairBadPixels();
 
@@ -657,8 +659,7 @@ int main(int argc, char **argv) {
         }
 
         if (vm.count("blacklevel")) {
-            es.blacklevel = vm["blacklevel"].as<int>();
-            cout << "Overriding black level: " << es.blacklevel << endl;
+            cout << "Using common black baseline: " << es.blacklevel << endl;
         }
 
         if (vm.count("whitepoint")) {
@@ -748,17 +749,30 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        /// Step 1: HDR merge
-        es.merge();
-
-        /// Step 3: Demosaicing / raw-grid expansion
         bool rawgrid = vm.count("rawgrid") != 0;
         bool demosaic = vm.count("nodemosaic") == 0 && !rawgrid;
         bool rgb_output = demosaic || rawgrid;
-        if (demosaic)
-            es.demosaic(sensor2xyz, demosaic_method);
-        else if (rawgrid)
-            es.rawgrid();
+        const bool demosaic_first = vm.count("demosaicfirst") != 0;
+        if (demosaic_first) {
+            /// Steps 1+3 in the other order: demosaic each exposure, then merge (pylinearhdr --interpfirst)
+            if (!demosaic)
+                throw std::runtime_error("--demosaicfirst cannot be combined with --rawgrid or --nodemosaic.");
+            if (merge_method != EMergePyLinear)
+                throw std::runtime_error("--demosaicfirst requires --mergestyle linearhdr.");
+            if (demosaic_method != EDemosaicDHT)
+                throw std::runtime_error("--demosaicfirst uses DHT (as pylinearhdr --interpfirst); pass --demosaic dht.");
+            const float identity[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+            es.mergeDemosaicFirst(apply_cam2rgb ? cam2rgb : identity, false);
+        } else {
+            /// Step 1: HDR merge
+            es.merge();
+
+            /// Step 3: Demosaicing / raw-grid expansion
+            if (demosaic)
+                es.demosaic(sensor2xyz, demosaic_method);
+            else if (rawgrid)
+                es.rawgrid();
+        }
 
         /// Step 4: Transform colors
         if (colormode != ENative) {

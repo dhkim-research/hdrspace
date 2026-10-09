@@ -3,6 +3,7 @@ if(POLICY CMP0167)
   cmake_policy(SET CMP0167 OLD)
 endif()
 project(mergehdrcore)
+include(CTest)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -113,6 +114,10 @@ set(CMAKE_CXX_FLAGS "-std=c++17 -Wall -Wno-deprecated-declarations -Wno-deprecat
 add_definitions(-D_USE_MATH_DEFINES -D_UNICODE -DUNICODE)
 
 add_executable(mergehdrcore input.cpp output.cpp main.cpp hdr.cpp fitexp.cpp resample.cpp misc.cpp dht_port.cpp dht_demosaic_linearhdr.cpp camera_detect.cpp)
+if(BUILD_TESTING)
+  add_executable(raw_normalization_test tools/test_raw_normalization.cpp)
+  add_test(NAME raw_normalization COMMAND raw_normalization_test)
+endif()
 
 add_executable(mergehdr
   mergehdr_cli.cpp

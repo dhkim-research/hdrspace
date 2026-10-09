@@ -1,8 +1,10 @@
 #include "hdrmerge.h"
 #include "camera_detect.h"
+#include "raw_normalization.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <sstream>
 #include <sys/stat.h>
 #include <boost/format.hpp>
 
@@ -283,7 +285,7 @@ bool fexists(const std::string& name) {
     return stat(name.c_str(), &buffer) == 0;
 }
 
-void ExposureSeries::load() {
+void ExposureSeries::load(int commonBlackOverride) {
     cout << "Loading raw image data ..";
     cout.flush();
 
@@ -298,7 +300,7 @@ void ExposureSeries::load() {
     DecodedRawFrame first = decodeWithLibRaw(exposures[0].filename);
     this->width = first.width;
     this->height = first.height;
-    this->blacklevel = first.blacklevel;
+    this->blacklevel = commonBlackOverride >= 0 ? commonBlackOverride : first.blacklevel;
     this->whitepoint = first.whitepoint;
     this->filter = first.filter;
     decoded[0] = std::move(first);
@@ -332,44 +334,50 @@ void ExposureSeries::load() {
                 % exposures[i].filename).str());
     }
 
-    /* Every frame had its own LibRaw black level (black + per-channel cblack, measured per
-       frame) subtracted in decodeWithLibRaw() and its own scalar baseline added back. Re-base
-       all frames to one common baseline, so that normalizing with that baseline removes each
-       frame's own black exactly, as linearhdr's rawconvert does per frame. */
+    // Detect decoder scale mismatches per frame, never against the first frame's
+    // black/white pair: ISO and RAW bit depth can change within one bracket.
     for (size_t i = 0; i < decoded.size(); ++i) {
-        const int delta = decoded[i].blacklevel - this->blacklevel;
-        if (delta == 0)
-            continue;
-        uint16_t *image = decoded[i].image.get();
+        DecodedRawFrame &frame = decoded[i];
+        const uint16_t *image = frame.image.get();
         const size_t pixelCount = decoded[i].width * decoded[i].height;
-        for (size_t j = 0; j < pixelCount; ++j)
-            image[j] = static_cast<uint16_t>(std::clamp(static_cast<int>(image[j]) - delta, 0, 65535));
-    }
-
-    int observedMaximum = 0;
-    size_t samplesAboveMismatch = 0;
-    size_t totalSamples = 0;
-    const int range = this->whitepoint - this->blacklevel;
-    const int mismatchThreshold = range > 0
-        ? std::min(65535, this->blacklevel + 2 * range)
-        : 65535;
-    for (size_t i = 0; i < decoded.size(); ++i) {
-        const uint16_t *image = decoded[i].image.get();
-        const size_t pixelCount = decoded[i].width * decoded[i].height;
-        totalSamples += pixelCount;
+        int observedMaximum = 0;
+        size_t samplesAboveMismatch = 0;
+        const int mismatchThreshold = std::min(65535,
+            frame.blacklevel + 2 * (frame.whitepoint - frame.blacklevel));
         for (size_t j = 0; j < pixelCount; ++j) {
             int value = image[j];
             observedMaximum = std::max(observedMaximum, value);
             if (value > mismatchThreshold)
                 ++samplesAboveMismatch;
         }
+        frame.whitepoint = adjustRawWhitepointForObservedScale(frame.blacklevel,
+            frame.whitepoint, observedMaximum, samplesAboveMismatch, pixelCount);
+        this->whitepoint = std::max(this->whitepoint, frame.whitepoint);
     }
-    this->whitepoint = adjustRawWhitepointForObservedScale(
-        this->blacklevel,
-        this->whitepoint,
-        observedMaximum,
-        samplesAboveMismatch,
-        totalSamples);
+
+    if (this->whitepoint <= this->blacklevel)
+        throw std::runtime_error("The common RAW white point must exceed the black baseline.");
+
+    // Normalize before applying a profile's white/saturation cutoff. A custom
+    // black value becomes the common baseline, not a second subtraction from
+    // already black-corrected data. A custom white cutoff still rejects values
+    // earlier than decoder full scale, as requested by the camera profile.
+    std::ostringstream frameLevels;
+    for (size_t i = 0; i < decoded.size(); ++i) {
+        DecodedRawFrame &frame = decoded[i];
+        uint16_t *image = frame.image.get();
+        const size_t pixelCount = frame.width * frame.height;
+        #pragma omp parallel for
+        for (size_t j = 0; j < pixelCount; ++j)
+            image[j] = normalizeRawSample(image[j], frame.blacklevel, frame.whitepoint,
+                this->blacklevel, this->whitepoint);
+        if (i) frameLevels << "; ";
+        frameLevels << exposures[i].filename << ":" << frame.blacklevel << "," << frame.whitepoint;
+    }
+    metadata["RAW_NORMALIZATION"] = "Per-frame LibRaw black/white to common full scale; saturation preserved";
+    metadata["RAW_FRAME_LEVELS"] = frameLevels.str();
+    metadata["RAW_COMMON_BLACK"] = std::to_string(this->blacklevel);
+    metadata["RAW_COMMON_FULL_SCALE_WHITE"] = std::to_string(this->whitepoint);
 
     for (size_t i = 0; i < exposures.size(); ++i) {
         exposures[i].image = decoded[i].image.release();

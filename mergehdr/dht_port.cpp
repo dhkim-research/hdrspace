@@ -42,8 +42,9 @@ private:
 
 }
 
-void demosaicDHT(ExposureSeries &series, bool median) {
-    cout << "DHT demosaicing .." << endl;
+void demosaicDHT(ExposureSeries &series, bool median, bool announce) {
+    if (announce)
+        cout << "DHT demosaicing .." << endl;
 
     if (series.image_demosaiced) {
         delete[] series.image_demosaiced;

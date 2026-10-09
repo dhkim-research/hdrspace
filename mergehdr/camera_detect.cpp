@@ -233,6 +233,8 @@ bool detectRawLevelsAuto(const std::vector<std::string> &filenames, RawLevelInfo
     if (!prepareBlackNormalizedRaw(raw, info.blacklevel, info.absoluteWhitepoint, errorMessage))
         return false;
     ObservedRawScale observed = observeRawScale(raw, info.blacklevel, info.absoluteWhitepoint);
+    info.absoluteWhitepoint = adjustRawWhitepointForObservedScale(info.blacklevel,
+        info.absoluteWhitepoint, observed.maximum, observed.samplesAboveMismatch, observed.totalSamples);
     raw.recycle();
 
     for (std::size_t i = 1; i < filenames.size(); ++i) {
@@ -253,18 +255,13 @@ bool detectRawLevelsAuto(const std::vector<std::string> &filenames, RawLevelInfo
         int frameAbsoluteWhitepoint = -1;
         if (!prepareBlackNormalizedRaw(nextRaw, frameBlacklevel, frameAbsoluteWhitepoint, errorMessage))
             return false;
-        ObservedRawScale frameObserved = observeRawScale(nextRaw, info.blacklevel, info.absoluteWhitepoint);
-        observed.maximum = std::max(observed.maximum, frameObserved.maximum);
-        observed.samplesAboveMismatch += frameObserved.samplesAboveMismatch;
-        observed.totalSamples += frameObserved.totalSamples;
+        ObservedRawScale frameObserved = observeRawScale(nextRaw, frameBlacklevel, frameAbsoluteWhitepoint);
+        frameAbsoluteWhitepoint = adjustRawWhitepointForObservedScale(frameBlacklevel,
+            frameAbsoluteWhitepoint, frameObserved.maximum,
+            frameObserved.samplesAboveMismatch, frameObserved.totalSamples);
+        info.absoluteWhitepoint = std::max(info.absoluteWhitepoint, frameAbsoluteWhitepoint);
     }
 
-    info.absoluteWhitepoint = adjustRawWhitepointForObservedScale(
-        info.blacklevel,
-        info.absoluteWhitepoint,
-        observed.maximum,
-        observed.samplesAboveMismatch,
-        observed.totalSamples);
     info.whitepoint = std::max(1, info.absoluteWhitepoint - info.blacklevel);
     return true;
 }

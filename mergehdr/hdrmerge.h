@@ -163,7 +163,7 @@ struct ExposureSeries {
      * and fill the exposure series with a normalized RGB floating
      * point image representation
      */
-    void load();
+    void load(int commonBlackOverride = -1);
 
     /// Initialize the exposure / weight table
     void initTables(float saturation, EMergeMethod method = EMergeHDRMerge,
@@ -181,6 +181,14 @@ struct ExposureSeries {
 
     /// Merge all exposures into a single HDR image and release the RAW data
     void merge();
+
+    /**
+     * Demosaic-first merge (port of pylinearhdr --interpfirst): every exposure is
+     * demosaiced on its own (DHT, clipped to [0,1] like rawconvert's 16-bit output) and the
+     * RGB frames are merged with linearhdr's merge_rgb rule (worst-channel weight, saturation
+     * also tested after the camera->target matrix). Writes image_demosaiced and releases the RAW data.
+     */
+    void mergeDemosaicFirst(const float *cam2rgb, bool median = false);
 
     /// Compute average value and in-range fraction for a Bayer channel without writing an image.
     RawChannelSampleStats sampleRawChannel(int channel);
@@ -342,6 +350,6 @@ extern std::istream& operator>>(std::istream& in, EDemosaicMethod& unit);
 extern std::istream& operator>>(std::istream& in, EMergeMethod& unit);
 
 /// Native DHT demosaicing port used by hdrmerge.
-extern void demosaicDHT(ExposureSeries &series, bool median);
+extern void demosaicDHT(ExposureSeries &series, bool median, bool announce = true);
 
 #endif /* __HDRMERGE_H */

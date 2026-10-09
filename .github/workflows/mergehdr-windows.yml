@@ -76,8 +76,32 @@ jobs:
           python mergehdr/tests/crossplatform/compare.py mergehdr/tests/crossplatform/reference results \
             --summary "$GITHUB_STEP_SUMMARY"
 
+      # The RAW bracket and its macOS results are too large for the repository; they are
+      # assets of the release "crossplatform-raw-data".
+      - name: Download RAW test data
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download crossplatform-raw-data -R ${{ github.repository }} -D rawdl
+          Expand-Archive rawdl/raw-bracket.zip -DestinationPath rawdata
+          Expand-Archive rawdl/raw-reference.zip -DestinationPath rawref
+
+      - name: Compare RAW merges with the macOS reference
+        if: always()
+        run: |
+          bash mergehdr/tests/crossplatform/run_raw_tests.sh pkg/mergehdr/bin/mergehdr.exe rawdata rawresults
+          python mergehdr/tests/crossplatform/compare.py rawref rawresults --summary "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: crossplatform-results
           path: results/
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crossplatform-raw-results
+          path: rawresults/

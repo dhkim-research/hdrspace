@@ -408,6 +408,83 @@ void ExposureSeries::merge() {
         exposures[i].release();
 }
 
+void ExposureSeries::mergeDemosaicFirst(const float *cam2rgb, bool median) {
+    /* Port of pylinearhdr --interpfirst (rawconvert -q DHT per exposure, then linearhdr -B, i.e.
+       linearhdr.cpp merge_rgb). Default mergehdr behaviour (merge on the mosaic, then demosaic)
+       is unchanged; this path is used only with --demosaicfirst. */
+    if (merge_method != EMergePyLinear)
+        throw std::runtime_error("--demosaicfirst requires the linearhdr merge style.");
+    const size_t npix = (size_t) width * height;
+    const float sat_off = std::max(0.0f, 1.0f - saturation);
+    const float sat_lim = 1.0f - sat_off;
+    const float blk_off = underexposed;
+    /* linearhdr.cpp get_weight() */
+    auto lin_weight = [sat_off](float x) {
+        return std::exp(-0.01f / x - 0.01f / (1.0f - sat_off - x)) + 1e-6f;
+    };
+    std::vector<float> acc(3 * npix, 0.0f), high(3 * npix, 0.0f),
+        low(3 * npix, std::numeric_limits<float>::infinity()), div(npix, 0.0f);
+    std::vector<uint8_t> all_under(npix, 1), all_over(npix, 1);
+
+    cout << "Merging " << size() << " exposures (demosaic first, linearhdr RGB merge) .." << endl;
+    for (size_t img = 0; img < size(); ++img) {
+        /* demosaicDHT() frees image_merged after interpolation, so allocate it per exposure */
+        if (image_merged)
+            delete[] image_merged;
+        image_merged = new float[npix];
+        const uint16_t *src = exposures[img].image;
+        #pragma omp parallel for
+        for (ptrdiff_t i = 0; i < (ptrdiff_t) npix; ++i)
+            image_merged[i] = value_tbl[src[i]];
+        exposures[img].release();
+        demosaicDHT(*this, median, false);
+        const float ec = exposures[img].exposure;
+        #pragma omp parallel for
+        for (ptrdiff_t k = 0; k < (ptrdiff_t) npix; ++k) {
+            float irgb[3], orgb[3];
+            for (int c = 0; c < 3; ++c)   /* rawconvert writes a clipped 16-bit TIFF */
+                irgb[c] = clamp(image_demosaiced[k][c], 0.0f, 1.0f);
+            float satv = std::max(irgb[0], std::max(irgb[1], irgb[2]));
+            float under = std::min(irgb[0], std::min(irgb[1], irgb[2]));
+            bool saturated_exp = satv >= sat_lim;
+            bool under_exp = under < blk_off;
+            for (int i = 0; i < 3; ++i)   /* linearhdr apply_color_transform() */
+                orgb[i] = std::max(0.0f, cam2rgb[3*i] * irgb[0] + cam2rgb[3*i+1] * irgb[1] + cam2rgb[3*i+2] * irgb[2]);
+            saturated_exp |= std::max(orgb[0], std::max(orgb[1], orgb[2])) >= sat_lim;
+            under_exp |= std::min(orgb[0], std::min(orgb[1], orgb[2])) < blk_off;
+            all_under[k] &= under_exp;
+            all_over[k] &= saturated_exp;
+            const bool in_range = !(saturated_exp || under_exp);
+            const float w = std::min(lin_weight(satv), lin_weight(under));
+            if (in_range)
+                div[k] += w * ec;
+            for (int c = 0; c < 3; ++c) {
+                size_t kc = 3 * (size_t) k + c;
+                high[kc] = std::max(high[kc], std::min(irgb[c], white_saturation[c]) / ec);
+                low[kc] = std::min(low[kc], irgb[c] / ec);
+                if (in_range)
+                    acc[kc] += w * irgb[c];
+            }
+        }
+    }
+    #pragma omp parallel for
+    for (ptrdiff_t k = 0; k < (ptrdiff_t) npix; ++k) {
+        const bool over = all_over[k] || div[k] == 0.0f;
+        for (int c = 0; c < 3; ++c) {
+            size_t kc = 3 * (size_t) k + c;
+            if (all_under[k])
+                image_demosaiced[k][c] = std::isfinite(low[kc]) ? low[kc] : 0.0f;
+            else if (over)
+                image_demosaiced[k][c] = high[kc];
+            else
+                image_demosaiced[k][c] = acc[kc] / div[k];
+        }
+    }
+    if (image_merged)
+        delete[] image_merged;
+    image_merged = NULL;
+}
+
 RawChannelSampleStats ExposureSeries::sampleRawChannel(int channel) {
     if (channel < 0 || channel > 2)
         throw std::runtime_error("Raw sample channel must be 0 (r), 1 (g), or 2 (b).");
