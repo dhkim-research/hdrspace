@@ -240,14 +240,16 @@ jobs:
           }
           function Click($x, $y, $wait) {
             [Win.Mouse]::SetCursorPos($x, $y) | Out-Null
+            Start-Sleep -Milliseconds 400
             [Win.Mouse]::mouse_event(2, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [Win.Mouse]::mouse_event(4, 0, 0, 0, 0)
             Start-Sleep -Seconds $wait
           }
           Shot "screenshot"
-          # Tools in the left rail (1024 x 768 screen): Glare, Perceptual maps, Create View
-          Click 61 389 4;  Shot "glare"
-          Click 89 517 4;  Shot "perceptual"
-          Click 78 637 4;  Shot "createview"
+          # Positions on the 1024 x 768 runner screen
+          Click 61 389 4;   Click 810 689 25; Shot "glare"        # Glare -> Analyze
+          Click 89 517 4;   Click 815 687 40; Shot "perceptual"   # Perceptual maps -> Compute map
+          Click 80 131 6;   Shot "tonemapping"
+          Click 78 637 6;   Shot "createview"
           "still running after 30 s: $(-not $app.HasExited)" | Tee-Object smoke-result/status.txt
           if ($app.HasExited) { "exit code: $($app.ExitCode)" | Tee-Object smoke-result/status.txt -Append }
           Copy-Item smoke-stdout.txt, smoke-stderr.txt smoke-result/ -ErrorAction SilentlyContinue
