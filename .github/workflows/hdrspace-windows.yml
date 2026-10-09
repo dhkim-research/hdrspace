@@ -222,7 +222,6 @@ jobs:
           Copy-Item -Recurse hdrspace-windows-x64 smoke
           Copy-Item mesa/x64/*.dll smoke/bin/
           $env:GALLIUM_DRIVER = "llvmpipe"
-          $env:MESA_DEBUG = "1"
           $picture = (Resolve-Path src/mergehdr/tests/crossplatform/data/a47.hdr).Path
           $app = Start-Process smoke/bin/hdrspace.exe -ArgumentList "`"$picture`"" -PassThru `
             -RedirectStandardOutput smoke-stdout.txt -RedirectStandardError smoke-stderr.txt
@@ -248,7 +247,9 @@ jobs:
           Shot "screenshot"
           # Positions on the 1024 x 768 runner screen
           Click 61 389 4;   Click 810 689 25; Shot "glare"        # Glare -> Analyze
+          [Win.Mouse]::SetCursorPos(480, 330) | Out-Null; Start-Sleep -Seconds 3; Shot "glare-hover"   # move over the canvas
           Click 760 595 3;  Shot "glare-source7"                  # select glare source 7
+          Click 760 400 3;  Shot "glare-all"                      # back to all sources
           Click 89 517 4;   Click 815 687 40; Shot "perceptual"   # Perceptual maps -> Compute map
           Click 80 131 6;   Shot "tonemapping"
           Click 78 637 6;   Shot "createview"
