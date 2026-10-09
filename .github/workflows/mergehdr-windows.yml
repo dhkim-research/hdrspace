@@ -92,7 +92,7 @@ jobs:
         if: always()
         run: |
           bash mergehdr/tests/crossplatform/run_raw_tests.sh pkg/mergehdr/bin/mergehdr.exe rawdata rawresults
-          python mergehdr/tests/crossplatform/compare.py rawref rawresults --summary "$GITHUB_STEP_SUMMARY"
+          python mergehdr/tests/crossplatform/compare.py rawref rawresults --summary "$GITHUB_STEP_SUMMARY" --demosaic
 
       - uses: actions/upload-artifact@v4
         if: always()

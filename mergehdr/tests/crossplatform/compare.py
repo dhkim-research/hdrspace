@@ -1,6 +1,6 @@
 """Compare mergehdr results of two platforms (reference = macOS, test = Windows).
 
-  python compare.py REFERENCE_DIR TEST_DIR [--summary FILE]
+  python compare.py REFERENCE_DIR TEST_DIR [--summary FILE] [--demosaic]
 
 HDR files: pixel values are decoded from RGBE and compared per channel. RGBE keeps an
 8-bit mantissa, so one rounding step is up to 1/128 of a value; a pixel counts as
@@ -21,6 +21,16 @@ MAX_PIXEL_FRACTION = 1e-3    # at most 0.1 % of the pixels may differ by more th
 # to the neighbouring pixel (0.35 degrees at 512 px). The original evalglare has the same
 # property, so the code is left as it is; evalglare_summary.txt (the totals) must still match.
 INFORMATIONAL = {'evalglare_d.txt'}
+
+# --demosaic: RAW merges. AHD and DHT choose an interpolation direction per pixel by comparing
+# floating-point gradients; last-bit differences between compilers and CPUs (for example fused
+# multiply-add on Apple arm64) flip some of these choices, mostly at edges, so single pixels
+# differ by a few percent while the light in any area is the same. These files are checked on luminance: the image mean, and
+# the means of 32x32-pixel blocks.
+DEMOSAIC_MEAN_RTOL = 1e-5
+DEMOSAIC_BLOCK_P99 = 2e-3
+DEMOSAIC_BLOCK_MAX = 2e-2
+LUMINANCE_WEIGHTS = np.array([0.2651, 0.6701, 0.0648])
 
 def read_hdr(path):
     data = path.read_bytes()
@@ -67,6 +77,23 @@ def compare_hdr(ref, test):
     return ok, (f"identical {identical*100:.2f} %, more than 1 RGBE step {beyond*100:.3f} %, "
                 f"max rel {pixel_rel.max():.2e}, median rel {np.median(pixel_rel):.1e}")
 
+def compare_demosaic(ref, test):
+    a, b = read_hdr(ref), read_hdr(test)
+    if a.shape != b.shape:
+        return False, f"size {a.shape[1]}x{a.shape[0]} vs {b.shape[1]}x{b.shape[0]}"
+    la, lb = a @ LUMINANCE_WEIGHTS, b @ LUMINANCE_WEIGHTS
+    mean_rel = abs(lb.mean() / la.mean() - 1) if la.mean() > 0 else 0.0
+    k = 32
+    h, w = (la.shape[0] // k) * k, (la.shape[1] // k) * k
+    A = la[:h, :w].reshape(h // k, k, w // k, k).mean(axis=(1, 3))
+    B = lb[:h, :w].reshape(h // k, k, w // k, k).mean(axis=(1, 3))
+    keep = A > A.max() * 1e-4
+    r = np.abs(B - A)[keep] / A[keep]
+    pix = np.abs(a - b).max(axis=2) > RGBE_STEP * np.maximum(np.abs(a), np.abs(b)).max(axis=2)
+    ok = mean_rel <= DEMOSAIC_MEAN_RTOL and np.percentile(r, 99) <= DEMOSAIC_BLOCK_P99 and r.max() <= DEMOSAIC_BLOCK_MAX
+    return ok, (f"mean luminance rel {mean_rel:.1e}; 32x32 blocks p99 {np.percentile(r, 99):.1e}, "
+                f"max {r.max():.1e}; pixels more than 1 RGBE step {pix.mean()*100:.2f} %")
+
 def compare_text(ref, test):
     a = NUM.findall(ref.read_text(errors='replace'))
     b = NUM.findall(test.read_text(errors='replace'))
@@ -91,6 +118,8 @@ def main():
         test = test_dir / ref.name
         if not test.exists():
             ok, note = False, "missing"
+        elif ref.suffix == '.hdr' and '--demosaic' in sys.argv:
+            ok, note = compare_demosaic(ref, test)
         elif ref.suffix == '.hdr':
             ok, note = compare_hdr(ref, test)
         else:
@@ -103,7 +132,8 @@ def main():
         print(f"{'OK  ' if ok else ('INFO' if info else 'DIFF')} {ref.name}: {note}")
     if summary:
         with open(summary, 'a') as fh:
-            fh.write("## mergehdr: Windows vs macOS reference\n\n| File | Result | Detail |\n|---|---|---|\n")
+            title = "RAW merges" if '--demosaic' in sys.argv else "HDR tools"
+            fh.write(f"## mergehdr {title}: Windows vs macOS reference\n\n| File | Result | Detail |\n|---|---|---|\n")
             for name, ok, note in rows:
                 fh.write(f"| {name} | {'OK' if ok else ('info' if name in INFORMATIONAL else '**DIFF**')} | {note} |\n")
     print(f"{len(rows) - failed}/{len(rows)} within tolerance or informational")

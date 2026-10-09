@@ -10,7 +10,8 @@ curves and white balance, so their output can't be used for luminance. hdrspace 
 whole chain linear and writes every step into the file header, so each result can be traced
 back to the RAW files and settings that made it.
 
-Apple Silicon only; developed and tested on macOS 26.
+The app is for Apple Silicon Macs (developed and tested on macOS 26). The `mergehdr`
+command-line tools also run on 64-bit Windows; see [mergehdr/README.rst](mergehdr/README.rst#windows).
 
 **New here?** The [usage guide](docs/usage.md) walks through the app with screenshots.
 

@@ -223,6 +223,27 @@ Build locally::
 The local launcher in ``bin/mergehdr`` expects the binary to live in
 ``build-mergehdr/``.
 
+Windows
+-------
+
+GitHub Actions builds the command-line tools for 64-bit Windows (MSYS2 UCRT64, GCC) on every
+change to ``mergehdr`` and compares the results with macOS (``tests/crossplatform``). The package
+``mergehdr-windows-x64`` (Actions, workflow "mergehdr Windows", latest run) holds
+``bin/mergehdr.exe`` and ``bin/mergehdrcore.exe`` with their DLLs, ``profiles/`` and the HDR-VDP
+data in ``hdrvdp3/``. Unzip it anywhere and run ``bin\mergehdr.exe``.
+
+To build it yourself, install MSYS2, add the packages listed in
+``.github/workflows/mergehdr-windows.yml`` in the UCRT64 shell, and configure with
+``-DCMAKE_C_STANDARD=17`` (GCC 15 and later default to C23, which rejects the old-style
+declarations in the matlabPyrTools C files).
+
+Compared with macOS, the HDR tools (evalglare, perceptual maps, view visibility, rotate, crop)
+give the same pixels and numbers. In ``evalglare -d`` the direction of a glare source whose
+centroid lies exactly on a pixel boundary can move by one pixel; the totals are identical. RAW
+merges agree to about 1e-6 in mean luminance and 0.1 % in 32 x 32-pixel areas, while some single
+pixels at edges differ after demosaicing. Paths with non-ASCII characters have not been tested
+on Windows yet.
+
 Notes
 -----
 
