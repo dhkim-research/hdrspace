@@ -43,7 +43,6 @@ jobs:
           cmake -S hdrspace -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DOpenMP_RUNTIME_MSVC=llvm `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache 2>&1 | Tee-Object -FilePath build-log.txt
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
@@ -79,14 +78,9 @@ jobs:
           Copy-Item build/hdrspace.exe "$stage/bin/"
           Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" "$stage/bin/"
           $redist = "$env:VCToolsRedistDir/x64"
-          Get-ChildItem $redist -Directory | Where-Object { $_.Name -like "Microsoft.VC*.CRT" } |
+          # C++ runtime and the OpenMP runtime (vcomp140); the /openmp:llvm runtime is not redistributable
+          Get-ChildItem $redist -Directory | Where-Object { $_.Name -like "Microsoft.VC*.CRT" -or $_.Name -like "Microsoft.VC*.OpenMP" } |
             ForEach-Object { Copy-Item "$($_.FullName)/*.dll" "$stage/bin/" }
-          # /openmp:llvm runtime (not in every redist folder)
-          $omp = Get-ChildItem $env:VSINSTALLDIR -Recurse -Filter libomp140.x86_64.dll -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch "debug" } | Select-Object -First 1
-          if (-not $omp) { throw "libomp140.x86_64.dll not found" }
-          "OpenMP runtime: $($omp.FullName)"
-          Copy-Item $omp.FullName "$stage/bin/"
           Copy-Item hdrspace/assets/hdrvdp3-data/* "$stage/Resources/hdrvdp3/data/" -Recurse
           Copy-Item hdrspace/assets/licenses/* "$stage/Resources/licenses/" -Recurse
           Copy-Item hdrspace/assets/branding/hdrspace_icon_1024.png, hdrspace/assets/branding/hdrspace.svg "$stage/Resources/branding/"
