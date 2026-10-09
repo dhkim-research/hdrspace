@@ -65,11 +65,15 @@
 #include <fstream>
 #include <future>
 #include <functional>
+#if !defined(_WIN32)
 #include <glob.h>
+#endif
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#endif
 #include <map>
 #include <mutex>
 #include <optional>
@@ -79,11 +83,15 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#if defined(_WIN32)
+#include "platform/WinPosix.h"
+#else
 #include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <thread>
 #include <unistd.h>
+#endif
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -138,7 +146,11 @@ void graphPreviewDebugLog(const std::string& message) {
 
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
+#if defined(_WIN32)
+    std::ofstream output(fs::temp_directory_path() / "hdrspace_graph_preview.log", std::ios::app);
+#else
     std::ofstream output("/tmp/hdrspace_graph_preview.log", std::ios::app);
+#endif
     if (!output) {
         return;
     }
@@ -221,6 +233,11 @@ void writeNativeOpenExr(const std::string& filename, size_t width, size_t height
     throw std::runtime_error("Native OpenEXR export only supports 1 or 3 channels.");
 }
 
+#if defined(_WIN32)
+fs::path hdrspaceExecutablePath() {
+    return hdrspaceExecutablePathWin();
+}
+#else
 fs::path hdrspaceExecutablePath() {
     std::vector<char> buffer(4096, '\0');
     uint32_t size = static_cast<uint32_t>(buffer.size());
@@ -233,6 +250,7 @@ fs::path hdrspaceExecutablePath() {
     std::error_code ec;
     return fs::weakly_canonical(fs::path(buffer.data()), ec);
 }
+#endif
 
 fs::path hdrspaceBrandingResourcePath(std::string_view fileName) {
     const fs::path exe = hdrspaceExecutablePath();
@@ -340,7 +358,11 @@ fs::path safeCurrentPath() {
     if (!ec && !cwd.empty()) {
         return cwd;
     }
+#if defined(_WIN32)
+    if (const char* home = std::getenv("USERPROFILE")) {
+#else
     if (const char* home = std::getenv("HOME")) {
+#endif
         fs::path homePath{home};
         if (!homePath.empty()) {
             return homePath;
@@ -354,6 +376,29 @@ fs::path safeCurrentPath() {
 }
 
 fs::path userLibrarySubdir(const fs::path& relativePath) {
+#if defined(_WIN32)
+    // ~/Library/Application Support/hdrspace/X -> %LOCALAPPDATA%/hdrspace/X
+    // ~/Library/Caches/hdrspace/X              -> %LOCALAPPDATA%/hdrspace/cache/X
+    {
+        const fs::path base = hdrspaceLocalAppData();
+        if (!base.empty()) {
+            const std::string text = relativePath.generic_string();
+            const std::string support = "Application Support/";
+            const std::string caches = "Caches/hdrspace";
+            if (text.rfind(support, 0) == 0) {
+                return base / fs::path(text.substr(support.size()));
+            }
+            if (text.rfind(caches, 0) == 0) {
+                std::string rest = text.substr(caches.size());
+                while (!rest.empty() && rest.front() == '/') {
+                    rest.erase(rest.begin());
+                }
+                return base / "hdrspace" / "cache" / fs::path(rest);
+            }
+            return base / "hdrspace" / relativePath;
+        }
+    }
+#endif
     if (const char* home = std::getenv("HOME")) {
         fs::path homePath{home};
         if (!homePath.empty()) {
@@ -928,6 +973,11 @@ std::string summarizeSelectedFiles(const std::vector<std::string>& files) {
     return oss.str();
 }
 
+#if defined(_WIN32)
+pid_t spawnShellJob(const std::string& command, const fs::path& logPath) {
+    return hdrspaceSpawnShell(command, logPath);
+}
+#else
 pid_t spawnShellJob(const std::string& command, const fs::path& logPath) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -950,6 +1000,7 @@ pid_t spawnShellJob(const std::string& command, const fs::path& logPath) {
 
     return pid;
 }
+#endif
 
 int lastPercentInText(const std::string& text) {
     int last = -1;
@@ -5901,6 +5952,11 @@ private:
         bool loading = false;
     };
 
+#if defined(_WIN32)
+    static fs::path executablePath() {
+        return hdrspaceExecutablePathWin();
+    }
+#else
     static fs::path executablePath() {
         std::vector<char> buffer(4096, '\0');
         uint32_t size = static_cast<uint32_t>(buffer.size());
@@ -5913,6 +5969,7 @@ private:
 
         return fs::weakly_canonical(fs::path(buffer.data()));
     }
+#endif
 
     static fs::path findOnPath(const std::string& name) {
         const char* pathEnv = std::getenv("PATH");
@@ -5922,12 +5979,21 @@ private:
 
         std::stringstream ss{pathEnv};
         std::string entry;
+#if defined(_WIN32)
+        while (std::getline(ss, entry, ';')) {
+            if (entry.empty()) {
+                continue;
+            }
+
+            fs::path candidate = fs::path(entry) / (fs::path(name).has_extension() ? name : name + ".exe");
+#else
         while (std::getline(ss, entry, ':')) {
             if (entry.empty()) {
                 continue;
             }
 
             fs::path candidate = fs::path(entry) / name;
+#endif
             if (fs::exists(candidate)) {
                 return fs::weakly_canonical(candidate);
             }
@@ -5955,7 +6021,12 @@ private:
             out.profilesDir = out.appRoot.parent_path() / "mergehdr" / "profiles";
         }
 
+#if defined(_WIN32)
+        // Windows package: <root>/bin/hdrspace.exe, <root>/tools/mergehdr/bin/mergehdr.exe
+        const fs::path bundledMergehdr = out.appRoot / "tools" / "mergehdr" / "bin" / "mergehdr.exe";
+#else
         const fs::path bundledMergehdr = out.appRoot / "MacOS" / "mergehdr";
+#endif
         if (fs::exists(bundledMergehdr)) {
             out.mergehdr = fs::weakly_canonical(bundledMergehdr);
         } else {
@@ -5965,7 +6036,11 @@ private:
             }
         }
 
+#if defined(_WIN32)
+        const fs::path bundledOiiotool = out.appRoot / "bin" / "oiiotool.exe";
+#else
         const fs::path bundledOiiotool = out.appRoot / "MacOS" / "oiiotool";
+#endif
         if (fs::exists(bundledOiiotool)) {
             out.oiiotool = fs::weakly_canonical(bundledOiiotool);
         } else {
@@ -6055,11 +6130,16 @@ private:
 
     std::string createViewShellEnvironmentPrefix() const {
         std::ostringstream env;
+#if defined(_WIN32)
+        const char* separator = ";";
+#else
+        const char* separator = ":";
+#endif
         if (!paths_.radianceBinDir.empty()) {
-            env << "export PATH=" << shellQuote(paths_.radianceBinDir.string()) << ":\"$PATH\" && ";
+            env << "export PATH=" << shellQuote(paths_.radianceBinDir.string()) << separator << "\"$PATH\" && ";
         }
         if (!paths_.radianceLibDir.empty()) {
-            env << "export RAYPATH=" << shellQuote(paths_.radianceLibDir.string()) << ":\"${RAYPATH:-}\" && ";
+            env << "export RAYPATH=" << shellQuote(paths_.radianceLibDir.string()) << separator << "\"${RAYPATH:-}\" && ";
         }
         return env.str();
     }
@@ -9310,6 +9390,9 @@ private:
     }
 
     fs::path toneMappingPfsCacheDirectory() const {
+#if defined(_WIN32)
+        return userLibrarySubdir("Caches/hdrspace/pfstmo");
+#endif
         if (const char* home = std::getenv("HOME"); home && *home) {
             return fs::path{home} / "Library/Caches/hdrspace/pfstmo";
         }
@@ -14069,6 +14152,11 @@ private:
         }
         const std::string globPattern = candidate.string();
         if (globPattern.find_first_of("*?[") != std::string::npos) {
+#if defined(_WIN32)
+            for (const fs::path& match : hdrspaceWildcardPaths(candidate)) {
+                out.push_back(match);
+            }
+#else
             glob_t matches{};
             if (glob(globPattern.c_str(), GLOB_TILDE, nullptr, &matches) == 0) {
                 for (size_t i = 0; i < matches.gl_pathc; ++i) {
@@ -14076,6 +14164,7 @@ private:
                 }
             }
             globfree(&matches);
+#endif
         } else {
             out.push_back(candidate);
         }
@@ -25059,6 +25148,11 @@ private:
     }
 
     static bool writeAllFd(int fd, std::string_view data) {
+#if defined(_WIN32)
+        (void)fd;
+        (void)data;
+        return false;
+#else
         size_t offset = 0;
         while (offset < data.size()) {
             const ssize_t written = write(fd, data.data() + offset, data.size() - offset);
@@ -25071,9 +25165,15 @@ private:
             offset += static_cast<size_t>(written);
         }
         return true;
+#endif
     }
 
     static std::optional<std::string> readLineWithTimeout(int fd, int timeoutMs) {
+#if defined(_WIN32)
+        (void)fd;
+        (void)timeoutMs;
+        return std::nullopt;
+#else
         std::string line;
         while (true) {
             pollfd pfd{};
@@ -25103,9 +25203,14 @@ private:
                 line.push_back(ch);
             }
         }
+#endif
     }
 
     void stopPersistentAiProcessLocked() {
+#if defined(_WIN32)
+        glareAiProcess_.launchKey.clear();
+        return;
+#endif
         if (glareAiProcess_.stdinFd >= 0) {
             close(glareAiProcess_.stdinFd);
             glareAiProcess_.stdinFd = -1;
@@ -25123,6 +25228,12 @@ private:
     }
 
     bool ensurePersistentAiProcessLocked(std::string* error) {
+#if defined(_WIN32)
+        if (error) {
+            *error = "AI segmentation is not available in the Windows version yet.";
+        }
+        return false;
+#else
         const fs::path runtimeRoot = resolveAiRuntimeRoot();
         if (runtimeRoot.empty()) {
             if (error) {
@@ -25251,6 +25362,7 @@ private:
         }
 
         return true;
+#endif
     }
 
     ProcessResult runPersistentAiPrediction(

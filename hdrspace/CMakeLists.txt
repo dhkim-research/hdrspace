@@ -90,7 +90,7 @@ foreach(HDRSPACE_REQUIRED_FILE IN ITEMS
   endif()
 endforeach()
 
-if(DEFINED ENV{HOME})
+if(DEFINED ENV{HOME} AND NOT MSVC)
   add_compile_options(
     "-ffile-prefix-map=${HDRSPACE_SOURCE_DIR_RAW}=/src/hdrspace"
     "-fmacro-prefix-map=${HDRSPACE_SOURCE_DIR_RAW}=/src/hdrspace"
@@ -173,17 +173,32 @@ add_executable(hdrspace
   ${TEV_CORE_SOURCES}
 )
 
+if(WIN32)
+  # Process and path helpers, the UTF-8 manifest and the window/taskbar icon.
+  target_sources(hdrspace PRIVATE
+    src/platform/WinPosix.cpp
+    resources/windows/icon.rc
+    resources/windows/hdrspace.manifest)
+endif()
+
 set_source_files_properties("${HDRSPACE_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 set_source_files_properties(${HDRSPACE_BRAND_PNGS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/branding")
 set_source_files_properties(${HDRSPACE_BRAND_MISC} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/branding")
 
-target_compile_options(hdrspace PRIVATE
-  -Wall
-  -Wextra
-  -Wpedantic
-  -Wno-unused-parameter
-  -Wno-shadow
-)
+if(MSVC)
+  target_compile_options(hdrspace PRIVATE /W1 /utf-8 /bigobj /permissive- /Zc:__cplusplus)
+  target_compile_definitions(hdrspace PRIVATE
+    _USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+  target_link_libraries(hdrspace PRIVATE wsock32 ws2_32)
+else()
+  target_compile_options(hdrspace PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wno-unused-parameter
+    -Wno-shadow
+  )
+endif()
 
 target_compile_definitions(hdrspace PRIVATE
   TEV_VERSION="hdrspace"

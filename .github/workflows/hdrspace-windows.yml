@@ -1,0 +1,67 @@
+name: hdrspace Windows app
+
+# Builds the hdrspace GUI for Windows with MSVC, like upstream tev. While the port is in
+# progress the job does not fail the run (continue-on-error), so a broken build shows up in
+# the run summary instead of sending failure mails.
+on:
+  push:
+    paths:
+      - 'hdrspace/**'
+      - 'mergehdr/glareeval.*'
+      - 'mergehdr/hdrimage.*'
+      - '.github/workflows/hdrspace-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  app:
+    runs-on: windows-2022
+    continue-on-error: true
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: ilammy/setup-nasm@v1
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Libraries from vcpkg (FFTW, Eigen)
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install fftw3 eigen3 --triplet x64-windows
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S hdrspace -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DOpenMP_RUNTIME_MSVC=llvm `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Build
+        id: build
+        shell: pwsh
+        run: |
+          cmake --build build --target hdrspace -- -k 0 2>&1 | Tee-Object -FilePath build-log.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Error summary
+        if: failure()
+        shell: pwsh
+        run: |
+          "## Build errors (first 200)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          Select-String -Path build-log.txt -Pattern ': (fatal )?error ' | Select-Object -First 200 | ForEach-Object { $_.Line } | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hdrspace-windows-build-log
+          path: build-log.txt
+          if-no-files-found: ignore
