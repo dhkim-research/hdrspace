@@ -139,6 +139,7 @@ maps** save the maps for use elsewhere.
 - **Statistics**: whole-image or region statistics.
 - **View Volume, AI Segmentation**: segment buildings and greenery (SAM 3) and estimate depth
   (Depth Anything 3). The models are downloaded the first time you use them.
+  Not available in the Windows build, nor are the pfstools operators in Tonemapping.
 - **Create View**: render a Radiance scene from a chosen view.
 
 ## Command line

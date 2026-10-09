@@ -2,8 +2,7 @@ name: hdrspace Windows app
 
 # Builds the hdrspace GUI for Windows with MSVC (like upstream tev), the mergehdr command-line
 # tools with MSYS2/GCC, and puts them together with Radiance and a small POSIX shell (busybox)
-# into one folder. While the port is in progress the jobs do not fail the run
-# (continue-on-error), so problems show up in the run summary instead of failure mails.
+# into one folder, then starts the app on the runner with software OpenGL (Mesa llvmpipe).
 on:
   push:
     paths:
@@ -18,7 +17,6 @@ env:
 jobs:
   app:
     runs-on: windows-2022
-    continue-on-error: true
     env:
       SCCACHE_GHA_ENABLED: "true"
     steps:
@@ -95,7 +93,6 @@ jobs:
 
   mergehdr:
     runs-on: windows-latest
-    continue-on-error: true
     defaults:
       run:
         shell: msys2 {0}
@@ -131,7 +128,6 @@ jobs:
   package:
     needs: [app, mergehdr]
     runs-on: windows-2022
-    continue-on-error: true
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -247,9 +243,7 @@ jobs:
           Shot "screenshot"
           # Positions on the 1024 x 768 runner screen
           Click 61 389 4;   Click 810 689 25; Shot "glare"        # Glare -> Analyze
-          [Win.Mouse]::SetCursorPos(480, 330) | Out-Null; Start-Sleep -Seconds 3; Shot "glare-hover"   # move over the canvas
           Click 760 595 3;  Shot "glare-source7"                  # select glare source 7
-          Click 760 400 3;  Shot "glare-all"                      # back to all sources
           Click 89 517 4;   Click 815 687 40; Shot "perceptual"   # Perceptual maps -> Compute map
           Click 80 131 6;   Shot "tonemapping"
           Click 78 637 6;   Shot "createview"

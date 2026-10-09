@@ -1,7 +1,7 @@
 # hdrspace
 
-hdrspace is a macOS app for HDR photography where the pixel values are meant to be
-measurements. It turns a bracket of camera RAW files into a Radiance HDR image in absolute
+hdrspace is a macOS app (with a Windows build) for HDR photography where the pixel values
+are meant to be measurements. It turns a bracket of camera RAW files into a Radiance HDR image in absolute
 units (luminance in cd/m², colour in CIE XYZ or Radiance / linear sRGB primaries), and has
 tools to analyse that image: glare, visibility, tone mapping and a few perceptual maps.
 
@@ -10,8 +10,8 @@ curves and white balance, so their output can't be used for luminance. hdrspace 
 whole chain linear and writes every step into the file header, so each result can be traced
 back to the RAW files and settings that made it.
 
-The app is for Apple Silicon Macs (developed and tested on macOS 26). The `mergehdr`
-command-line tools also run on 64-bit Windows; see [mergehdr/README.rst](mergehdr/README.rst#windows).
+The app is developed and tested on Apple Silicon Macs (macOS 26). A 64-bit Windows build is
+also available, with a few tools missing; see [Windows](#windows).
 
 **New here?** The [usage guide](docs/usage.md) walks through the app with screenshots.
 
@@ -91,6 +91,25 @@ column, uses the header's `LuminanceRGB`, divides `av_lum_pos2` once, and comput
 are slightly more precise than in pylinearhdr because there is no 16-bit TIFF step.
 
 Licence texts for all bundled components are in `hdrspace/assets/licenses`.
+
+## Windows
+
+GitHub Actions builds a 64-bit Windows version on every change (workflow "hdrspace Windows
+app"). Download the package `hdrspace-windows-x64` from the latest run (a GitHub login is
+needed), unzip it anywhere and start `bin\hdrspace.exe`. Nothing else has to be installed: the
+package contains `mergehdr`, the Radiance programs, the HDR-VDP data, the camera profiles and a
+small POSIX shell (BusyBox) that runs the background jobs.
+
+Not available on Windows:
+
+- **AI Segmentation** and **View Volume**.
+- The **pfstools** tone-mapping operators. Radiance `pcond` (Ward '97) works.
+
+Each build is checked on a Windows Server virtual machine with software OpenGL. `mergehdr` and
+the Radiance programs run in the package, and the app opens an HDR image and computes Glare
+and Perceptual maps with the same numbers as on macOS. It has not yet been tested on a
+Windows PC with a real graphics card. The command-line tools alone are described in
+[mergehdr/README.rst](mergehdr/README.rst#windows).
 
 ## Building
 
