@@ -35,7 +35,7 @@ jobs:
       - name: Libraries from vcpkg (FFTW, Eigen)
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install fftw3 eigen3 --triplet x64-windows
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "fftw3[threads]" eigen3 --triplet x64-windows
 
       - name: Configure
         shell: pwsh

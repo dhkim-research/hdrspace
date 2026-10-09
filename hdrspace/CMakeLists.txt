@@ -178,7 +178,10 @@ if(WIN32)
   target_sources(hdrspace PRIVATE
     src/platform/WinPosix.cpp
     resources/windows/icon.rc
-    resources/windows/hdrspace.manifest)
+    resources/windows/hdrspace.manifest
+    "${TEV_SOURCE_DIR}/src/imageio/DdsImageLoader.cpp")
+  # tev reads DDS through DirectXTex on Windows (built with the tev dependencies).
+  target_link_libraries(hdrspace PRIVATE DirectXTex)
 endif()
 
 set_source_files_properties("${HDRSPACE_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
