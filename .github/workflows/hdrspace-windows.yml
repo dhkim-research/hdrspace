@@ -222,6 +222,7 @@ jobs:
           Copy-Item -Recurse hdrspace-windows-x64 smoke
           Copy-Item mesa/x64/*.dll smoke/bin/
           $env:GALLIUM_DRIVER = "llvmpipe"
+          $env:MESA_DEBUG = "1"
           $picture = (Resolve-Path src/mergehdr/tests/crossplatform/data/a47.hdr).Path
           $app = Start-Process smoke/bin/hdrspace.exe -ArgumentList "`"$picture`"" -PassThru `
             -RedirectStandardOutput smoke-stdout.txt -RedirectStandardError smoke-stderr.txt
@@ -247,13 +248,14 @@ jobs:
           Shot "screenshot"
           # Positions on the 1024 x 768 runner screen
           Click 61 389 4;   Click 810 689 25; Shot "glare"        # Glare -> Analyze
+          Click 760 595 3;  Shot "glare-source7"                  # select glare source 7
           Click 89 517 4;   Click 815 687 40; Shot "perceptual"   # Perceptual maps -> Compute map
           Click 80 131 6;   Shot "tonemapping"
           Click 78 637 6;   Shot "createview"
           "still running after 30 s: $(-not $app.HasExited)" | Tee-Object smoke-result/status.txt
           if ($app.HasExited) { "exit code: $($app.ExitCode)" | Tee-Object smoke-result/status.txt -Append }
           Copy-Item smoke-stdout.txt, smoke-stderr.txt smoke-result/ -ErrorAction SilentlyContinue
-          Get-Content smoke-stderr.txt -ErrorAction SilentlyContinue | Select-Object -First 40
+          Get-Content smoke-stderr.txt -ErrorAction SilentlyContinue | Select-Object -First 80
           if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
       - uses: actions/upload-artifact@v4
         if: always()
