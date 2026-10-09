@@ -23,9 +23,7 @@
 #include <ctime>
 #include <fstream>
 #if !defined(_WIN32)
-#if !defined(_WIN32)
 #include <glob.h>
-#endif
 #endif
 #include <iomanip>
 #include <iostream>
@@ -441,53 +439,6 @@ int closeProcessPipe(FILE *pipe) {
 }
 #endif
 
-// Quoting for the command lines that are actually run (popen). On POSIX this is shellQuote();
-// cmd.exe on Windows needs double quotes with the CommandLineToArgvW escaping rules.
-std::string processQuote(const std::string &value) {
-#if defined(_WIN32)
-    std::string result = "\"";
-    size_t backslashes = 0;
-    for (char ch : value) {
-        if (ch == '\\') {
-            ++backslashes;
-        } else if (ch == '"') {
-            result.append(backslashes * 2 + 1, '\\');
-            result += '"';
-            backslashes = 0;
-            continue;
-        } else {
-            backslashes = 0;
-        }
-        result += ch;
-    }
-    result.append(backslashes, '\\');
-    result += '"';
-    return result;
-#else
-    return shellQuote(value);
-#endif
-}
-
-#if defined(_WIN32)
-// cmd /c strips the outer quotes of a command line that starts with a quote, so wrap it once more.
-FILE *openProcessPipe(const std::string &command) {
-    return _popen(("\"" + command + " 2>&1\"").c_str(), "rb");
-}
-int closeProcessPipe(FILE *pipe) {
-    return _pclose(pipe);
-}
-#else
-FILE *openProcessPipe(const std::string &command) {
-    return popen((command + " 2>&1").c_str(), "r");
-}
-int closeProcessPipe(FILE *pipe) {
-    const int status = pclose(pipe);
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-    return -1;
-}
-#endif
-
 std::string getExecutablePath() {
 #if defined(__APPLE__)
     uint32_t len = PATH_MAX;
@@ -503,13 +454,6 @@ std::string getExecutablePath() {
     std::string path(resolved);
     free(resolved);
     return path;
-#elif defined(_WIN32)
-    std::wstring buffer(32768, L'\0');
-    const unsigned long count = GetModuleFileNameW(nullptr, &buffer[0], static_cast<unsigned long>(buffer.size()));
-    if (count == 0 || count >= buffer.size())
-        throw std::runtime_error("Unable to determine executable path.");
-    buffer.resize(count);
-    return fs::path(buffer).string();
 #elif defined(_WIN32)
     std::wstring buffer(32768, L'\0');
     const unsigned long count = GetModuleFileNameW(nullptr, &buffer[0], static_cast<unsigned long>(buffer.size()));
@@ -658,11 +602,7 @@ std::string coreBinaryPath() {
 #if defined(_WIN32)
     fs::path candidate = exe.parent_path() / "mergehdrcore.exe";
 #else
-#if defined(_WIN32)
-    fs::path candidate = exe.parent_path() / "mergehdrcore.exe";
-#else
     fs::path candidate = exe.parent_path() / "mergehdrcore";
-#endif
 #endif
     if (!fs::exists(candidate))
         throw std::runtime_error("Unable to locate mergehdrcore.");
@@ -948,33 +888,6 @@ bool wildcardMatch(const std::string &pattern, const std::string &name) {
 }
 #endif
 
-#if defined(_WIN32)
-// fnmatch-style match of * and ? (case-insensitive, as Windows file names are).
-bool wildcardMatch(const std::string &pattern, const std::string &name) {
-    size_t p = 0, n = 0, star = std::string::npos, mark = 0;
-    const auto same = [](char a, char b) {
-        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
-    };
-    while (n < name.size()) {
-        if (p < pattern.size() && (pattern[p] == '?' || same(pattern[p], name[n]))) {
-            ++p;
-            ++n;
-        } else if (p < pattern.size() && pattern[p] == '*') {
-            star = p++;
-            mark = n;
-        } else if (star != std::string::npos) {
-            p = star + 1;
-            n = ++mark;
-        } else {
-            return false;
-        }
-    }
-    while (p < pattern.size() && pattern[p] == '*')
-        ++p;
-    return p == pattern.size();
-}
-#endif
-
 std::vector<std::string> expandInputArg(const std::string &arg) {
     if (arg.find('%') != std::string::npos) {
         std::vector<std::string> expanded = expandPrintfPattern(arg);
@@ -982,26 +895,6 @@ std::vector<std::string> expandInputArg(const std::string &arg) {
             return expanded;
     }
 
-#if defined(_WIN32)
-    if (hasWildcard(arg)) {
-        // No glob() on Windows: match * and ? in the file-name part, sorted like glob().
-        const fs::path pattern(arg);
-        const fs::path directory = pattern.has_parent_path() ? pattern.parent_path() : fs::path(".");
-        const std::string namePattern = pattern.filename().string();
-        std::vector<std::string> expanded;
-        if (fs::is_directory(directory)) {
-            for (const fs::directory_entry &entry : fs::directory_iterator(directory)) {
-                const std::string name = entry.path().filename().string();
-                if (wildcardMatch(namePattern, name))
-                    expanded.push_back(pattern.has_parent_path() ? (directory / name).string() : name);
-            }
-        }
-        if (expanded.empty())
-            throw std::runtime_error("Pattern did not match any files: " + arg);
-        std::sort(expanded.begin(), expanded.end());
-        return expanded;
-    }
-#else
 #if defined(_WIN32)
     if (hasWildcard(arg)) {
         // No glob() on Windows: match * and ? in the file-name part, sorted like glob().
@@ -2594,11 +2487,7 @@ int runCoreCommand(const std::string &command, const RunOptions &opts, std::vect
 #if defined(_WIN32)
     bool interactive = _isatty(_fileno(stderr)) != 0;
 #else
-#if defined(_WIN32)
-    bool interactive = _isatty(_fileno(stderr)) != 0;
-#else
     bool interactive = isatty(STDERR_FILENO);
-#endif
 #endif
     bool progressInitialized = false;
     char buffer[4096];
@@ -6007,19 +5896,11 @@ fs::path hdrspaceSupportDirectory() {
             "LOCALAPPDATA is unavailable; set HDRSPACE_SUPPORT_DIR for the DA3 runtime.");
     return fs::path(localAppData) / "hdrspace";
 #else
-#if defined(_WIN32)
-    const char *localAppData = std::getenv("LOCALAPPDATA");
-    if (!localAppData || !*localAppData)
-        throw std::runtime_error(
-            "LOCALAPPDATA is unavailable; set HDRSPACE_SUPPORT_DIR for the DA3 runtime.");
-    return fs::path(localAppData) / "hdrspace";
-#else
     const char *home = std::getenv("HOME");
     if (!home || !*home)
         throw std::runtime_error(
             "HOME is unavailable; set HDRSPACE_SUPPORT_DIR for the DA3 runtime.");
     return fs::path(home) / "Library" / "Application Support" / "hdrspace";
-#endif
 #endif
 }
 
@@ -6133,21 +6014,6 @@ int runViewVosCalculation(const ViewVosCalculationOptions &opts) {
         command.push_back(resolved.windowMaskPath);
     }
 
-#if defined(_WIN32)
-    _putenv_s("HF_HOME", hfHome.string().c_str());
-    _putenv_s("HF_HUB_CACHE", (hfHome / "hub").string().c_str());
-    std::vector<std::string> quotedCommand;
-    for (const std::string &argument : command)
-        quotedCommand.push_back(processQuote(argument));
-    std::vector<const char *> spawnArgv;
-    for (const std::string &argument : quotedCommand)
-        spawnArgv.push_back(argument.c_str());
-    spawnArgv.push_back(nullptr);
-    const intptr_t spawnStatus = _spawnv(_P_WAIT, python.string().c_str(), spawnArgv.data());
-    if (spawnStatus < 0)
-        throw std::runtime_error("Unable to start the DA3 VOS process: " + std::string(std::strerror(errno)));
-    return static_cast<int>(spawnStatus);
-#else
 #if defined(_WIN32)
     _putenv_s("HF_HOME", hfHome.string().c_str());
     _putenv_s("HF_HUB_CACHE", (hfHome / "hub").string().c_str());

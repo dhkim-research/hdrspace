@@ -42,7 +42,10 @@ jobs:
         run: |
           boost_version=$(pacman -Q mingw-w64-ucrt-x86_64-boost | awk '{print $2}' | cut -d- -f1)
           echo "Boost $boost_version"
+          # GCC 15+ defaults to C23, where the old-style declarations in the matlabPyrTools
+          # C files are errors; build C as gnu17 like Apple clang does.
           cmake -S mergehdr -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_STANDARD=17 -DCMAKE_C_EXTENSIONS=ON \
             -DMERGEHDR_BOOST_MIN_VERSION="$boost_version"
 
       - name: Build

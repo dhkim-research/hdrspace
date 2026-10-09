@@ -41,9 +41,6 @@
 #if defined(_WIN32)
 extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void *, wchar_t *, unsigned long);
 #endif
-#if defined(_WIN32)
-extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void *, wchar_t *, unsigned long);
-#endif
 #if __has_include(<fftw3.h>)
 #include <fftw3.h>
 #define MERGEHDR_HAS_FFTW 1
