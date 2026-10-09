@@ -46,7 +46,7 @@ jobs:
             -DMERGEHDR_BOOST_MIN_VERSION="$boost_version"
 
       - name: Build
-        run: cmake --build build --target mergehdr mergehdrcore
+        run: cmake --build build --target mergehdr mergehdrcore -- -k 0
 
       - name: Package
         run: |
