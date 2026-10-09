@@ -94,9 +94,12 @@ Licence texts for all bundled components are in `hdrspace/assets/licenses`.
 
 ## Windows
 
-GitHub Actions builds a 64-bit Windows version on every change (workflow "hdrspace Windows
-app"). Download the package `hdrspace-windows-x64` from the latest run (a GitHub login is
-needed), unzip it anywhere and start `bin\hdrspace.exe`. Nothing else has to be installed: the
+Download `hdrspace-windows-x64.zip` from the
+[latest Windows release](https://github.com/dhkim-research/hdrspace/releases/tag/windows-2026.10.09),
+unzip it anywhere and start `hdrspace-windows-x64\bin\hdrspace.exe`. The program is not
+code-signed, so Windows may show a SmartScreen warning the first time ("More info" → "Run
+anyway"). Newer builds are made by GitHub Actions on every change (workflow "hdrspace Windows
+app", package `hdrspace-windows-x64`). Nothing else has to be installed: the
 package contains `mergehdr`, the Radiance programs, the HDR-VDP data, the camera profiles and a
 small POSIX shell (BusyBox) that runs the background jobs.
 
