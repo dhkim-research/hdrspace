@@ -26,6 +26,7 @@ run() {  # run NAME args... : stdout -> NAME.txt
     "$MERGEHDR" "$@" > "$OUT/$name.txt"
 }
 
+run evalglare_summary  evalglare a47.hdr
 run evalglare_d        evalglare -d a47.hdr
 run evalglare_check    evalglare -c evalglare_check.hdr a64.hdr
 for map in l m rod lm adaptation detectable-contrast eqv-luminance; do
