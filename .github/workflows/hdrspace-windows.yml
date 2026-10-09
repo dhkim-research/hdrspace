@@ -41,13 +41,14 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DOpenMP_RUNTIME_MSVC=llvm `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache 2>&1 | Tee-Object -FilePath build-log.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
         id: build
         shell: pwsh
         run: |
-          cmake --build build --target hdrspace -- -k 0 2>&1 | Tee-Object -FilePath build-log.txt
+          cmake --build build --target hdrspace -- -k 0 2>&1 | Tee-Object -FilePath build-log.txt -Append
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Error summary
@@ -56,7 +57,9 @@ jobs:
         run: |
           "## Build errors (first 200)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          Select-String -Path build-log.txt -Pattern ': (fatal )?error ' | Select-Object -First 200 | ForEach-Object { $_.Line } | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          if (Test-Path build-log.txt) {
+            Select-String -Path build-log.txt -Pattern ': (fatal )?error |CMake Error' | Select-Object -First 200 | ForEach-Object { $_.Line } | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
 
       - uses: actions/upload-artifact@v4
