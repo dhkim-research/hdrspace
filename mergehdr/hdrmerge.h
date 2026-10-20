@@ -163,7 +163,7 @@ struct ExposureSeries {
      * and fill the exposure series with a normalized RGB floating
      * point image representation
      */
-    void load(int commonBlackOverride = -1);
+    void load(int commonBlackOverride = -1, int fixedWhiteOverride = -1);
 
     /// Initialize the exposure / weight table
     void initTables(float saturation, EMergeMethod method = EMergeHDRMerge,

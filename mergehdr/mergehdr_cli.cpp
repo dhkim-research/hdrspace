@@ -3670,8 +3670,8 @@ ResolvedRawLevels resolveRawLevels(bool blackOverride, int blacklevel,
         levels.headerWhitepoint = rawLevels.whitepoint;
     }
 
-    // LibRaw subtracts each frame's black correction; an explicit black value
-    // sets the common encoding baseline without subtracting it a second time.
+    // An explicit (profile) black is the black LibRaw subtracts from every frame,
+    // as linearhdr's rawconvert -k; LibRaw's own black is then only checked.
     levels.coreBlacklevel = blackOverride ? levels.headerBlacklevel : -1;
     if (levels.headerBlacklevel >= 0 && levels.headerWhitepoint >= 0)
         levels.coreWhitepoint = levels.headerBlacklevel + levels.headerWhitepoint;
@@ -6519,6 +6519,11 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
             if (!shouldSuppressCoreLine(line))
                 std::cerr << line << std::endl;
         }
+    } else {
+        // RAW level warnings (fixed black/white vs LibRaw) are always shown.
+        for (const std::string &line : captured)
+            if (boost::starts_with(line, "WARNING: "))
+                std::cerr << line << std::endl;
     }
 
     if (resolved.dualFisheye) {

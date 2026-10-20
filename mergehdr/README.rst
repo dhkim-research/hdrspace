@@ -251,13 +251,22 @@ Notes
 - If ``--xyzcam`` is omitted, ``mergehdr`` reads the matrix from the first RAW
   file natively through LibRaw.
 - Build directories are local artifacts and are ignored by git.
-- RAW black correction and full-scale white are decoded for every exposure.
-  Before merging, each frame is normalized to a common black/white encoding,
-  so mixed ISO values or RAW bit depths do not hide clipped samples.
-  ``--blacklevel`` sets that common baseline after LibRaw's per-frame black
-  correction; it is not subtracted a second time. Profile white/saturation
-  settings then operate on the common encoding. Camera photometric calibration
-  must be checked when changing the RAW normalization workflow.
+- RAW levels, default with a camera profile: the profile ``black`` and ``white``
+  (white counted above black) are used for every exposure, exactly as
+  linearhdr's ``rawconvert -k BLACK -S WHITE``. LibRaw receives the black as
+  ``user_black`` (it keeps its per-channel residual, as rawconvert does) and
+  values are clipped at the white. LibRaw's own per-frame levels are only
+  checked: they are written to the header (``RAW_DECODER_LEVELS``), and a
+  warning (also ``RAW_LEVEL_WARNINGS``) is printed when LibRaw's black differs
+  from the profile black by more than 4 counts, or when black or white differ
+  between frames (mixed ISO or RAW bit depth). Such brackets need levels
+  measured for each ISO or bit depth.
+- Without a profile black, each frame's LibRaw black and white are moved to a
+  common full-scale encoding, as rawconvert without ``-k``/``-S`` scales each
+  frame to its own maximum. Camera photometric calibration must be checked when
+  changing the RAW level workflow.
+- ``tools/compare_rawconvert_levels.cpp`` checks the fixed-level decode against
+  rawconvert pixel by pixel on real RAW files (build line in the file).
 
 Acknowledgements
 ----------------

@@ -1,6 +1,7 @@
 #include "hdrmerge.h"
 #include "camera_detect.h"
 #include "raw_normalization.h"
+#include "raw_decode.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -12,108 +13,6 @@
 
 #include <exiv2/image.hpp>
 #include <exiv2/easyaccess.hpp>
-
-struct DecodedRawFrame {
-    size_t width;
-    size_t height;
-    int blacklevel;
-    int whitepoint;
-    int filter;
-    std::unique_ptr<uint16_t[]> image;
-};
-
-static int buildDcrawFilter(LibRaw &raw, int top, int left) {
-    int filter = 0;
-    for (int y = 0; y < 8; ++y) {
-        for (int x = 0; x < 2; ++x) {
-            int color = raw.COLOR(top + y, left + x);
-            filter |= color << (((y << 1 & 14) + (x & 1)) << 1);
-        }
-    }
-    return filter;
-}
-
-static DecodedRawFrame decodeWithLibRaw(const std::string &filename) {
-    LibRaw raw;
-
-    int err = raw.open_file(filename.c_str());
-    if (err != LIBRAW_SUCCESS)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw open_file failed: %2%")
-            % filename % libraw_strerror(err)).str());
-
-    err = raw.unpack();
-    if (err != LIBRAW_SUCCESS)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw unpack failed: %2%")
-            % filename % libraw_strerror(err)).str());
-
-    if (!raw.imgdata.rawdata.raw_image)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw did not return a flat Bayer raw_image")
-            % filename).str());
-
-    const libraw_image_sizes_t &sizes = raw.imgdata.sizes;
-    const libraw_colordata_t &color = raw.imgdata.color;
-
-    int left = sizes.left_margin;
-    int top = sizes.top_margin;
-    size_t width = sizes.iwidth ? sizes.iwidth : sizes.width;
-    size_t height = sizes.iheight ? sizes.iheight : sizes.height;
-
-    if (width == 0 || height == 0)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw reported an empty visible image")
-            % filename).str());
-
-    int blacklevel = effectiveRawBlackLevel(
-        color.black, color.cblack, sizeof(color.cblack) / sizeof(color.cblack[0]));
-    const int sourceWhitepoint = color.maximum ? static_cast<int>(color.maximum) : 0x3FFF;
-    const int filter = buildDcrawFilter(raw, top, left);
-
-    err = raw.raw2image();
-    if (err != LIBRAW_SUCCESS)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw raw2image failed: %2%")
-            % filename % libraw_strerror(err)).str());
-    err = raw.subtract_black();
-    if (err != LIBRAW_SUCCESS)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw subtract_black failed: %2%")
-            % filename % libraw_strerror(err)).str());
-
-    const libraw_image_sizes_t &normalizedSizes = raw.imgdata.sizes;
-    const size_t normalizedWidth = normalizedSizes.iwidth ? normalizedSizes.iwidth : normalizedSizes.width;
-    const size_t normalizedHeight = normalizedSizes.iheight ? normalizedSizes.iheight : normalizedSizes.height;
-    if (normalizedWidth != width || normalizedHeight != height || !raw.imgdata.image)
-        throw std::runtime_error((boost::format("\"%1%\": LibRaw black-normalized image geometry changed unexpectedly")
-            % filename).str());
-
-    const int usableWhitepoint = raw.imgdata.color.maximum
-        ? static_cast<int>(raw.imgdata.color.maximum)
-        : std::max(1, sourceWhitepoint - blacklevel);
-    const int whitepoint = std::min(65535, blacklevel + usableWhitepoint);
-    std::unique_ptr<uint16_t[]> image(new uint16_t[width * height]);
-
-    // raw2image() lays the flat Bayer signal into the channel selected by
-    // fcol(). subtract_black() then applies LibRaw's full channel and repeated
-    // BlackLevel tables. Restore one scalar baseline so the unchanged merge
-    // code can continue to normalize (value-black)/(white-black).
-    for (size_t y = 0; y < height; ++y) {
-        for (size_t x = 0; x < width; ++x) {
-            const int channel = raw.fcol(static_cast<int>(y), static_cast<int>(x));
-            if (channel < 0 || channel > 3)
-                throw std::runtime_error((boost::format("\"%1%\": unsupported non-Bayer color layout")
-                    % filename).str());
-            const unsigned corrected = raw.imgdata.image[y * width + x][channel];
-            image[y * width + x] = static_cast<uint16_t>(
-                std::min<unsigned>(65535, corrected + static_cast<unsigned>(blacklevel)));
-        }
-    }
-
-    DecodedRawFrame frame;
-    frame.width = width;
-    frame.height = height;
-    frame.blacklevel = blacklevel;
-    frame.whitepoint = whitepoint;
-    frame.filter = filter;
-    frame.image = std::move(image);
-    return frame;
-}
 
 /**
  * Find all images in an exposure series and check that some sensible
@@ -285,7 +184,13 @@ bool fexists(const std::string& name) {
     return stat(name.c_str(), &buffer) == 0;
 }
 
-void ExposureSeries::load(int commonBlackOverride) {
+void ExposureSeries::load(int commonBlackOverride, int fixedWhiteOverride) {
+    // Default with a profile (black and white given): exactly linearhdr's rawconvert -k/-S.
+    // One black and one white for every frame; LibRaw's own levels are only checked.
+    const bool fixedBlack = commonBlackOverride >= 0;
+    const bool fixedLevels = fixedBlack && fixedWhiteOverride >= 0;
+    if (fixedLevels && (fixedWhiteOverride <= commonBlackOverride || fixedWhiteOverride > 65535))
+        throw std::runtime_error("The fixed RAW white point must exceed the black level and fit in 16 bits.");
     cout << "Loading raw image data ..";
     cout.flush();
 
@@ -297,7 +202,7 @@ void ExposureSeries::load(int commonBlackOverride) {
     std::vector<DecodedRawFrame> decoded(exposures.size());
     std::vector<std::string> errors(exposures.size());
 
-    DecodedRawFrame first = decodeWithLibRaw(exposures[0].filename);
+    DecodedRawFrame first = decodeWithLibRaw(exposures[0].filename, commonBlackOverride);
     this->width = first.width;
     this->height = first.height;
     this->blacklevel = commonBlackOverride >= 0 ? commonBlackOverride : first.blacklevel;
@@ -311,7 +216,7 @@ void ExposureSeries::load(int commonBlackOverride) {
     #pragma omp parallel for schedule(dynamic, 1)
     for (int i=1; i<(int) exposures.size(); ++i) {
         try {
-            decoded[i] = decodeWithLibRaw(exposures[i].filename);
+            decoded[i] = decodeWithLibRaw(exposures[i].filename, commonBlackOverride);
         } catch (const std::exception &e) {
             errors[i] = e.what();
         }
@@ -336,7 +241,13 @@ void ExposureSeries::load(int commonBlackOverride) {
 
     // Detect decoder scale mismatches per frame, never against the first frame's
     // black/white pair: ISO and RAW bit depth can change within one bracket.
-    for (size_t i = 0; i < decoded.size(); ++i) {
+    // With fixed levels every frame uses the profile white, like rawconvert -S.
+    if (fixedLevels) {
+        for (DecodedRawFrame &frame : decoded)
+            frame.whitepoint = fixedWhiteOverride;
+        this->whitepoint = fixedWhiteOverride;
+    }
+    for (size_t i = 0; i < decoded.size() && !fixedLevels; ++i) {
         DecodedRawFrame &frame = decoded[i];
         const uint16_t *image = frame.image.get();
         const size_t pixelCount = decoded[i].width * decoded[i].height;
@@ -358,10 +269,10 @@ void ExposureSeries::load(int commonBlackOverride) {
     if (this->whitepoint <= this->blacklevel)
         throw std::runtime_error("The common RAW white point must exceed the black baseline.");
 
-    // Normalize before applying a profile's white/saturation cutoff. A custom
-    // black value becomes the common baseline, not a second subtraction from
-    // already black-corrected data. A custom white cutoff still rejects values
-    // earlier than decoder full scale, as requested by the camera profile.
+    // Fixed levels: every frame already has the common black/white, so this only clips
+    // at the white point (rawconvert's 16-bit output clips there too).
+    // Otherwise: each frame's LibRaw black/white is moved to the common full scale,
+    // as rawconvert without -k/-S scales each frame to its own maximum.
     std::ostringstream frameLevels;
     for (size_t i = 0; i < decoded.size(); ++i) {
         DecodedRawFrame &frame = decoded[i];
@@ -374,8 +285,38 @@ void ExposureSeries::load(int commonBlackOverride) {
         if (i) frameLevels << "; ";
         frameLevels << exposures[i].filename << ":" << frame.blacklevel << "," << frame.whitepoint;
     }
-    metadata["RAW_NORMALIZATION"] = "Per-frame LibRaw black/white to common full scale; saturation preserved";
+    if (fixedLevels)
+        metadata["RAW_NORMALIZATION"] = "Fixed profile black/white on every frame (linearhdr rawconvert -k -S); LibRaw levels checked only";
+    else if (fixedBlack)
+        metadata["RAW_NORMALIZATION"] = "Fixed profile black (linearhdr rawconvert -k); per-frame LibRaw white to common full scale";
+    else
+        metadata["RAW_NORMALIZATION"] = "Per-frame LibRaw black/white to common full scale; saturation preserved";
     metadata["RAW_FRAME_LEVELS"] = frameLevels.str();
+
+    // Reproducibility check: record LibRaw's own levels and warn when they disagree
+    // with the fixed black or between frames (mixed ISO or bit depth).
+    std::vector<std::string> names;
+    std::vector<int> decoderBlack, decoderWhite;
+    std::ostringstream decoderLevels;
+    for (size_t i = 0; i < decoded.size(); ++i) {
+        names.push_back(exposures[i].filename);
+        decoderBlack.push_back(decoded[i].decoderBlack);
+        decoderWhite.push_back(decoded[i].decoderWhite);
+        if (i) decoderLevels << "; ";
+        decoderLevels << exposures[i].filename << ":" << decoded[i].decoderBlack << "," << decoded[i].decoderWhite;
+    }
+    metadata["RAW_DECODER_LEVELS"] = decoderLevels.str();
+    const std::vector<std::string> warnings = rawLevelWarnings(names, decoderBlack, decoderWhite, commonBlackOverride);
+    if (!warnings.empty()) {
+        std::ostringstream joined;
+        for (size_t i = 0; i < warnings.size(); ++i) {
+            std::cerr << std::endl << "WARNING: " << warnings[i];
+            if (i) joined << "; ";
+            joined << warnings[i];
+        }
+        std::cerr << std::endl;
+        metadata["RAW_LEVEL_WARNINGS"] = joined.str();
+    }
     metadata["RAW_COMMON_BLACK"] = std::to_string(this->blacklevel);
     metadata["RAW_COMMON_FULL_SCALE_WHITE"] = std::to_string(this->whitepoint);
 

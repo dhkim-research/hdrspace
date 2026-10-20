@@ -301,7 +301,8 @@ int main(int argc, char **argv) {
             "Should contain one parameter per line in key=value format. The command line takes precedence "
             "when an argument is specified multiple times.\n")
         ("blacklevel", po::value<int>(),
-            "Set the common RAW black baseline after per-frame LibRaw black correction.\n")
+            "Fixed RAW black level subtracted from every frame (as linearhdr rawconvert -k). "
+            "With --whitepoint, black and white are fixed for all frames; LibRaw's own levels are only checked.\n")
         ("whitepoint", po::value<int>(),
             "Override the sensor white point used to normalize RAW values.\n")
         ("saturation", po::value<float>(),
@@ -631,7 +632,9 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        es.load(vm.count("blacklevel") ? vm["blacklevel"].as<int>() : -1);
+        // --blacklevel (+ --whitepoint): fixed levels, exactly as linearhdr's rawconvert -k (-S)
+        es.load(vm.count("blacklevel") ? vm["blacklevel"].as<int>() : -1,
+                vm.count("blacklevel") && vm.count("whitepoint") ? vm["whitepoint"].as<int>() : -1);
         if (!badpixels.empty())
             es.repairBadPixels();
 
@@ -659,7 +662,7 @@ int main(int argc, char **argv) {
         }
 
         if (vm.count("blacklevel")) {
-            cout << "Using common black baseline: " << es.blacklevel << endl;
+            cout << "Using fixed black level (as linearhdr -black): " << es.blacklevel << endl;
         }
 
         if (vm.count("whitepoint")) {
@@ -911,8 +914,16 @@ int main(int argc, char **argv) {
             if (format == "half" || format == "single")
                 writeOpenEXR(output, es.width, es.height, 3,
                     (float *) es.image_demosaiced, es.metadata, format == "half");
-            else if (format == "hdr" || format == "rgbe")
+            else if (format == "hdr" || format == "rgbe") {
+                // RAW level record (fixed profile levels vs LibRaw's own) for reproducibility.
+                for (const char *key : { "RAW_NORMALIZATION", "RAW_COMMON_BLACK", "RAW_COMMON_FULL_SCALE_WHITE",
+                                         "RAW_DECODER_LEVELS", "RAW_LEVEL_WARNINGS" }) {
+                    StringMap::const_iterator it = es.metadata.find(key);
+                    if (it != es.metadata.end())
+                        header_lines.push_back(std::string(key) + "= " + it->second);
+                }
                 writeRGBE(output, es.width, es.height, (float *) es.image_demosaiced, header_lines, true);
+            }
             else if (format == "jpeg")
                 if (rawgrid)
                     throw std::runtime_error("Tried to export the raw grid as a JPEG image -- this is not allowed.");
