@@ -1,4 +1,4 @@
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 #include "dht_include/pfs.h"
 
 #ifdef _OPENMP

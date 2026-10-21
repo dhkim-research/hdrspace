@@ -1524,7 +1524,7 @@ void padImagePostIntoFftw(
     }
 }
 
-// FFTW core of fastConvFftLikeMatlab() and of the FFT branch of fastGaussLikeMatlab(), i.e. of
+// FFTW core of fastConvFft() and of the FFT branch of fastGauss(), i.e. of
 //   crop(ifft2Real(fft2Real(padImagePost(src, 2*width x 2*height)) .* freqFilter)),
 // computed with the same FFTW plans, the same input values and the same floating-point operations
 // (complex *= double scales both parts; the inverse is the real part times 1/count), but in two
@@ -1691,7 +1691,7 @@ std::vector<double> ifft2Real(
 #endif
 }
 
-std::vector<double> fastGaussLikeMatlab(
+std::vector<double> fastGauss(
     const std::vector<double> &src,
     size_t width,
     size_t height,
@@ -1847,7 +1847,7 @@ std::vector<double> createCycdegImage(size_t height, size_t width, double pixels
     return rho;
 }
 
-std::vector<double> fastConvFftLikeMatlab(
+std::vector<double> fastConvFft(
     const std::vector<double> &src,
     size_t width,
     size_t height,
@@ -1883,7 +1883,7 @@ std::vector<double> fastConvFftLikeMatlab(
     return cropped;
 }
 
-double matlabCubicKernel(double x) {
+double cubicKernel(double x) {
     constexpr double a = -0.5;
     x = std::abs(x);
     if (x < 1.0)
@@ -1893,7 +1893,7 @@ double matlabCubicKernel(double x) {
     return 0.0;
 }
 
-std::vector<std::pair<int, double> > matlabResizeWeights(
+std::vector<std::pair<int, double> > bicubicResizeWeights(
     size_t srcSize,
     size_t dstSize,
     size_t dstIndex
@@ -1913,7 +1913,7 @@ std::vector<std::pair<int, double> > matlabResizeWeights(
         double distance = srcPos - static_cast<double>(idx);
         if (scale < 1.0)
             distance *= scale;
-        double weight = matlabCubicKernel(distance);
+        double weight = cubicKernel(distance);
         if (scale < 1.0)
             weight *= scale;
         if (weight == 0.0)
@@ -1934,7 +1934,7 @@ struct ResizeWeightCacheEntry {
     std::vector<std::vector<std::pair<int, double> > > yWeights;
 };
 
-std::vector<double> resizeMatlabBicubic(
+std::vector<double> resizeBicubic(
     const std::vector<double> &src,
     size_t srcWidth,
     size_t srcHeight,
@@ -1954,9 +1954,9 @@ std::vector<double> resizeMatlabBicubic(
         entry.xWeights.resize(dstWidth);
         entry.yWeights.resize(dstHeight);
         for (size_t x = 0; x < dstWidth; ++x)
-            entry.xWeights[x] = matlabResizeWeights(srcWidth, dstWidth, x);
+            entry.xWeights[x] = bicubicResizeWeights(srcWidth, dstWidth, x);
         for (size_t y = 0; y < dstHeight; ++y)
-            entry.yWeights[y] = matlabResizeWeights(srcHeight, dstHeight, y);
+            entry.yWeights[y] = bicubicResizeWeights(srcHeight, dstHeight, y);
         it = sWeightCache.emplace(key, std::move(entry)).first;
     }
     const auto &xWeights = it->second.xWeights;
@@ -1984,8 +1984,8 @@ std::vector<double> resizeMatlabBicubic(
     return dst;
 }
 
-struct NativeHdrvdpParams;
-double hdrvdpMtf(double rho, const NativeHdrvdpParams &params);
+struct HdrvdpParams;
+double hdrvdpMtf(double rho, const HdrvdpParams &params);
 
 double dominantFrequencyCpdFromBand(
     const std::vector<double> &band,
@@ -2049,7 +2049,7 @@ std::vector<double> downsample2Average(
 constexpr int kPyrtoolsReduce = 0;
 constexpr int kPyrtoolsExpand = 1;
 
-std::vector<double> rowMajorToMatlabColumnMajor(
+std::vector<double> rowMajorToColumnMajor(
     const std::vector<double> &src,
     size_t width,
     size_t height
@@ -2062,7 +2062,7 @@ std::vector<double> rowMajorToMatlabColumnMajor(
     return dst;
 }
 
-std::vector<double> matlabColumnMajorToRowMajor(
+std::vector<double> columnMajorToRowMajor(
     const std::vector<double> &src,
     size_t width,
     size_t height
@@ -2378,8 +2378,8 @@ std::vector<double> correlateReflect1(
 
     const size_t dstHeight = (srcHeight <= startY) ? 0 : ((srcHeight - startY + stepY - 1) / stepY);
     const size_t dstWidth = (srcWidth <= startX) ? 0 : ((srcWidth - startX + stepX - 1) / stepX);
-    const std::vector<double> imageCm = rowMajorToMatlabColumnMajor(src, srcWidth, srcHeight);
-    const std::vector<double> filterCm = rowMajorToMatlabColumnMajor(filt, filtWidth, filtHeight);
+    const std::vector<double> imageCm = rowMajorToColumnMajor(src, srcWidth, srcHeight);
+    const std::vector<double> filterCm = rowMajorToColumnMajor(filt, filtWidth, filtHeight);
     std::vector<double> resultCm(dstWidth * dstHeight, 0.0);
     std::vector<double> temp(filtWidth * filtHeight, 0.0);
     char edges[] = "reflect1";
@@ -2401,7 +2401,7 @@ std::vector<double> correlateReflect1(
         edges
     );
 
-    return matlabColumnMajorToRowMajor(resultCm, dstWidth, dstHeight);
+    return columnMajorToRowMajor(resultCm, dstWidth, dstHeight);
 }
 
 std::vector<double> upsampleAndCorrelateReflect1(
@@ -2419,11 +2419,11 @@ std::vector<double> upsampleAndCorrelateReflect1(
     size_t startX = 0,
     const std::vector<double> *add = nullptr
 ) {
-    const std::vector<double> imageCm = rowMajorToMatlabColumnMajor(src, srcWidth, srcHeight);
-    const std::vector<double> filterCm = rowMajorToMatlabColumnMajor(filt, filtWidth, filtHeight);
+    const std::vector<double> imageCm = rowMajorToColumnMajor(src, srcWidth, srcHeight);
+    const std::vector<double> filterCm = rowMajorToColumnMajor(filt, filtWidth, filtHeight);
     std::vector<double> resultCm(outWidth * outHeight, 0.0);
     if (add && add->size() == resultCm.size())
-        resultCm = rowMajorToMatlabColumnMajor(*add, outWidth, outHeight);
+        resultCm = rowMajorToColumnMajor(*add, outWidth, outHeight);
     std::vector<double> temp(filtWidth * filtHeight, 0.0);
     char edges[] = "reflect1";
     internal_expand(
@@ -2444,7 +2444,7 @@ std::vector<double> upsampleAndCorrelateReflect1(
         edges
     );
 
-    return matlabColumnMajorToRowMajor(resultCm, outWidth, outHeight);
+    return columnMajorToRowMajor(resultCm, outWidth, outHeight);
 }
 
 int maxPyrHeight(size_t imageHeight, size_t imageWidth, size_t filterHeight, size_t filterWidth) {
@@ -2835,7 +2835,7 @@ SpectralCurve3 resampleSpectralCurve3Pchip(const SpectralCurve3 &source) {
     return curve;
 }
 
-struct NativeHdrvdpPnLookup {
+struct HdrvdpPnLookup {
     std::vector<double> coneY;
     std::vector<double> coneJnd;
     std::vector<double> rodY;
@@ -2848,7 +2848,7 @@ struct HdrvdpCsfLookup {
     std::vector<std::vector<double> > sensitivities;
 };
 
-// Bits of NativeHdrvdpPreparedImage::fields: which per-pixel vectors an entry holds. Each caller
+// Bits of HdrvdpPreparedImage::fields: which per-pixel vectors an entry holds. Each caller
 // asks only for the vectors it reads; a vector that is computed has the same values as before.
 constexpr unsigned kPreparedLResponse = 1u << 0;
 constexpr unsigned kPreparedMResponse = 1u << 1;
@@ -2866,9 +2866,9 @@ constexpr unsigned kPreparedPerceptualFields = kPreparedLResponse | kPreparedMRe
 // view-visibility debug dump
 constexpr unsigned kPreparedAllFields = kPreparedPerceptualFields | kPreparedNativeRgbPreMtf | kPreparedNativeRgb;
 
-struct NativeHdrvdpSpectralContext;
+struct HdrvdpSpectralContext;
 
-struct NativeHdrvdpPreparedImage {
+struct HdrvdpPreparedImage {
     std::vector<double> lResponse;
     std::vector<double> mResponse;
     std::vector<double> rodResponse;
@@ -2883,7 +2883,7 @@ struct NativeHdrvdpPreparedImage {
     // The (never evicted) cached spectral context the vectors were computed with. Missing vectors
     // are later added with this same context, and the pre-MTF channels are recomputed from the
     // picture with its matrix (hdrvdpPreMtfChannelsAt) instead of being stored.
-    const NativeHdrvdpSpectralContext *spectralContext = nullptr;
+    const HdrvdpSpectralContext *spectralContext = nullptr;
 };
 
 enum class HdrvdpPreparedImageMode {
@@ -2893,7 +2893,7 @@ enum class HdrvdpPreparedImageMode {
 
 struct CachedPreparedHdrvdpImageEntry {
     std::filesystem::file_time_type mtime;
-    NativeHdrvdpPreparedImage prepared;
+    HdrvdpPreparedImage prepared;
 };
 
 struct CachedViewVisibilityResultEntry {
@@ -2908,7 +2908,7 @@ struct CachedPerceptualMapResultEntry {
     PerceptualMapResult result;
 };
 
-struct NativeHdrvdpParams {
+struct HdrvdpParams {
     double baseSensitivityCorrection = 0.203943775672;
     double maskSelf = 1.41846291721;
     double maskXo = -50.0;
@@ -2944,7 +2944,7 @@ struct NativeHdrvdpParams {
     }};
 };
 
-struct NativeHdrvdpSpectralContext {
+struct HdrvdpSpectralContext {
     SpectralCurve3 emissionPreAod;
     SpectralCurve3 emissionPostAod;
     SpectralCurve3 xyzCmf;
@@ -2957,8 +2957,8 @@ struct NativeHdrvdpSpectralContext {
     std::array<std::array<double, 4>, 3> nativeToLmsr{};
 };
 
-NativeHdrvdpParams makeNativeHdrvdpParams() {
-    NativeHdrvdpParams params;
+HdrvdpParams makeHdrvdpParams() {
+    HdrvdpParams params;
     const double par0 = 0.061466549455263;
     const double par1 = 0.99727370023777070;
     params.mtfA = {{
@@ -3188,7 +3188,7 @@ Vec3d mulMat3Vec(const Mat3d &matrix, const Vec3d &value) {
     };
 }
 
-double hdrvdpJointRodConeSens(double la, const NativeHdrvdpParams &params) {
+double hdrvdpJointRodConeSens(double la, const HdrvdpParams &params) {
     const double safeLa = std::max(la, 1e-8);
     return params.csfSa[0] * std::pow(std::pow(params.csfSa[1] / safeLa, params.csfSa[2]) + 1.0, -params.csfSa[3]);
 }
@@ -3212,7 +3212,7 @@ double geoMeanPositive(const std::vector<double> &values) {
     return std::exp(sumLogs / static_cast<double>(values.size()));
 }
 
-double hdrvdpAesl(double rho, const NativeHdrvdpParams &params) {
+double hdrvdpAesl(double rho, const HdrvdpParams &params) {
     const double gamma = std::pow(10.0, params.aeslBase);
     const double ageTerm = std::max(0.0, params.age - 24.0);
     return std::pow(10.0,
@@ -3232,7 +3232,7 @@ double pupilDUnified(double luminance, double area, double age) {
     return dSd + (clampedAge - y0) * (0.02132 - 0.009562 * dSd);
 }
 
-double hdrvdpRodSens(double la, const NativeHdrvdpParams &params) {
+double hdrvdpRodSens(double la, const HdrvdpParams &params) {
     const double safeLa = std::max(la, 1e-8);
     const double peakL = params.csfSr[0];
     double response = 0.0;
@@ -3261,8 +3261,8 @@ double interpolateVectorLinear(const std::vector<double> &xs, const std::vector<
     return ys[lo] * (1.0 - t) + ys[hi] * t;
 }
 
-NativeHdrvdpPnLookup buildNativeHdrvdpPnLookup(const NativeHdrvdpParams &params, double sensitivityCorrection) {
-    NativeHdrvdpPnLookup lookup;
+HdrvdpPnLookup buildHdrvdpPnLookup(const HdrvdpParams &params, double sensitivityCorrection) {
+    HdrvdpPnLookup lookup;
     const size_t sampleCount = 2048;
     lookup.coneY.resize(sampleCount);
     lookup.coneJnd.resize(sampleCount);
@@ -3310,24 +3310,24 @@ NativeHdrvdpPnLookup buildNativeHdrvdpPnLookup(const NativeHdrvdpParams &params,
     return lookup;
 }
 
-const NativeHdrvdpPnLookup &getNativeHdrvdpPnLookupCached(
-    const NativeHdrvdpParams &params,
+const HdrvdpPnLookup &getHdrvdpPnLookupCached(
+    const HdrvdpParams &params,
     double sensitivityCorrection
 ) {
-    static std::map<std::string, NativeHdrvdpPnLookup> sCache;
+    static std::map<std::string, HdrvdpPnLookup> sCache;
     const std::string key =
         "sens=" + formatCacheDouble(sensitivityCorrection) +
         "|base=" + formatCacheDouble(params.baseSensitivityCorrection);
     auto it = sCache.find(key);
     if (it == sCache.end())
-        it = sCache.emplace(key, buildNativeHdrvdpPnLookup(params, sensitivityCorrection)).first;
+        it = sCache.emplace(key, buildHdrvdpPnLookup(params, sensitivityCorrection)).first;
     return it->second;
 }
 
-NativeHdrvdpSpectralContext buildNativeHdrvdpSpectralContext(
+HdrvdpSpectralContext buildHdrvdpSpectralContext(
     const std::string &anchorPath,
     const std::string &spectralEmissionPath,
-    const NativeHdrvdpParams &params
+    const HdrvdpParams &params
 ) {
     const std::string emissionPath = resolveHdrvdpResourcePath(anchorPath, spectralEmissionPath.empty() ? "data/emission_spectra_oled.csv" : spectralEmissionPath);
     const std::string xyzPath = resolveHdrvdpResourcePath(emissionPath, "data/ciexyz31.csv");
@@ -3390,7 +3390,7 @@ NativeHdrvdpSpectralContext buildNativeHdrvdpSpectralContext(
         }
     }
 
-    NativeHdrvdpSpectralContext context;
+    HdrvdpSpectralContext context;
     context.emissionPreAod = emission;
     context.xyzCmf = xyz;
     context.rodSens = rod;
@@ -3514,17 +3514,17 @@ NativeHdrvdpSpectralContext buildNativeHdrvdpSpectralContext(
     return context;
 }
 
-const NativeHdrvdpSpectralContext &getNativeHdrvdpSpectralContextCached(
+const HdrvdpSpectralContext &getHdrvdpSpectralContextCached(
     const std::string &anchorPath,
     const std::string &spectralEmissionPath,
-    const NativeHdrvdpParams &params
+    const HdrvdpParams &params
 ) {
-    static std::map<std::string, NativeHdrvdpSpectralContext> sCache;
+    static std::map<std::string, HdrvdpSpectralContext> sCache;
     const std::string emissionPath = resolveHdrvdpResourcePath(anchorPath, spectralEmissionPath.empty() ? "data/emission_spectra_oled.csv" : spectralEmissionPath);
     const std::string key = emissionPath + "|age=" + formatCacheDouble(params.age);
     auto it = sCache.find(key);
     if (it == sCache.end())
-        it = sCache.emplace(key, buildNativeHdrvdpSpectralContext(anchorPath, spectralEmissionPath, params)).first;
+        it = sCache.emplace(key, buildHdrvdpSpectralContext(anchorPath, spectralEmissionPath, params)).first;
     return it->second;
 }
 
@@ -3532,7 +3532,7 @@ const std::vector<double> &getHdrvdpMtfFilterCached(
     size_t width,
     size_t height,
     double pixelsPerDegree,
-    const NativeHdrvdpParams &params
+    const HdrvdpParams &params
 ) {
     static std::map<std::string, std::vector<double> > sCache;
     const size_t paddedWidth = width * 2;
@@ -3565,7 +3565,7 @@ std::vector<double> hdrvdpLocalAdaptMap(
     double pixelsPerDegree
 );
 
-double hdrvdpMtf(double rho, const NativeHdrvdpParams &params);
+double hdrvdpMtf(double rho, const HdrvdpParams &params);
 
 // Input of the optical MTF for pixel `pixelIndex`: the input XYZ for DirectChannels, the
 // display-native RGB clamped to 1e-6 for NativeTransformed (the "nativeRgbPreMtf" channels).
@@ -3591,19 +3591,19 @@ Vec3d hdrvdpPreMtfChannelsAt(
 // `previous`, if given, is an entry of the same picture and settings computed with the same
 // spectral context: its adaptation and achromatic vectors (same code, same inputs, so the same
 // values) are moved over instead of being computed again.
-NativeHdrvdpPreparedImage prepareNativeHdrvdpImage(
+HdrvdpPreparedImage prepareHdrvdpImage(
     const HdrImage &image,
-    const NativeHdrvdpSpectralContext &spectralContext,
+    const HdrvdpSpectralContext &spectralContext,
     double sensitivityCorrection,
     double pixelsPerDegree,
     HdrvdpPreparedImageMode mode,
     ViewVisibilitySummaryOptions::InputColor inputColor,
     unsigned fields,
-    NativeHdrvdpPreparedImage *previous = nullptr
+    HdrvdpPreparedImage *previous = nullptr
 ) {
-    const NativeHdrvdpParams params = makeNativeHdrvdpParams();
-    const NativeHdrvdpPnLookup &pn = getNativeHdrvdpPnLookupCached(params, sensitivityCorrection);
-    NativeHdrvdpPreparedImage prepared;
+    const HdrvdpParams params = makeHdrvdpParams();
+    const HdrvdpPnLookup &pn = getHdrvdpPnLookupCached(params, sensitivityCorrection);
+    HdrvdpPreparedImage prepared;
     prepared.fields = fields;
     prepared.spectralContext = &spectralContext;
     const size_t pixelCount = image.width * image.height;
@@ -3638,9 +3638,9 @@ NativeHdrvdpPreparedImage prepareNativeHdrvdpImage(
     const std::vector<double> &mtfFilter = getHdrvdpMtfFilterCached(
         image.width, image.height, pixelsPerDegree, params);
 
-    workX = fastConvFftLikeMatlab(workX, image.width, image.height, mtfFilter, true, false, 0.0);
-    workY = fastConvFftLikeMatlab(workY, image.width, image.height, mtfFilter, true, false, 0.0);
-    workZ = fastConvFftLikeMatlab(workZ, image.width, image.height, mtfFilter, true, false, 0.0);
+    workX = fastConvFft(workX, image.width, image.height, mtfFilter, true, false, 0.0);
+    workY = fastConvFft(workY, image.width, image.height, mtfFilter, true, false, 0.0);
+    workZ = fastConvFft(workZ, image.width, image.height, mtfFilter, true, false, 0.0);
 
     // Pass 1: clamp the post-MTF channels in place (from here on workX/workY/workZ hold the
     // former nativeRgb channels) and compute the L+M luminance of the local adaptation map.
@@ -3767,7 +3767,7 @@ unsigned perceptualMapPreparedFields(PerceptualMapKind kind) {
 }
 
 const std::vector<double> &perceptualMapValues(
-    const NativeHdrvdpPreparedImage &prepared,
+    const HdrvdpPreparedImage &prepared,
     PerceptualMapKind kind
 ) {
     switch (kind) {
@@ -3784,7 +3784,7 @@ const std::vector<double> &perceptualMapValues(
 // the vectors the caller reads; when the cached entry lacks some of them (or there is none) the
 // entry is recomputed with requiredFields | computeFields | the fields it already had, and
 // replaces the old entry.
-const NativeHdrvdpPreparedImage &getPreparedNativeHdrvdpImageCached(
+const HdrvdpPreparedImage &getPreparedHdrvdpImageCached(
     const std::string &imagePath,
     const std::string &anchorPath,
     const std::string &spectralEmissionPath,
@@ -3818,7 +3818,7 @@ const NativeHdrvdpPreparedImage &getPreparedNativeHdrvdpImageCached(
     if (!current || (it->second.prepared.fields & requiredFields) != requiredFields) {
         const unsigned fields = requiredFields | computeFields | (current ? it->second.prepared.fields : 0u);
         // The old entry is replaced: take it out of the cache before computing the new one.
-        NativeHdrvdpPreparedImage previous;
+        HdrvdpPreparedImage previous;
         if (current)
             previous = std::move(it->second.prepared);
         if (it != sCache.end())
@@ -3829,11 +3829,11 @@ const NativeHdrvdpPreparedImage &getPreparedNativeHdrvdpImageCached(
         // A current entry is completed with the spectral context its vectors were computed with
         // (the former all-fields entry would have been reused as is); otherwise it is resolved
         // as before.
-        const NativeHdrvdpParams params = makeNativeHdrvdpParams();
-        const NativeHdrvdpSpectralContext &spectralContext = current
+        const HdrvdpParams params = makeHdrvdpParams();
+        const HdrvdpSpectralContext &spectralContext = current
             ? *previous.spectralContext
-            : getNativeHdrvdpSpectralContextCached(anchorPath, spectralEmissionPath, params);
-        entry.prepared = prepareNativeHdrvdpImage(
+            : getHdrvdpSpectralContextCached(anchorPath, spectralEmissionPath, params);
+        entry.prepared = prepareHdrvdpImage(
             image,
             spectralContext,
             sensitivityCorrection,
@@ -3843,7 +3843,7 @@ const NativeHdrvdpPreparedImage &getPreparedNativeHdrvdpImageCached(
             fields,
             current ? &previous : nullptr
         );
-        previous = NativeHdrvdpPreparedImage();
+        previous = HdrvdpPreparedImage();
         it = sCache.insert_or_assign(key, std::move(entry)).first;
     }
     return it->second.prepared;
@@ -3982,7 +3982,7 @@ double signPow(double x, double e) {
     return (x < 0.0 ? -1.0 : 1.0) * std::pow(std::abs(x), e);
 }
 
-double hdrvdpMtf(double rho, const NativeHdrvdpParams &params) {
+double hdrvdpMtf(double rho, const HdrvdpParams &params) {
     const double freq = std::max(0.0, rho);
     double mtf = 0.0;
     for (size_t i = 0; i < params.mtfA.size(); ++i)
@@ -3990,7 +3990,7 @@ double hdrvdpMtf(double rho, const NativeHdrvdpParams &params) {
     return std::max(mtf, 1e-6);
 }
 
-double hdrvdpNcsf(double rho, double luminance, const NativeHdrvdpParams &params, double sensitivityCorrection) {
+double hdrvdpNcsf(double rho, double luminance, const HdrvdpParams &params, double sensitivityCorrection) {
     (void)sensitivityCorrection;
     const double logLum = std::log10(std::max(luminance, params.csfLums.front()));
     std::array<double, 7> logLums{};
@@ -4026,7 +4026,7 @@ double hdrvdpNcsf(double rho, double luminance, const NativeHdrvdpParams &params
 
 HdrvdpCsfLookup buildHdrvdpCsfLookup(
     const std::vector<VisibilityPyramidLevel> &levels,
-    const NativeHdrvdpParams &params,
+    const HdrvdpParams &params,
     double sensitivityCorrection
 ) {
     HdrvdpCsfLookup lookup;
@@ -4059,7 +4059,7 @@ HdrvdpCsfLookup buildHdrvdpCsfLookup(
 
 const HdrvdpCsfLookup &getHdrvdpCsfLookupCached(
     const std::vector<VisibilityPyramidLevel> &levels,
-    const NativeHdrvdpParams &params,
+    const HdrvdpParams &params,
     double sensitivityCorrection
 ) {
     static std::map<std::string, HdrvdpCsfLookup> sCache;
@@ -4093,7 +4093,7 @@ double sampleHdrvdpCsfLookup(
     ));
 }
 
-double psychometricProbability(double contrast, const NativeHdrvdpParams &params) {
+double psychometricProbability(double contrast, const HdrvdpParams &params) {
     const double pf = std::pow(10.0, params.psychFuncSlope);
     const double a = std::pow(-std::log(0.5), 1.0 / pf);
     const double scaled = std::abs(a * contrast);
@@ -4124,7 +4124,7 @@ std::vector<double> meanFilter3x3(const std::vector<double> &src, size_t width, 
 
 std::vector<double> maxFilterApprox(const std::vector<double> &src, size_t width, size_t height, int radius);
 
-std::vector<double> matlabMaskingPool(
+std::vector<double> maskingPool(
     const std::vector<double> &src,
     size_t width,
     size_t height,
@@ -4162,12 +4162,12 @@ std::vector<double> matlabMaskingPool(
     return pooled;
 }
 
-std::vector<double> mutualMaskingMatlab(
+std::vector<double> mutualMasking(
     const std::vector<double> &testBand,
     const std::vector<double> &referenceBand,
     size_t width,
     size_t height,
-    const NativeHdrvdpParams &params
+    const HdrvdpParams &params
 ) {
     std::vector<double> masking(width * height, 0.0);
     #if defined(_OPENMP)
@@ -4177,7 +4177,7 @@ std::vector<double> mutualMaskingMatlab(
         masking[i] = std::min(std::abs(testBand[i]), std::abs(referenceBand[i]));
 
     if (params.doSiGauss) {
-        return fastGaussLikeMatlab(
+        return fastGauss(
             masking, width, height, std::pow(10.0, params.siSize), false, false, false, 0.0);
     }
 
@@ -4185,7 +4185,7 @@ std::vector<double> mutualMaskingMatlab(
         return maxFilterApprox(masking, width, height, params.puDilate);
     }
 
-    return matlabMaskingPool(masking, width, height, params.maskingNorm, params.maskingPoolSize);
+    return maskingPool(masking, width, height, params.maskingNorm, params.maskingPoolSize);
 }
 
 std::vector<double> hdrvdpLocalAdaptMap(
@@ -4201,7 +4201,7 @@ std::vector<double> hdrvdpLocalAdaptMap(
     #endif
     for (long long i = 0; i < static_cast<long long>(logLum.size()); ++i)
         logLum[i] = std::log(std::max(luminance[i], 1e-6));
-    std::vector<double> blurred = fastGaussLikeMatlab(
+    std::vector<double> blurred = fastGauss(
         logLum,
         width,
         height,
@@ -4302,7 +4302,7 @@ std::vector<double> computeHdrvdpExactContrastMap(
     double pixelsPerDegree,
     double sensitivityCorrection
 ) {
-    const NativeHdrvdpParams params = makeNativeHdrvdpParams();
+    const HdrvdpParams params = makeHdrvdpParams();
     ExactVisibilityPyramid pyramid = buildExactVisibilityPyramid(achromatic, width, height, pixelsPerDegree);
     removeBaseBandDc(pyramid);
     const std::vector<VisibilityPyramidLevel> lookupLevels = makeLookupLevelsFromExact(pyramid);
@@ -4320,7 +4320,7 @@ std::vector<double> computeHdrvdpExactContrastMap(
         }
 
         const double bandNorm = std::pow(2.0, static_cast<double>(levelIndex));
-        const std::vector<double> adaptResized = resizeMatlabBicubic(adaptMap, width, height, level.width, level.height);
+        const std::vector<double> adaptResized = resizeBicubic(adaptMap, width, height, level.width, level.height);
         for (size_t orientation = 0; orientation < level.bands.size(); ++orientation) {
             std::vector<double> response(level.width * level.height, 0.0);
             #if defined(_OPENMP)
@@ -4347,8 +4347,8 @@ std::vector<double> computeHdrvdpExactContrastMap(
 }
 
 HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
-    const NativeHdrvdpPreparedImage &reference,
-    const NativeHdrvdpPreparedImage &test,
+    const HdrvdpPreparedImage &reference,
+    const HdrvdpPreparedImage &test,
     const std::vector<double> &maskValues,
     const std::vector<double> &diffMask,
     size_t width,
@@ -4356,7 +4356,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
     double pixelsPerDegree,
     double sensitivityCorrection
 ) {
-    const NativeHdrvdpParams params = makeNativeHdrvdpParams();
+    const HdrvdpParams params = makeHdrvdpParams();
     ExactVisibilityPyramid refPyramid = buildExactVisibilityPyramid(reference.achromatic, width, height, pixelsPerDegree);
     ExactVisibilityPyramid testPyramid = buildExactVisibilityPyramid(test.achromatic, width, height, pixelsPerDegree);
     removeBaseBandDc(refPyramid);
@@ -4397,7 +4397,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
                 normalizedTest[static_cast<size_t>(i)] = testLevel.bands[orientation][static_cast<size_t>(i)] / std::max(bandNorm, 1.0);
                 normalizedRef[static_cast<size_t>(i)] = refLevel.bands[orientation][static_cast<size_t>(i)] / std::max(bandNorm, 1.0);
             }
-            selfMasks[levelIndex][orientation] = mutualMaskingMatlab(
+            selfMasks[levelIndex][orientation] = mutualMasking(
                 normalizedTest, normalizedRef, refLevel.width, refLevel.height, params);
             if (orientationCount > 1) {
                 for (size_t i = 0; i < maskXoSums[levelIndex].size(); ++i)
@@ -4416,8 +4416,8 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
         }
         ++usedBands;
         const double bandNorm = std::pow(2.0, static_cast<double>(levelIndex));
-        const std::vector<double> refAdaptResized = resizeMatlabBicubic(reference.adaptation, width, height, refLevel.width, refLevel.height);
-        const std::vector<double> testAdaptResized = resizeMatlabBicubic(test.adaptation, width, height, testLevel.width, testLevel.height);
+        const std::vector<double> refAdaptResized = resizeBicubic(reference.adaptation, width, height, refLevel.width, refLevel.height);
+        const std::vector<double> testAdaptResized = resizeBicubic(test.adaptation, width, height, testLevel.width, testLevel.height);
         std::vector<double> meanAdaptResized(refLevel.width * refLevel.height, 0.0);
         #if defined(_OPENMP)
         #pragma omp parallel for schedule(static)
@@ -4430,8 +4430,8 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
         }
         const double baseBandMeanAdapt = std::max(geoMeanPositive(meanAdaptResized), eps);
 
-        const std::vector<double> diffMaskBand = resizeMatlabBicubic(diffMask, width, height, refLevel.width, refLevel.height);
-        const std::vector<double> maskBand = resizeMatlabBicubic(maskValues, width, height, refLevel.width, refLevel.height);
+        const std::vector<double> diffMaskBand = resizeBicubic(diffMask, width, height, refLevel.width, refLevel.height);
+        const std::vector<double> maskBand = resizeBicubic(maskValues, width, height, refLevel.width, refLevel.height);
         const size_t orientationCount = std::min(refLevel.bands.size(), testLevel.bands.size());
 
         for (size_t orientation = 0; orientation < orientationCount; ++orientation) {
@@ -4441,7 +4441,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
 
             if (levelIndex > 0) {
                 const size_t prevOrientation = std::min(orientation, selfMasks[levelIndex - 1].size() - 1);
-                const std::vector<double> prevMask = resizeMatlabBicubic(
+                const std::vector<double> prevMask = resizeBicubic(
                     selfMasks[levelIndex - 1][prevOrientation],
                     refPyramid.levels[levelIndex - 1].width,
                     refPyramid.levels[levelIndex - 1].height,
@@ -4455,7 +4455,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
             }
             if (levelIndex + 1 < bandCount - 1) {
                 const size_t nextOrientation = std::min(orientation, selfMasks[levelIndex + 1].size() - 1);
-                const std::vector<double> nextMask = resizeMatlabBicubic(
+                const std::vector<double> nextMask = resizeBicubic(
                     selfMasks[levelIndex + 1][nextOrientation],
                     refPyramid.levels[levelIndex + 1].width,
                     refPyramid.levels[levelIndex + 1].height,
@@ -4536,7 +4536,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpExactSideBySide(
             const double pMap = 1.0 - std::exp(std::log(0.5) * sMap[static_cast<size_t>(i)]);
             logUndetect[static_cast<size_t>(i)] = std::log(std::max(1e-4, 1.0 - pMap));
         }
-        const std::vector<double> pooled = fastGaussLikeMatlab(
+        const std::vector<double> pooled = fastGauss(
             logUndetect, width, height, std::max(0.6, sigma), true, false, false, 0.0);
         #if defined(_OPENMP)
         #pragma omp parallel for schedule(static)
@@ -4571,7 +4571,7 @@ std::vector<double> computeHdrvdpSubsetContrastMap(
     double pixelsPerDegree,
     double sensitivityCorrection
 ) {
-    const NativeHdrvdpParams params = makeNativeHdrvdpParams();
+    const HdrvdpParams params = makeHdrvdpParams();
     VisibilityPyramid pyramid = buildVisibilityPyramid(achromatic, width, height, pixelsPerDegree);
     removeBaseBandDc(pyramid);
     const HdrvdpCsfLookup &csfLookup = getHdrvdpCsfLookupCached(pyramid.levels, params, sensitivityCorrection);
@@ -4588,7 +4588,7 @@ std::vector<double> computeHdrvdpSubsetContrastMap(
             continue;
         }
         const double bandNorm = std::pow(2.0, static_cast<double>(levelIndex));
-        const std::vector<double> adaptResized = resizeMatlabBicubic(adaptMap, width, height, level.width, level.height);
+        const std::vector<double> adaptResized = resizeBicubic(adaptMap, width, height, level.width, level.height);
 
         std::vector<double> &response = level.band;
         #if defined(_OPENMP)
@@ -4619,8 +4619,8 @@ std::vector<double> computeHdrvdpSubsetContrastMap(
 }
 
 HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
-    const NativeHdrvdpPreparedImage &reference,
-    const NativeHdrvdpPreparedImage &test,
+    const HdrvdpPreparedImage &reference,
+    const HdrvdpPreparedImage &test,
     std::vector<double> diffMask,
     size_t width,
     size_t height,
@@ -4632,7 +4632,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
     // keepDetailMaps: also fill result.contrastMap and result.probabilityMap (read only by the
     // debug dump); otherwise they stay empty and only undetectMap and qualityJod are produced.
     // diffMask is taken by value so that it can be released after the band loop.
-    const NativeHdrvdpParams params = makeNativeHdrvdpParams();
+    const HdrvdpParams params = makeHdrvdpParams();
     VisibilityPyramid refPyramid = buildVisibilityPyramid(reference.achromatic, width, height, pixelsPerDegree);
     VisibilityPyramid testPyramid = buildVisibilityPyramid(test.achromatic, width, height, pixelsPerDegree);
     removeBaseBandDc(refPyramid);
@@ -4687,7 +4687,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
             normalizedTest[i] = testLevel.band[i] / std::max(bandNorm, 1.0);
             normalizedRef[i] = refLevel.band[i] / std::max(bandNorm, 1.0);
         }
-        selfMasks[levelIndex] = mutualMaskingMatlab(
+        selfMasks[levelIndex] = mutualMasking(
             normalizedTest, normalizedRef, refLevel.width, refLevel.height, params);
     }
 
@@ -4697,7 +4697,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
         const bool ignoreLowFreqBand = params.ignoreFreqsLowerThan > 0.0 && refLevel.frequencyCpd < params.ignoreFreqsLowerThan;
         std::vector<double> maskXn(refLevel.width * refLevel.height, 0.0);
         if (levelIndex > 0) {
-            const std::vector<double> prevMask = resizeMatlabBicubic(
+            const std::vector<double> prevMask = resizeBicubic(
                 selfMasks[levelIndex - 1],
                 refPyramid.levels[levelIndex - 1].width,
                 refPyramid.levels[levelIndex - 1].height,
@@ -4710,7 +4710,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
                 maskXn[i] += std::max(0.0, prevMask[static_cast<size_t>(i)]);
         }
         if (levelIndex + 1 < levelCount - 1) {
-            const std::vector<double> nextMask = resizeMatlabBicubic(
+            const std::vector<double> nextMask = resizeBicubic(
                 selfMasks[levelIndex + 1],
                 refPyramid.levels[levelIndex + 1].width,
                 refPyramid.levels[levelIndex + 1].height,
@@ -4722,14 +4722,14 @@ HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
             for (long long i = 0; i < static_cast<long long>(maskXn.size()); ++i)
                 maskXn[i] += std::max(0.0, nextMask[static_cast<size_t>(i)]);
         }
-        std::vector<double> logMeanAdaptResized = resizeMatlabBicubic(logMeanAdaptFull, width, height, refLevel.width, refLevel.height);
+        std::vector<double> logMeanAdaptResized = resizeBicubic(logMeanAdaptFull, width, height, refLevel.width, refLevel.height);
         #if defined(_OPENMP)
         #pragma omp parallel for schedule(static)
         #endif
         for (long long i = 0; i < static_cast<long long>(logMeanAdaptResized.size()); ++i)
             logMeanAdaptResized[static_cast<size_t>(i)] = clampd(logMeanAdaptResized[static_cast<size_t>(i)], csfLookup.csfLogLa.front(), csfLookup.csfLogLa.back());
         const double baseBandMeanAdapt = std::max(std::pow(10.0, meanOf(logMeanAdaptResized)), eps);
-        const std::vector<double> diffMaskBand = resizeMatlabBicubic(diffMask, width, height, refLevel.width, refLevel.height);
+        const std::vector<double> diffMaskBand = resizeBicubic(diffMask, width, height, refLevel.width, refLevel.height);
         std::vector<double> dForQ(refLevel.width * refLevel.height, 0.0);
         std::vector<double> csfMap;
         std::vector<double> nNcsfMap;
@@ -4915,7 +4915,7 @@ HdrvdpSubsetSideBySideResult computeHdrvdpSubsetSideBySide(
         #endif
         for (long long i = 0; i < static_cast<long long>(pMap.size()); ++i)
             logUndetect[i] = std::log(1e-4 + (1.0 - pMap[i]));
-        const std::vector<double> pooled = fastGaussLikeMatlab(
+        const std::vector<double> pooled = fastGauss(
             logUndetect, width, height, std::max(0.6, sigma), true, false, false, 0.0);
         if (debugOutDir) {
             writeGrayMapRaw((std::filesystem::path(*debugOutDir) / "native_side_log_undetect.bin").string(), width, height, logUndetect);
@@ -4973,13 +4973,13 @@ double dgmThresholdSolidAngleForDir(const Vec3d &dir, const ViewBasis &view) {
 }
 
 // ============================================================================================
-// Native evalglare: faithful C++ port of Radiance evalglare V3.06 (src/util/evalglare.c by
+// Glare analysis: C++ version of Radiance evalglare V3.06 (src/util/evalglare.c by
 // J. Wienold, Fraunhofer ISE / EPFL) together with the Radiance code it relies on:
 // pictool.c (picture + per-pixel geometry caches), image.c (setview, viewray, pix2loc,
 // getviewopt, sscanview, isview, viewfile), header.c/resolu.c (header and orientation handling)
 // and muc_randvar.c (statistics). Expressions are transliterated operation by operation,
 // including the original float/double types, so that results match the original bit for bit
-// where the original is deterministic. Port-only extensions are marked "port:".
+// where the original is deterministic. Changes and additions against evalglare are marked "port:".
 // ============================================================================================
 namespace eg {
 
@@ -7181,7 +7181,7 @@ void runMain(const EvalGlareOptions &o, EvalGlareAnalysisResult &res, Io &io) {
     pict.comment = o.commandLine.empty() ? std::string("evalglare ") : o.commandLine;
     pict.comment += "\n";
     pict.comment += kReleaseName;
-    pict.comment += " (mergehdr native port)\n";
+    pict.comment += " (mergehdr)\n";
 
     res.width = static_cast<size_t>(pict.xr);
     res.height = static_cast<size_t>(pict.yr);
@@ -8732,7 +8732,7 @@ double evaluateHdrLuminance(const HdrImage &image, size_t x, size_t y, const Hdr
 std::string evalGlareHelp(const std::string &command) {
     std::ostringstream oss;
     oss << command << ":\n";
-    oss << "  Native C++ port of Radiance evalglare 3.06 (J. Wienold, Fraunhofer ISE/EPFL).\n";
+    oss << "  Based on evalglare 3.06 by J. Wienold (Fraunhofer ISE / EPFL), modified for mergehdr.\n";
     oss << "  Works with every Radiance view type (-vta -vth -vtv -vtc -vts; not -vtl) taken from the\n";
     oss << "  VIEW header or from the command line, and with all Radiance picture orientations.\n\n";
     oss << "Syntax:\n";
@@ -9275,7 +9275,7 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
     } else {
         // Reads only the vectors of this map kind, but a (re)computed entry gets all perceptual-map
         // vectors, so that switching between map kinds of one picture reuses the cached entry.
-        const NativeHdrvdpPreparedImage &prepared = getPreparedNativeHdrvdpImageCached(
+        const HdrvdpPreparedImage &prepared = getPreparedHdrvdpImageCached(
             opts.inputPath,
             opts.inputPath,
             opts.spectralEmissionPath,
@@ -9477,21 +9477,21 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
     } else {
         result.detailLabel = "HDR-VDP3";
         // Only the adaptation and achromatic vectors are read below (kPreparedVisibilityFields).
-        const NativeHdrvdpPreparedImage &referenceContrastPrepared = getPreparedNativeHdrvdpImageCached(
+        const HdrvdpPreparedImage &referenceContrastPrepared = getPreparedHdrvdpImageCached(
             opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
             HdrvdpPreparedImageMode::DirectChannels, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor);
-        const NativeHdrvdpPreparedImage &testContrastPrepared = getPreparedNativeHdrvdpImageCached(
+        const HdrvdpPreparedImage &testContrastPrepared = getPreparedHdrvdpImageCached(
             opts.testPath, opts.testPath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
             HdrvdpPreparedImageMode::DirectChannels, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor);
-        const NativeHdrvdpPreparedImage &referenceSideBySidePrepared = getPreparedNativeHdrvdpImageCached(
+        const HdrvdpPreparedImage &referenceSideBySidePrepared = getPreparedHdrvdpImageCached(
             opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
             HdrvdpPreparedImageMode::NativeTransformed, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor);
-        const NativeHdrvdpPreparedImage &testSideBySidePrepared = getPreparedNativeHdrvdpImageCached(
+        const HdrvdpPreparedImage &testSideBySidePrepared = getPreparedHdrvdpImageCached(
             opts.testPath, opts.testPath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
             HdrvdpPreparedImageMode::NativeTransformed, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor);
         // The diff mask compares the pre-MTF native channels of the two NativeTransformed
         // preparations. They are recomputed from the same cached pictures with the same function
-        // and spectral-context matrix as in prepareNativeHdrvdpImage() instead of being cached.
+        // and spectral-context matrix as in prepareHdrvdpImage() instead of being cached.
         std::vector<double> diffMask(pixelCount, 0.0);
         const double refInputScale = viewVisibilityInputScale(reference, opts.inputColor);
         const double testInputScale = viewVisibilityInputScale(test, opts.inputColor);
@@ -9667,7 +9667,7 @@ void writeViewVisibilityResultHdr(const std::string &path, const ViewVisibilityS
         headerLines.push_back("MERGEHDR_VIEWVIS_Q= " + oss.str());
     }
 
-    writeRadianceHDRMatlabCompatible(path, image, headerLines, false, true);
+    writeRadianceHDRRounded(path, image, headerLines, false, true);
 }
 
 void writePerceptualMapHdr(const std::string &path, const PerceptualMapResult &result) {
@@ -9754,10 +9754,10 @@ struct PerceptualResponseComponentMaps {
 };
 
 PerceptualResponseComponentMaps computePerceptualResponseComponents(
-    const NativeHdrvdpPreparedImage &prepared,
-    const NativeHdrvdpSpectralContext &spectralContext,
-    const NativeHdrvdpPnLookup &pn,
-    const NativeHdrvdpParams &params,
+    const HdrvdpPreparedImage &prepared,
+    const HdrvdpSpectralContext &spectralContext,
+    const HdrvdpPnLookup &pn,
+    const HdrvdpParams &params,
     size_t width,
     size_t height,
     double pixelsPerDegree
@@ -9832,20 +9832,20 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
         maskThreshold[idx] = radianceRgbLuminanceRawAt(mask, x, y);
     }
 
-    const NativeHdrvdpPreparedImage &referencePrepared = getPreparedNativeHdrvdpImageCached(
+    const HdrvdpPreparedImage &referencePrepared = getPreparedHdrvdpImageCached(
         opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
         HdrvdpPreparedImageMode::DirectChannels, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor);
-    const NativeHdrvdpPreparedImage &testPrepared = getPreparedNativeHdrvdpImageCached(
+    const HdrvdpPreparedImage &testPrepared = getPreparedHdrvdpImageCached(
         opts.testPath, opts.testPath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
         HdrvdpPreparedImageMode::DirectChannels, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor);
-    const NativeHdrvdpPreparedImage &referenceSideBySidePrepared = getPreparedNativeHdrvdpImageCached(
+    const HdrvdpPreparedImage &referenceSideBySidePrepared = getPreparedHdrvdpImageCached(
         opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
         HdrvdpPreparedImageMode::NativeTransformed, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor);
-    const NativeHdrvdpPreparedImage &testSideBySidePrepared = getPreparedNativeHdrvdpImageCached(
+    const HdrvdpPreparedImage &testSideBySidePrepared = getPreparedHdrvdpImageCached(
         opts.testPath, opts.testPath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
         HdrvdpPreparedImageMode::NativeTransformed, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor);
-    const NativeHdrvdpSpectralContext &refSpectralContext =
-        getNativeHdrvdpSpectralContextCached(opts.referencePath, opts.spectralEmissionPath, makeNativeHdrvdpParams());
+    const HdrvdpSpectralContext &refSpectralContext =
+        getHdrvdpSpectralContextCached(opts.referencePath, opts.spectralEmissionPath, makeHdrvdpParams());
     std::vector<double> refXyzX(pixelCount, 0.0);
     std::vector<double> refXyzY(pixelCount, 0.0);
     std::vector<double> refXyzZ(pixelCount, 0.0);
@@ -9906,7 +9906,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
     }
 
     const double adaptSigma = std::pow(10.0, -0.781367) * opts.pixelsPerDegree;
-    refAdaptLogBlur = fastGaussLikeMatlab(
+    refAdaptLogBlur = fastGauss(
         refLogLmSum,
         reference.width,
         reference.height,
@@ -9915,7 +9915,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
         false,
         true,
         0.0);
-    testAdaptLogBlur = fastGaussLikeMatlab(
+    testAdaptLogBlur = fastGauss(
         testLogLmSum,
         test.width,
         test.height,
@@ -9924,7 +9924,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
         false,
         true,
         0.0);
-    sideRefAdaptLogBlur = fastGaussLikeMatlab(
+    sideRefAdaptLogBlur = fastGauss(
         sideRefLogLmSum,
         reference.width,
         reference.height,
@@ -9933,7 +9933,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
         false,
         true,
         0.0);
-    sideTestAdaptLogBlur = fastGaussLikeMatlab(
+    sideTestAdaptLogBlur = fastGauss(
         sideTestLogLmSum,
         test.width,
         test.height,
@@ -9977,8 +9977,8 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
         opts.pixelsPerDegree,
         opts.sensitivityCorrection
     );
-    const NativeHdrvdpParams params = makeNativeHdrvdpParams();
-    const NativeHdrvdpPnLookup &pn = getNativeHdrvdpPnLookupCached(params, opts.sensitivityCorrection);
+    const HdrvdpParams params = makeHdrvdpParams();
+    const HdrvdpPnLookup &pn = getHdrvdpPnLookupCached(params, opts.sensitivityCorrection);
     const PerceptualResponseComponentMaps refPerceptual = computePerceptualResponseComponents(
         referencePrepared, refSpectralContext, pn, params, reference.width, reference.height, opts.pixelsPerDegree);
     const PerceptualResponseComponentMaps testPerceptual = computePerceptualResponseComponents(
@@ -10137,7 +10137,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
     writeSpectralCurveCsv((fs::path(outDir) / "native_rod_sens.csv").string(), refSpectralContext.rodSens);
 
     std::ofstream manifest((fs::path(outDir) / "native_step_manifest.txt").string());
-    manifest << "View visibility native step maps\n";
+    manifest << "View visibility step maps\n";
     manifest << "1. *_pre_mtf_rgb.hdr: XYZ/direct or display-native RGB before eye optical MTF.\n";
     manifest << "2. *_post_mtf_rgb.hdr and *_post_mtf_y.hdr: image after the optical MTF frequency filter.\n";
     manifest << "3. *_l_response.hdr, *_m_response.hdr, *_rod_response.hdr: physical cone/rod responses after MTF.\n";
@@ -10158,7 +10158,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
         const double eps = 1e-8;
         for (size_t levelIndex = 0; levelIndex < pyramid.levels.size(); ++levelIndex) {
             const VisibilityPyramidLevel &level = pyramid.levels[levelIndex];
-            const std::vector<double> adaptResized = resizeMatlabBicubic(adaptMap, reference.width, reference.height, level.width, level.height);
+            const std::vector<double> adaptResized = resizeBicubic(adaptMap, reference.width, reference.height, level.width, level.height);
             const double bandNorm = std::pow(2.0, static_cast<double>(levelIndex));
             std::vector<double> rawBand;
             std::vector<double> rawCsf;

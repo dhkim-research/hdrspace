@@ -46,7 +46,7 @@ unchanged.
 3. **Fine-tune**: *Basic* is enough for most brackets. *Expert* lets you choose:
    - the camera **Profile** (the matrix from the RAW file, or one you made in **Calibrate**);
    - the **Output colour** (`rad`, `srgb` or `xyz`);
-   - demosaicing and **Merge weight**;
+   - demosaicing and **Merge weight** (*Pixel*, or *Neighborhood* against sensor bloom);
    - **Fisheye correction**;
    - black, white, saturation and ND values.
 4. Press **Merge**. The result opens in the viewer when it is done.

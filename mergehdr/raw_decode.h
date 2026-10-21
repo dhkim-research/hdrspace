@@ -2,7 +2,7 @@
 
 // Decode one RAW frame into a flat Bayer mosaic with LibRaw (no demosaicing, no
 // LibRaw post-processing). Kept free of Boost/Exiv2 so that the decode can be
-// checked on its own against linearhdr's rawconvert (tools/compare_rawconvert_levels.cpp).
+// tested on its own (tools/compare_rawconvert_levels.cpp).
 
 #include "camera_detect.h"
 
@@ -25,7 +25,7 @@ struct DecodedRawFrame {
     std::unique_ptr<uint16_t[]> image;
 };
 
-inline int buildDcrawFilter(LibRaw &raw, int top, int left) {
+inline int bayerFilterPattern(LibRaw &raw, int top, int left) {
     int filter = 0;
     for (int y = 0; y < 8; ++y) {
         for (int x = 0; x < 2; ++x) {
@@ -38,11 +38,10 @@ inline int buildDcrawFilter(LibRaw &raw, int top, int left) {
 
 /**
  * fixedBlack < 0: LibRaw subtracts its own black for this frame (scalar, channel and
- *   repeated BlackLevel tables), as rawconvert does without -k.
- * fixedBlack >= 0: the black is set the way linearhdr's rawconvert -k sets it
- *   (LibRaw params.user_black): the scalar black becomes fixedBlack, LibRaw keeps its
- *   per-channel residual and drops the repeated table. This is the same LibRaw code
- *   path (adjust_bl, subtract_black) that rawconvert reaches through dcraw_process.
+ *   repeated BlackLevel tables).
+ * fixedBlack >= 0: the black is fixed through LibRaw params.user_black: the scalar black
+ *   becomes fixedBlack, LibRaw keeps its per-channel residual and drops the repeated
+ *   table (LibRaw adjust_bl, subtract_black).
  * The black-subtracted signal is stored with the scalar baseline added back, so the
  * merge can keep normalising (value - black) / (white - black).
  */
@@ -78,7 +77,7 @@ inline DecodedRawFrame decodeWithLibRaw(const std::string &filename, int fixedBl
         color.black, color.cblack, sizeof(color.cblack) / sizeof(color.cblack[0]));
     const int sourceWhitepoint = color.maximum ? static_cast<int>(color.maximum) : 0x3FFF;
     const int blacklevel = fixedBlack >= 0 ? fixedBlack : decoderBlack;
-    const int filter = buildDcrawFilter(raw, top, left);
+    const int filter = bayerFilterPattern(raw, top, left);
 
     if (fixedBlack >= 0)
         raw.imgdata.params.user_black = fixedBlack;

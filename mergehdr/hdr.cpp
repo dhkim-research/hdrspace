@@ -1,4 +1,4 @@
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 #include <string.h>
 #include <limits>
 #include <unordered_set>
@@ -63,7 +63,7 @@ inline uint64_t pixel_key(int x, int y) {
 
 } // namespace
 
-float compute_weight(uint16_t value, uint16_t blacklevel, float saturation) {
+float pixelWeight(uint16_t value, uint16_t blacklevel, float saturation) {
     const float alpha = -1.0f / 10.0f;
     const float beta = 1.0f / std::exp(4.0f*alpha);
 
@@ -75,7 +75,7 @@ float compute_weight(uint16_t value, uint16_t blacklevel, float saturation) {
     return beta * std::exp(alpha * (1/scaled + 1/(1-scaled)));
 }
 
-static inline float compute_weight_pylinear(float scaled, float saturation_offset) {
+static inline float neighborhoodWeight(float scaled, float saturation_offset) {
     if (scaled < 0.0f || scaled > 1.0f - saturation_offset)
         return 0.0f;
     return std::exp(-0.01f/scaled - 0.01f/(1.0f - saturation_offset - scaled)) + 1e-6f;
@@ -89,12 +89,12 @@ void ExposureSeries::initTables(float saturation, EMergeMethod method, float und
     /* Compute relative exposure table */
     for (int i=0; i<0x10000; ++i) {
         float scaled = (float) (i - blacklevel) / (float) (whitepoint - blacklevel);
-        if (method == EMergePyLinear)
+        if (method == EMergeNeighborhood)
             scaled = clamp(scaled, 0.0f, 1.0f);
         value_tbl[i] = scaled;
     }
 
-    if (size() == 1 && method != EMergePyLinear)
+    if (size() == 1 && method != EMergeNeighborhood)
         return; /* The calibrated fast path below does not need weights. */
 
     if (saturation == 0) {
@@ -127,10 +127,10 @@ void ExposureSeries::initTables(float saturation, EMergeMethod method, float und
 
     /* Precompute weight table */
     for (int i=0; i<0x10000; ++i) {
-        if (method == EMergePyLinear)
-            weight_tbl[i] = compute_weight_pylinear(value_tbl[i], saturation_offset);
+        if (method == EMergeNeighborhood)
+            weight_tbl[i] = neighborhoodWeight(value_tbl[i], saturation_offset);
         else
-            weight_tbl[i] = compute_weight((uint16_t) i, blacklevel, saturation);
+            weight_tbl[i] = pixelWeight((uint16_t) i, blacklevel, saturation);
     }
 }
 
@@ -251,9 +251,9 @@ void ExposureSeries::merge() {
 
     /* Preserve the inexpensive one-frame path for the standard merger, but
        put the normalized sensor value on the same exposure-calibrated scale
-       as the multi-frame path.  EMergePyLinear intentionally falls through
+       as the multi-frame path.  EMergeNeighborhood intentionally falls through
        so its neighborhood-based saturation/bloom handling is retained. */
-    if (size() == 1 && merge_method != EMergePyLinear) {
+    if (size() == 1 && merge_method != EMergeNeighborhood) {
         const float exposure = exposures[0].exposure;
         if (!(std::isfinite(exposure) && exposure > 0.0f))
             throw std::runtime_error(
@@ -276,7 +276,7 @@ void ExposureSeries::merge() {
     for (int y=0; y<height; ++y) {
         uint32_t offset = y * width;
         for (int x=0; x<width; ++x) {
-            if (merge_method == EMergePyLinear) {
+            if (merge_method == EMergeNeighborhood) {
                 float value = 0.0f, total_exposure = 0.0f;
                 float high = 0.0f, low = std::numeric_limits<float>::infinity();
                 bool all_under = true, all_over = true;
@@ -314,8 +314,8 @@ void ExposureSeries::merge() {
 
                     if (!(saturated_exp || under_exp)) {
                         float weight = std::min(
-                            compute_weight_pylinear(std::max(saturation_same, saturation_other), saturation_offset),
-                            compute_weight_pylinear(under, saturation_offset)
+                            neighborhoodWeight(std::max(saturation_same, saturation_other), saturation_offset),
+                            neighborhoodWeight(under, saturation_offset)
                         );
                         value += scaled * weight;
                         total_exposure += exposures[img].exposure * weight;
@@ -364,7 +364,8 @@ void ExposureSeries::merge() {
                 else if (all_over)
                     value = high;
                 else {
-                    /* As in the original hdrmerge: the unweighted sum is kept undivided */
+                    /* No usable weight: keep the plain sum, not divided by exposure; it only
+                       serves as the starting estimate for the second pass */
                     for (size_t img=0; img<size(); ++img) {
                         uint16_t pxvalue = exposures[img].image[offset];
                         value += value_tbl[pxvalue];
@@ -409,24 +410,23 @@ void ExposureSeries::merge() {
 }
 
 void ExposureSeries::mergeDemosaicFirst(const float *cam2rgb, bool median) {
-    /* Port of pylinearhdr --interpfirst (rawconvert -q DHT per exposure, then linearhdr -B, i.e.
-       linearhdr.cpp merge_rgb). Default mergehdr behaviour (merge on the mosaic, then demosaic)
-       is unchanged; this path is used only with --demosaicfirst. */
-    if (merge_method != EMergePyLinear)
-        throw std::runtime_error("--demosaicfirst requires the linearhdr merge style.");
+    /* Demosaic every frame (DHT) and merge the RGB frames. The default order (merge on the
+       mosaic, then demosaic) is not affected; this path runs only with --demosaicfirst. */
+    if (merge_method != EMergeNeighborhood)
+        throw std::runtime_error("--demosaicfirst requires the neighborhood merge style.");
     const size_t npix = (size_t) width * height;
     const float sat_off = std::max(0.0f, 1.0f - saturation);
     const float sat_lim = 1.0f - sat_off;
     const float blk_off = underexposed;
-    /* linearhdr.cpp get_weight() */
-    auto lin_weight = [sat_off](float x) {
+    /* Same weight curve as neighborhoodWeight(), without the range test (done below) */
+    auto rgbWeight = [sat_off](float x) {
         return std::exp(-0.01f / x - 0.01f / (1.0f - sat_off - x)) + 1e-6f;
     };
     std::vector<float> acc(3 * npix, 0.0f), high(3 * npix, 0.0f),
         low(3 * npix, std::numeric_limits<float>::infinity()), div(npix, 0.0f);
     std::vector<uint8_t> all_under(npix, 1), all_over(npix, 1);
 
-    cout << "Merging " << size() << " exposures (demosaic first, linearhdr RGB merge) .." << endl;
+    cout << "Merging " << size() << " exposures (demosaic first, RGB merge) .." << endl;
     for (size_t img = 0; img < size(); ++img) {
         /* demosaicDHT() frees image_merged after interpolation, so allocate it per exposure */
         if (image_merged)
@@ -442,20 +442,20 @@ void ExposureSeries::mergeDemosaicFirst(const float *cam2rgb, bool median) {
         #pragma omp parallel for
         for (ptrdiff_t k = 0; k < (ptrdiff_t) npix; ++k) {
             float irgb[3], orgb[3];
-            for (int c = 0; c < 3; ++c)   /* rawconvert writes a clipped 16-bit TIFF */
+            for (int c = 0; c < 3; ++c)   /* clip each demosaiced frame to [0, 1] */
                 irgb[c] = clamp(image_demosaiced[k][c], 0.0f, 1.0f);
             float satv = std::max(irgb[0], std::max(irgb[1], irgb[2]));
             float under = std::min(irgb[0], std::min(irgb[1], irgb[2]));
             bool saturated_exp = satv >= sat_lim;
             bool under_exp = under < blk_off;
-            for (int i = 0; i < 3; ++i)   /* linearhdr apply_color_transform() */
+            for (int i = 0; i < 3; ++i)   /* camera RGB -> target RGB */
                 orgb[i] = std::max(0.0f, cam2rgb[3*i] * irgb[0] + cam2rgb[3*i+1] * irgb[1] + cam2rgb[3*i+2] * irgb[2]);
             saturated_exp |= std::max(orgb[0], std::max(orgb[1], orgb[2])) >= sat_lim;
             under_exp |= std::min(orgb[0], std::min(orgb[1], orgb[2])) < blk_off;
             all_under[k] &= under_exp;
             all_over[k] &= saturated_exp;
             const bool in_range = !(saturated_exp || under_exp);
-            const float w = std::min(lin_weight(satv), lin_weight(under));
+            const float w = std::min(rgbWeight(satv), rgbWeight(under));
             if (in_range)
                 div[k] += w * ec;
             for (int c = 0; c < 3; ++c) {
@@ -518,7 +518,7 @@ RawChannelSampleStats ExposureSeries::sampleRawChannel(int channel) {
                         localSum += scaled / exposures[0].exposure;
                         ++localValid;
                     }
-                } else if (merge_method == EMergePyLinear) {
+                } else if (merge_method == EMergeNeighborhood) {
                     float value = 0.0f, total_exposure = 0.0f;
                     bool all_under = true, all_over = true;
                     float saturation_offset = std::max(0.0f, 1.0f - saturation);
@@ -551,8 +551,8 @@ RawChannelSampleStats ExposureSeries::sampleRawChannel(int channel) {
 
                         if (!(saturated_exp || under_exp)) {
                             float weight = std::min(
-                                compute_weight_pylinear(std::max(saturation_same, saturation_other), saturation_offset),
-                                compute_weight_pylinear(under, saturation_offset)
+                                neighborhoodWeight(std::max(saturation_same, saturation_other), saturation_offset),
+                                neighborhoodWeight(under, saturation_offset)
                             );
                             value += scaled * weight;
                             total_exposure += exposures[img].exposure * weight;

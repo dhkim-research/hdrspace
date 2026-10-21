@@ -20974,7 +20974,7 @@ private:
         }
         {
             auto* weightColumn = makeFieldColumn(qualityRow, "Merge weight");
-            mergeWeightCombo_ = new InspectorComboBox(weightColumn, {"hdrmerge (default)", "linearhdr (slower, sensor bloom safer)"});
+            mergeWeightCombo_ = new InspectorComboBox(weightColumn, {"Pixel (default)", "Neighborhood (slower, bloom-safe)"});
             mergeWeightCombo_->set_selected_index(0);
             mergeWeightCombo_->set_side(Popup::Side::Left);
             mergeWeightCombo_->set_font_size(kMergeFieldFont);
@@ -26111,7 +26111,7 @@ private:
         }
         if (values.contains("merge_weight")) {
             const std::string value = tev::toLower(values["merge_weight"]);
-            mergeWeightCombo_->set_selected_index(value == "linearhdr" ? 1 : 0);
+            mergeWeightCombo_->set_selected_index(value == "neighborhood" || value == "linearhdr" || value == "pylinear" ? 1 : 0);
         }
         setTextBoxFromProfile(blackBox_, values, "black");
         setTextBoxFromProfile(whiteBox_, values, "white");
@@ -26162,7 +26162,7 @@ private:
     }
 
     std::string selectedMergeWeight() const {
-        return mergeWeightCombo_->selected_index() == 0 ? "hdrmerge" : "linearhdr";
+        return mergeWeightCombo_->selected_index() == 0 ? "pixel" : "neighborhood";
     }
 
     std::string selectedOutputFormat() const {

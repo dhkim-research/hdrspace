@@ -1,4 +1,4 @@
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 
 #include <boost/format.hpp>
 #include <cstdio>

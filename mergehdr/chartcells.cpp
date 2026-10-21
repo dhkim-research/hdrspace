@@ -1,7 +1,7 @@
 #include "chartcells.h"
 
 #include "hdrimage.h"
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 
 #include <algorithm>
 #include <cmath>

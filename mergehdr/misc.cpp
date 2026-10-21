@@ -1,4 +1,4 @@
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 #include <boost/algorithm/string.hpp>
 #include <boost/program_options.hpp>
 #include <thread>
@@ -115,10 +115,10 @@ std::istream& operator>>(std::istream& in, EMergeMethod& unit) {
     in >> token;
     std::string token_lc = boost::to_lower_copy(token);
 
-    if (token_lc == "hdrmerge")
-        unit = EMergeHDRMerge;
-    else if (token_lc == "linearhdr" || token_lc == "pylinear")
-        unit = EMergePyLinear;
+    if (token_lc == "pixel" || token_lc == "hdrmerge")
+        unit = EMergePixel;
+    else if (token_lc == "neighborhood" || token_lc == "linearhdr" || token_lc == "pylinear")
+        unit = EMergeNeighborhood;
     else
         throw po::validation_error(po::validation_error::invalid_option_value, "mergestyle", token);
     return in;

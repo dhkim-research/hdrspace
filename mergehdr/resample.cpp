@@ -1,4 +1,4 @@
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 #include <assert.h>
 
 float TentFilter::eval(float x) const {

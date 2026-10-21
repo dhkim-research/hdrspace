@@ -1118,7 +1118,7 @@ private:
         demosaicCombo_ = new ComboBox(qualityRow, {"AHD (default)", "DHT (slow)"});
         demosaicCombo_->set_selected_index(0);
         new Label(qualityRow, "Merge weight", "sans", 13);
-        mergeWeightCombo_ = new ComboBox(qualityRow, {"hdrmerge (default)", "linearhdr (slow)"});
+        mergeWeightCombo_ = new ComboBox(qualityRow, {"Pixel (default)", "Neighborhood (slow)"});
         mergeWeightCombo_->set_selected_index(0);
 
         auto* modeRow = new Widget(parent);
@@ -1694,7 +1694,7 @@ private:
     }
 
     std::string selectedMergeWeight() const {
-        return mergeWeightCombo_->selected_index() == 0 ? "hdrmerge" : "linearhdr";
+        return mergeWeightCombo_->selected_index() == 0 ? "pixel" : "neighborhood";
     }
 
     std::string selectedOutputFormat() const {

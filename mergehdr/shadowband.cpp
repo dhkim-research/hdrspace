@@ -1,4 +1,4 @@
-#include "shadowband_native.h"
+#include "shadowband.h"
 
 #include <algorithm>
 #include <array>
@@ -265,7 +265,7 @@ struct AngularViewMapper {
     }
 };
 
-struct RaytoolsExactViewMapper {
+struct ExactViewMapper {
     Vec3d dxyz = makeVec(0.0, 1.0, 0.0);
     double viewAngle = 180.0;
     double aspect = 1.0;
@@ -273,9 +273,9 @@ struct RaytoolsExactViewMapper {
     Mat3 ymtx = identity3();
     Mat3 pmtx = identity3();
 
-    RaytoolsExactViewMapper() = default;
+    ExactViewMapper() = default;
 
-    RaytoolsExactViewMapper(const Vec3d &dir, double angleDegrees) {
+    ExactViewMapper(const Vec3d &dir, double angleDegrees) {
         dxyz = normalize(dir);
         viewAngle = angleDegrees;
         aspect = (viewAngle == 360.0) ? 2.0 : 1.0;
@@ -1208,7 +1208,7 @@ Vec3d findSunDirection(const std::vector<PixelGeometry> &geometry, const HdrImag
     };
 
     const int res = static_cast<int>(ndImage.width);
-    const RaytoolsExactViewMapper baseVm(makeVec(0.0, 1.0, 0.0), 180.0);
+    const ExactViewMapper baseVm(makeVec(0.0, 1.0, 0.0), 180.0);
     std::vector<PeakSample> filtered;
     filtered.reserve(static_cast<size_t>(res * res / 32));
 
@@ -1372,11 +1372,11 @@ std::array<double, 3> integrateSourceRgb(const HdrImage &image, const std::vecto
     return out;
 }
 
-std::array<double, 3> integrateSourceRgbRaytoolsExact(const HdrImage &image, const Vec3d &sunDir,
+std::array<double, 3> integrateSourceRgbExact(const HdrImage &image, const Vec3d &sunDir,
         double sfov, double solidAngle) {
     const int res = static_cast<int>(image.width);
-    const RaytoolsExactViewMapper baseVm(makeVec(0.0, 1.0, 0.0), 180.0);
-    const RaytoolsExactViewMapper sourceVm(sunDir, sfov);
+    const ExactViewMapper baseVm(makeVec(0.0, 1.0, 0.0), 180.0);
+    const ExactViewMapper sourceVm(sunDir, sfov);
     std::array<double, 3> sum{{0.0, 0.0, 0.0}};
     for (int y = 0; y < res; ++y) {
         for (int x = 0; x < res; ++x) {
@@ -1384,11 +1384,8 @@ std::array<double, 3> integrateSourceRgbRaytoolsExact(const HdrImage &image, con
             if (!sourceVm.inView(ray))
                 continue;
             const double omega = baseVm.pixelOmega({{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5}}, res);
-            // raytools hdr2carray() converts Radiance scanlines to (3, x, y) by
-            // applying both a transpose and a vertical flip:
-            //     np.transpose(bytes[:, ::-1], (0, 2, 1))
-            // Preserve that exact pairing here so pixelrays(res).reshape(-1, 3)
-            // and image.reshape(3, -1) see the same pixels as pylinearhdr.
+            // Ray (x, y) is paired with image row height-1-y: a transpose plus a vertical
+            // flip of the Radiance scanlines. Keep this pairing, the sun integral depends on it.
             const size_t idx = (image.height - 1 - static_cast<size_t>(y)) * image.width + static_cast<size_t>(x);
             sum[0] += image.rgb[idx * 3 + 0] * omega;
             sum[1] += image.rgb[idx * 3 + 1] * omega;
@@ -1703,8 +1700,8 @@ ShadowbandMergeResult mergeShadowbandNative(
         result.hasSkyOnly = true;
     }
 
-    std::array<double, 3> solLumRgb = integrateSourceRgbRaytoolsExact(s, sunDir, opts.sfov, opts.srcsize);
-    const std::array<double, 3> skyLumRgb = integrateSourceRgbRaytoolsExact(blended, sunDir, opts.sfov, opts.srcsize);
+    std::array<double, 3> solLumRgb = integrateSourceRgbExact(s, sunDir, opts.sfov, opts.srcsize);
+    const std::array<double, 3> skyLumRgb = integrateSourceRgbExact(blended, sunDir, opts.sfov, opts.srcsize);
     const double solLum = solLumRgb[0] * kRadianceLumWeights[0] + solLumRgb[1] * kRadianceLumWeights[1] + solLumRgb[2] * kRadianceLumWeights[2];
     const double skyLum = skyLumRgb[0] * kRadianceLumWeights[0] + skyLumRgb[1] * kRadianceLumWeights[1] + skyLumRgb[2] * kRadianceLumWeights[2];
     if (solLum > 0.0) {
@@ -1716,7 +1713,7 @@ ShadowbandMergeResult mergeShadowbandNative(
         result.sourceSolidAngle = opts.srcsize;
         addSourceToBlend(blended, geometry, sunDir, result.sourceRgb, result.sourceSolidAngle);
         result.outputSourceDirection = {{-sunDir.x, -sunDir.y, sunDir.z}};
-        const RaytoolsExactViewMapper outputVm(makeVec(0.0, -1.0, 0.0), 180.0);
+        const ExactViewMapper outputVm(makeVec(0.0, -1.0, 0.0), 180.0);
         const Vec3d outDir = makeVec(result.outputSourceDirection[0], result.outputSourceDirection[1], result.outputSourceDirection[2]);
         const std::array<double, 2> sourcePixel = outputVm.ray2pixel(outDir, static_cast<int>(h.width), false);
         result.sourcePixelX = sourcePixel[0];

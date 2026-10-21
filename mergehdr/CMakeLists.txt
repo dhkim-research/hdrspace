@@ -113,7 +113,7 @@ set(CMAKE_CXX_FLAGS "-std=c++17 -Wall -Wno-deprecated-declarations -Wno-deprecat
 
 add_definitions(-D_USE_MATH_DEFINES -D_UNICODE -DUNICODE)
 
-add_executable(mergehdrcore input.cpp output.cpp main.cpp hdr.cpp fitexp.cpp resample.cpp misc.cpp dht_port.cpp dht_demosaic_linearhdr.cpp camera_detect.cpp)
+add_executable(mergehdrcore input.cpp output.cpp main.cpp hdr.cpp fitexp.cpp resample.cpp misc.cpp dht.cpp dht_demosaic_linearhdr.cpp camera_detect.cpp)
 if(BUILD_TESTING)
   add_executable(raw_normalization_test tools/test_raw_normalization.cpp)
   add_test(NAME raw_normalization COMMAND raw_normalization_test)
@@ -126,7 +126,7 @@ add_executable(mergehdr
   chartcells.cpp
   glareeval.cpp
   hdrimage.cpp
-  shadowband_native.cpp
+  shadowband.cpp
   "${MERGEHDR_MEX_DIR}/convolve.c"
   "${MERGEHDR_MEX_DIR}/edges.c"
   output.cpp

@@ -1,5 +1,5 @@
-#if !defined(__HDRMERGE_H)
-#define __HDRMERGE_H
+#if !defined(MERGEHDRCORE_H)
+#define MERGEHDRCORE_H
 
 #include "platform.h"
 #include <string>
@@ -33,8 +33,8 @@ enum EDemosaicMethod {
 };
 
 enum EMergeMethod {
-    EMergeHDRMerge,
-    EMergePyLinear
+    EMergePixel,
+    EMergeNeighborhood
 };
 
 /// Abstract reconstruction filter
@@ -102,7 +102,7 @@ struct ExposureSeries {
     /* Merged and demosaiced image */
     float3 *image_demosaiced;
 
-    /* dcraw-style color filter array description */
+    /* Bayer CFA pattern, 2 bits per cell (LibRaw "filters" layout) */
     int filter;
 
     /* Bad pixel coordinates in full RAW mosaic coordinates */
@@ -123,7 +123,7 @@ struct ExposureSeries {
 
     inline ExposureSeries() : 
         image_merged(NULL), image_demosaiced(NULL),
-        merge_method(EMergeHDRMerge), underexposed(0.0f) {
+        merge_method(EMergePixel), underexposed(0.0f) {
         white_saturation[0] = white_saturation[1] = white_saturation[2] = 1.0f;
     }
 
@@ -150,7 +150,7 @@ struct ExposureSeries {
      * Check that all exposures are valid, and that they satisfy
      * a few basic requirements such as:
      *  - all images use the same ISO speed and aperture setting, and carry
-     *    exposure mode metadata (both relaxed for linearhdr effective exposures,
+     *    exposure mode metadata (both relaxed for effective exposures,
      *    which include ISO and aperture per frame)
      *  - there are no duplicate exposures.
      *
@@ -159,23 +159,22 @@ struct ExposureSeries {
     void check(bool allowVariableIso = false);
 
     /**
-     * Run dcraw on an entire exposure series (in parallel)
-     * and fill the exposure series with a normalized RGB floating
-     * point image representation
+     * Decode every frame with LibRaw (in parallel) and bring all frames to
+     * one common black/white encoding of the Bayer mosaic
      */
     void load(int commonBlackOverride = -1, int fixedWhiteOverride = -1);
 
     /// Initialize the exposure / weight table
-    void initTables(float saturation, EMergeMethod method = EMergeHDRMerge,
+    void initTables(float saturation, EMergeMethod method = EMergePixel,
         float underexposed = 0.0f);
 
     /// Repair a known list of bad pixels in the RAW mosaic before merging.
     void repairBadPixels();
 
     /**
-     * Scale the RAW channels by camera premultipliers (r, g, b; the second green uses g) the way
-     * LibRaw's scale_colors() does for linearhdr's rawconvert -r without highlight recovery:
-     * relative to the smallest multiplier, about the black level, clipped at the white point.
+     * Scale the RAW channels by camera premultipliers (r, g, b; the second green uses g) as
+     * LibRaw's scale_colors() does without highlight recovery: relative to the smallest
+     * multiplier, about the black level, clipped at the white point.
      */
     void applyRawMultipliers(const float multipliers[3]);
 
@@ -183,10 +182,9 @@ struct ExposureSeries {
     void merge();
 
     /**
-     * Demosaic-first merge (port of pylinearhdr --interpfirst): every exposure is
-     * demosaiced on its own (DHT, clipped to [0,1] like rawconvert's 16-bit output) and the
-     * RGB frames are merged with linearhdr's merge_rgb rule (worst-channel weight, saturation
-     * also tested after the camera->target matrix). Writes image_demosaiced and releases the RAW data.
+     * Demosaic-first merge: every frame is demosaiced on its own (DHT, clipped to [0, 1]) and
+     * the RGB frames are merged with the worst-channel weight; saturation is also tested after
+     * the camera->target matrix. Writes image_demosaiced and releases the RAW data.
      */
     void mergeDemosaicFirst(const float *cam2rgb, bool median = false);
 
@@ -349,7 +347,7 @@ extern std::istream& operator>>(std::istream& in, EColorMode& unit);
 extern std::istream& operator>>(std::istream& in, EDemosaicMethod& unit);
 extern std::istream& operator>>(std::istream& in, EMergeMethod& unit);
 
-/// Native DHT demosaicing port used by hdrmerge.
+/// DHT demosaicing of the merged mosaic (or of one frame with --demosaicfirst).
 extern void demosaicDHT(ExposureSeries &series, bool median, bool announce = true);
 
-#endif /* __HDRMERGE_H */
+#endif /* MERGEHDRCORE_H */

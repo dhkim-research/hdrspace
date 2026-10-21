@@ -68,7 +68,7 @@ void rgb2rgbe(float r, float g, float b, TrgbePixel &rgbe) {
     rgb2rgbeImpl(r, g, b, rgbe, quantizeMantissa);
 }
 
-void rgb2rgbeMatlabCompatible(float r, float g, float b, TrgbePixel &rgbe) {
+void rgb2rgbeRounded(float r, float g, float b, TrgbePixel &rgbe) {
     const auto quantizeMantissa = [](double value) -> Trgbe {
         const int rounded = static_cast<int>(std::floor(value + 0.5));
         return static_cast<Trgbe>(std::max(0, std::min(255, rounded)));
@@ -305,7 +305,7 @@ void writeRadianceHDRInternal(const std::string &path,
         const std::vector<std::string> &headerLines,
         bool radianceCompatibility,
         bool topDownInput,
-        bool matlabCompatibleQuantization) {
+        bool roundMantissa) {
     FILE* file = std::fopen(path.c_str(), "wb");
     if (!file) {
         throw std::runtime_error("Unable to open output HDR file: " + path);
@@ -350,8 +350,8 @@ void writeRadianceHDRInternal(const std::string &path,
                 g /= kWhiteEfficacy;
                 b /= kWhiteEfficacy;
             }
-            if (matlabCompatibleQuantization)
-                rgb2rgbeMatlabCompatible(r, g, b, pixel);
+            if (roundMantissa)
+                rgb2rgbeRounded(r, g, b, pixel);
             else
                 rgb2rgbe(r, g, b, pixel);
             rowR[x] = pixel.r;
@@ -386,7 +386,7 @@ void writeRadianceHDR(const std::string &path,
     writeRadianceHDRInternal(path, image, headerLines, radianceCompatibility, topDownInput, false);
 }
 
-void writeRadianceHDRMatlabCompatible(const std::string &path,
+void writeRadianceHDRRounded(const std::string &path,
         const HdrImage &image,
         const std::vector<std::string> &headerLines,
         bool radianceCompatibility,
@@ -467,7 +467,7 @@ void writeRadianceHDROriented(const std::string &path,
 void quantizeRadianceRgbRoundTrip(std::vector<float> &rgb) {
     for (size_t i = 0; i + 2 < rgb.size(); i += 3) {
         TrgbePixel pixel{};
-        rgb2rgbeMatlabCompatible(rgb[i + 0], rgb[i + 1], rgb[i + 2], pixel);
+        rgb2rgbeRounded(rgb[i + 0], rgb[i + 1], rgb[i + 2], pixel);
         if (pixel.e == 0) {
             rgb[i + 0] = 0.0f;
             rgb[i + 1] = 0.0f;
@@ -483,10 +483,10 @@ void quantizeRadianceRgbRoundTrip(std::vector<float> &rgb) {
 
 namespace {
 
-float quantizeRadianceGrayRoundTripImpl(float value, bool matlabCompatible) {
+float quantizeRadianceGrayRoundTripImpl(float value, bool roundMantissa) {
     TrgbePixel pixel{};
-    if (matlabCompatible)
-        rgb2rgbeMatlabCompatible(value, value, value, pixel);
+    if (roundMantissa)
+        rgb2rgbeRounded(value, value, value, pixel);
     else
         rgb2rgbe(value, value, value, pixel);
     if (pixel.e == 0)
@@ -501,6 +501,6 @@ float quantizeRadianceGrayRoundTrip(float value) {
     return quantizeRadianceGrayRoundTripImpl(value, false);
 }
 
-float quantizeRadianceGrayRoundTripMatlabCompatible(float value) {
+float quantizeRadianceGrayRoundTripRounded(float value) {
     return quantizeRadianceGrayRoundTripImpl(value, true);
 }

@@ -1,4 +1,4 @@
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 #include "camera_detect.h"
 #include "raw_normalization.h"
 #include "raw_decode.h"
@@ -124,8 +124,8 @@ void ExposureSeries::check(bool allowVariableIso) {
             }
         }
 
-        /* Different aperture settings are only allowed with linearhdr effective exposures
-           (t * ISO / (100 N^2) per frame), which account for them like linearhdr does */
+        /* Different apertures are only allowed with effective exposures
+           (t * ISO / (100 N^2) per frame), which account for them */
         it = Exiv2::fNumber(exifData);
         if (it == exifData.end())
             throw std::runtime_error("\"" + exp.filename + "\": could not extract the aperture setting!");
@@ -142,7 +142,7 @@ void ExposureSeries::check(bool allowVariableIso) {
             }
         }
 
-        /* hdrmerge also requires exposure mode metadata; linearhdr does not */
+        /* Plain EXIF exposure times also need the exposure mode metadata */
         if (!allowVariableIso) {
             it = Exiv2::exposureMode(exifData);
             if (it == exifData.end())
@@ -185,8 +185,8 @@ bool fexists(const std::string& name) {
 }
 
 void ExposureSeries::load(int commonBlackOverride, int fixedWhiteOverride) {
-    // Default with a profile (black and white given): exactly linearhdr's rawconvert -k/-S.
-    // One black and one white for every frame; LibRaw's own levels are only checked.
+    // With a profile (black and white given): one fixed black and white for every frame;
+    // LibRaw's own levels are only checked.
     const bool fixedBlack = commonBlackOverride >= 0;
     const bool fixedLevels = fixedBlack && fixedWhiteOverride >= 0;
     if (fixedLevels && (fixedWhiteOverride <= commonBlackOverride || fixedWhiteOverride > 65535))
@@ -241,7 +241,7 @@ void ExposureSeries::load(int commonBlackOverride, int fixedWhiteOverride) {
 
     // Detect decoder scale mismatches per frame, never against the first frame's
     // black/white pair: ISO and RAW bit depth can change within one bracket.
-    // With fixed levels every frame uses the profile white, like rawconvert -S.
+    // With fixed levels every frame uses the profile white.
     if (fixedLevels) {
         for (DecodedRawFrame &frame : decoded)
             frame.whitepoint = fixedWhiteOverride;
@@ -270,9 +270,9 @@ void ExposureSeries::load(int commonBlackOverride, int fixedWhiteOverride) {
         throw std::runtime_error("The common RAW white point must exceed the black baseline.");
 
     // Fixed levels: every frame already has the common black/white, so this only clips
-    // at the white point (rawconvert's 16-bit output clips there too).
-    // Otherwise: each frame's LibRaw black/white is moved to the common full scale,
-    // as rawconvert without -k/-S scales each frame to its own maximum.
+    // at the white point.
+    // Otherwise: each frame's LibRaw black/white is moved to the common full scale, so
+    // every frame is scaled to its own maximum.
     std::ostringstream frameLevels;
     for (size_t i = 0; i < decoded.size(); ++i) {
         DecodedRawFrame &frame = decoded[i];
@@ -286,9 +286,9 @@ void ExposureSeries::load(int commonBlackOverride, int fixedWhiteOverride) {
         frameLevels << exposures[i].filename << ":" << frame.blacklevel << "," << frame.whitepoint;
     }
     if (fixedLevels)
-        metadata["RAW_NORMALIZATION"] = "Fixed profile black/white on every frame (linearhdr rawconvert -k -S); LibRaw levels checked only";
+        metadata["RAW_NORMALIZATION"] = "Fixed profile black/white on every frame; LibRaw levels checked only";
     else if (fixedBlack)
-        metadata["RAW_NORMALIZATION"] = "Fixed profile black (linearhdr rawconvert -k); per-frame LibRaw white to common full scale";
+        metadata["RAW_NORMALIZATION"] = "Fixed profile black; per-frame LibRaw white to common full scale";
     else
         metadata["RAW_NORMALIZATION"] = "Per-frame LibRaw black/white to common full scale; saturation preserved";
     metadata["RAW_FRAME_LEVELS"] = frameLevels.str();

@@ -17,7 +17,7 @@ struct EvalGlareMultiImage {
     std::vector<double> scales;
 };
 
-// Options of the native evalglare (faithful port of Radiance evalglare V3.06). All angles are in
+// Options of the glare analysis (based on Radiance evalglare V3.06). All angles are in
 // radians except patchAngleDegrees (the original -z angle is in degrees). The fields up to
 // inputPath are the original GUI-facing fields; everything after them was added for the complete
 // evalglare option set and defaults to the previous behaviour.

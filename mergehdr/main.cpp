@@ -6,7 +6,7 @@
 #include <fstream>
 #include <Eigen/LU>
 #include <array>
-#include "hdrmerge.h"
+#include "mergehdrcore.h"
 #include "camera_detect.h"
 
 namespace po = boost::program_options;
@@ -76,7 +76,7 @@ float roundToNearestThirdStop(float value) {
     return std::pow(2.0f, std::round(std::log2(value) * 3.0f) / 3.0f);
 }
 
-void applyPylinearEffectiveExposure(ExposureSeries &es, bool nominal,
+void applyEffectiveExposure(ExposureSeries &es, bool nominal,
         float shutterc, bool hasShutterCorrection,
         const std::map<float, float> &apertureOverrides,
         float exposureScale) {
@@ -199,99 +199,45 @@ template <typename T> std::vector<T> parse_list(const po::variables_map &vm,
 void help(char **argv, const po::options_description &desc) {
     cout << "mergehdrcore" << endl
         << endl
-        << "Syntax: " << argv[0] << " [options] <RAW file format string / list of multiple files>" << endl
+        << "Syntax: " << argv[0] << " [options] <RAW files, or one printf-style pattern>" << endl
         << endl
-        << "Merge a RAW exposure sequence into a linear HDR image." << endl
+        << "Merges a bracket of RAW frames into one linear HDR image. This is the engine" << endl
+        << "behind 'mergehdr run'; most users should call mergehdr, which reads the camera" << endl
+        << "profile and passes the right options here." << endl
         << endl
-        << "Summary:"<< endl
-        << "  This program takes an exposure series of DNG/CR2/.. RAW files and merges it" << endl
-        << "  into a high dynamic-range EXR image. Given a printf-style format expression" << endl
-        << "  for the input file names, the program automatically figures out both the" << endl
-        << "  number of images and their exposure times. Any metadata (e.g. lens data)" << endl
-        << "  present in the input RAW files is also copied over into the output EXR file." << endl
-        << "  The program automatically checks for common mistakes like duplicate exposures," << endl
-        << "  leaving autofocus or auto-ISO turned on by accident, and it can do useful " << endl
-        << "  operations like cropping, resampling, and removing vignetting. Used with " << endl
-        << "  just a single image, it works a lot like a hypothetical 'dcraw' in floating" << endl
-        << "  point mode. OpenMP is used wherever possible to accelerate image processing." << endl
-        << "  Note that this program makes the assumption that the input frames are well-" << endl
-        << "  aligned so that no alignment correction is necessary." << endl
+        << "Processing order (steps in brackets are off unless asked for):" << endl
+        << "   1. Load RAW frames      LibRaw decode, per-frame black/white handling, bad pixels" << endl
+        << "   2. Merge                weighted average of the frames, divided by exposure" << endl
+        << "   3. Demosaic             AHD or DHT on the merged Bayer mosaic" << endl
+        << "   4. Colour               camera RGB -> target RGB or XYZ" << endl
+        << "   5. [White balance]  6. [Scale]  7. [Vignetting]  8. [Crop]" << endl
+        << "   9. [Resample]  10. [Flip/rotate]  11. Write" << endl
+        << "  With --demosaicfirst, steps 2 and 3 swap: each frame is demosaiced (DHT) and the" << endl
+        << "  RGB frames are merged." << endl
         << endl
-        << "  The order of operations is as follows (all steps except 1 and 10 are" << endl
-        << "  optional; brackets indicate steps that disabled by default):" << endl << endl
-        << "    1. Load RAWs -> 2. HDR Merge -> 3. Demosaic -> 4. Transform colors -> " << endl
-        << "    5. [White balance] -> 6. [Scale] -> 7. [Remove vignetting] -> 8. [Crop] -> " << endl
-        << "    9. [Resample] -> 10. [Flip/rotate] -> 11. Write image" << endl
+        << "Exposure:" << endl
+        << "  Each frame is scaled by its exposure. By default the EXIF shutter time is used;" << endl
+        << "  --effectiveexposure uses t * ISO / (100 N^2) instead, so brackets that change" << endl
+        << "  aperture or ISO can be merged. --fitexptimes estimates the times from the" << endl
+        << "  frames themselves when the EXIF values cannot be trusted." << endl
         << endl
-        << "The following sections contain additional information on some of these steps." << endl
-        << endl
-        << "Step 1: Load RAWs" << endl
-        << "  mergehdrcore reads RAW data through LibRaw. For simplicity, HDR" << endl
-        << "  processing is currently restricted to sensors having a standard RGB" << endl
-        << "  Bayer grid." << endl
-        << endl
-        << "Step 2: Merge" << endl
-        << "  Exposures are merged based on a simple Poisson noise model. In other words," << endl
-        << "  the exposures are simply summed together and divided by the total exposure." << endl
-        << "  time. To avoid problems with over- and under-exposure, each pixel is" << endl
-        << "  furthermore weighted such that only well-exposed pixels contribute to this" << endl
-        << "  summation." << endl
-        << endl
-        << "  For this procedure, it is crucial that mergehdrcore knows the correct exposure" << endl
-        << "  time for each image. Many cameras today use exposure values that are really" << endl
-        << "  fractional powers of two rather than common rounded values (i.e. 1/32 as " << endl
-        << "  opposed to 1/30 sec). mergehdrcore will try to retrieve the true exposure value" << endl
-        << "  from the EXIF tag. Unfortunately, some cameras \"lie\" in their EXIF tags" << endl
-        << "  and use yet another set of exposure times, which can seriously throw off" << endl
-        << "  the HDR merging process. If your camera does this, pass the parameter " << endl
-        << "  --fitexptimes to manually estimate the actual exposure times from the " << endl
-        << "  input set of images." << endl
-        << endl
-        << "  A subtle issue that one should be aware of is that even professional-grade" << endl
-        << "  lenses from the big two SLR manufactorers tend to have rather inaccurate " << endl
-        << "  apertures. Take a photo sequence of a still scene at identical camera" << endl
-        << "  settings, and you will notice that there is a perceptible amount of flicker" << endl
-        << "  when turning it into a movie. This is because the aperture radius in each" << endl
-        << "  shot may vary by a random amount that could be as large as 5%. This is not" << endl
-        << "  not much of an issue if you're just doing video capture or still" << endl
-        << "  photography, hence lens manufacturers don't correct for it. But it can" << endl
-        << "  cause significant headaches in long capture sessions, where it introduces" << endl
-        << "  random intensity scale factors from image to image. There are two" << endl
-        << "  workarounds: 1. shoot wide open, or 2. use a trick used by time-lapse" << endl
-        << "  photographers that is referred to as 'lens twist' or 'aperture twist'" << endl
-        << "  (search for these keywords online to find videos that demonstrate" << endl
-        << "  how it works)." << endl
-        << endl
-        << "Step 3: Demosaic" << endl
-        << "  Demosaicing is done after HDR merging, on the merged floating point Bayer grid." << endl
-        << endl
-        << "Step 7: Vignetting correction" << endl
-        << "  To remove vignetting from your photographs, take a single well-exposed " << endl
-        << "  picture of a uniformly colored object. Ideally, take a picture through " << endl
-        << "  the opening of an integrating sphere, if you have one. Then run mergehdrcore" << endl
-        << "  on this picture using the --vcal parameter. This fits a radial polynomial" << endl
-        << "  of the form 1 + ax^2 + bx^4 + cx^6 to the image and prints out the" << endl
-        << "  coefficients. These can then be passed using the --vcorr parameter" << endl
-        << endl
-        << "Step 9: Resample" << endl
-        << "  This program can do high quality Lanczos resampling to get lower resolution" << endl
-        << "  output if desired. This can sometimes cause ringing on high frequency edges," << endl
-        << "  in which case a tent filter may be preferable (selectable via --rfilter)." << endl
+        << "Merge weighting (--mergestyle):" << endl
+        << "  pixel         each pixel is weighted by its own value; a second pass reweights" << endl
+        << "                with the value predicted by the first estimate (default)." << endl
+        << "  neighborhood  the weight comes from the 5x5 neighbourhood, and a frame is left" << endl
+        << "                out where any nearby pixel is clipped (against sensor bloom)." << endl
         << endl
         << desc << endl
-        << "Options can also be stored in a local config file using key=value format." << endl
+        << "Options can also be read from a key=value file with --config." << endl
         << endl
         << "Examples:" << endl
-        << "  Create an OpenEXR file from files specified in printf format." << endl
-        << "    $ mergehdrcore --output scene.exr scene_%02i.cr2" << endl
-        << endl
-        << "  As above, but explicitly specify the files (in any order):" << endl
-        << "    $ mergehdrcore --output scene.exr scene_001.cr2 scene_002.cr2 scene_003.cr2" << endl;
+        << "  mergehdrcore --format hdr --output scene.hdr scene_%02i.CR3" << endl
+        << "  mergehdrcore --format hdr --output scene.hdr IMG_0001.CR3 IMG_0002.CR3 IMG_0003.CR3" << endl;
 }
 
 int main(int argc, char **argv) {
     po::options_description options("Command line options");
-    po::options_description hidden_options("Hiden options");
+    po::options_description hidden_options("Hidden options");
     po::variables_map vm, vm_temp;
 
     options.add_options()
@@ -301,7 +247,7 @@ int main(int argc, char **argv) {
             "Should contain one parameter per line in key=value format. The command line takes precedence "
             "when an argument is specified multiple times.\n")
         ("blacklevel", po::value<int>(),
-            "Fixed RAW black level subtracted from every frame (as linearhdr rawconvert -k). "
+            "Fixed RAW black level subtracted from every frame. "
             "With --whitepoint, black and white are fixed for all frames; LibRaw's own levels are only checked.\n")
         ("whitepoint", po::value<int>(),
             "Override the sensor white point used to normalize RAW values.\n")
@@ -315,21 +261,20 @@ int main(int argc, char **argv) {
         ("exptimes", po::value<std::string>(),
             "Override the EXIF exposure times with a manually specified sequence of the "
             "format 'time1,time2,time3,..'\n")
-        ("nodemosaic", "If specified, the raw Bayer grid is exported as a grayscale EXR file\n")
+        ("nodemosaic", "Write the merged Bayer mosaic as a grey image, without demosaicing\n")
         ("rawgrid", "Export the merged Bayer grid as a sparse 3-channel raw image without interpolation\n")
         ("demosaic", po::value<EDemosaicMethod>()->default_value(EDemosaicAHD, "ahd"),
             "Demosaicing algorithm to use when demosaicing is enabled ('ahd' or 'dht')\n")
-        ("mergestyle", po::value<EMergeMethod>()->default_value(EMergeHDRMerge, "hdrmerge"),
-            "HDR merge style to use ('hdrmerge' or 'linearhdr').\n")
-        ("linearhdrexposure", "Compute effective exposure times internally as etime * ISO / (100 * f^2 * scale).\n")
-        ("pylinearexposure", "Backward-compatible alias for --linearhdrexposure.\n")
+        ("mergestyle", po::value<EMergeMethod>()->default_value(EMergePixel, "pixel"),
+            "Merge weighting: 'pixel' or 'neighborhood' (see above).\n")
+        ("effectiveexposure", "Use t * ISO / (100 * N^2 * scale) as the exposure of each frame.\n")
         ("exposurescale", po::value<float>()->default_value(1.0f),
-            "Scale factor used together with --linearhdrexposure.\n")
-        ("nominal", "Disable shutter/aperture correction when using --linearhdrexposure.\n")
+            "Scale factor used together with --effectiveexposure.\n")
+        ("nominal", "Disable shutter/aperture correction when using --effectiveexposure.\n")
         ("shutterc", po::value<float>(),
-            "Optional shutter correction used with --linearhdrexposure.\n")
+            "Optional shutter correction used with --effectiveexposure.\n")
         ("fo", po::value<std::string>(),
-            "Optional aperture override pairs nominal,exact nominal,exact ... used with --linearhdrexposure.\n")
+            "Optional aperture override pairs nominal,exact nominal,exact ... used with --effectiveexposure.\n")
         ("colormode", po::value<EColorMode>()->default_value(ESRGB, "sRGB"),
             "Output color space (one of 'native'/'sRGB'/'XYZ')\n")
         ("colorspace", po::value<std::string>(),
@@ -347,8 +292,8 @@ int main(int argc, char **argv) {
         ("cam2rgb", po::value<std::string>(),
             "Matrix that transforms from camera RGB to the target RGB color space\n")
         ("solid2ang", "Convert a demosaiced 180-degree equisolid fisheye image to equiangular before writing\n")
-        ("demosaicfirst", "Demosaic every exposure (DHT) before merging and merge RGB as linearhdr -B "
-            "(pylinearhdr --interpfirst). Requires --mergestyle linearhdr.\n")
+        ("demosaicfirst", "Demosaic every frame (DHT) before merging, then merge the RGB frames. "
+            "Requires --mergestyle neighborhood.\n")
         ("scale", po::value<float>(),
             "Optional scale factor that is applied to the image\n")
         ("crop", po::value<std::string>(),
@@ -393,6 +338,8 @@ int main(int argc, char **argv) {
 
     hidden_options.add_options()
         ("headerline", po::value<std::vector<std::string>>(), "Extra HDR header line")
+        ("linearhdrexposure", "Old name of --effectiveexposure")
+        ("pylinearexposure", "Old name of --effectiveexposure")
         ("samplechannel", po::value<std::string>(), "Compute raw channel sample statistics and exit")
         ("input-files", po::value<std::vector<std::string>>(), "Input files");
 
@@ -406,13 +353,12 @@ int main(int argc, char **argv) {
         po::store(po::command_line_parser(argc, argv)
             .options(all_options).positional(positional).run(), vm_temp);
 
-        /* Is there a configuration file */
-        std::string config = "hdrmerge.cfg";
-
+        /* Options from a configuration file, only when one is given */
+        std::string config;
         if (vm_temp.count("config"))
             config = vm_temp["config"].as<std::string>();
 
-        if (fexists(config)) {
+        if (!config.empty() && fexists(config)) {
             std::ifstream settings(config, std::ifstream::in);
             po::store(po::parse_config_file(settings, all_options), vm);
             settings.close();
@@ -480,7 +426,7 @@ int main(int argc, char **argv) {
             0.0f, 0.0f, 1.0f
         };
         bool apply_cam2rgb = !cam2rgb_v.empty();
-        bool pylinear_colorspace = vm.count("colorspace") || vm.count("xyzcam") || vm.count("rawmultipliers") || vm.count("rgbcal");
+        bool hasColorOptions = vm.count("colorspace") || vm.count("xyzcam") || vm.count("rawmultipliers") || vm.count("rgbcal");
         std::array<float, 3> white_saturation_hint = { 1.0f, 1.0f, 1.0f };
 
         if (!sensor2xyz_v.empty()) {
@@ -518,7 +464,7 @@ int main(int argc, char **argv) {
 
         std::vector<std::string> exposures = vm["input-files"].as<std::vector<std::string>>();
 
-        if (pylinear_colorspace) {
+        if (hasColorOptions) {
             std::string colorspace_name = vm.count("colorspace")
                 ? boost::to_lower_copy(vm["colorspace"].as<std::string>())
                 : (colormode == ENative ? std::string("raw") : (colormode == EXYZ ? std::string("xyz") : std::string("srgb")));
@@ -603,8 +549,8 @@ int main(int argc, char **argv) {
         for (size_t i=0; i<exposures.size(); ++i)
             es.add(exposures[i]);
         es.badpixels = badpixels;
-        const bool useLinearHdrExposure = vm.count("linearhdrexposure") || vm.count("pylinearexposure");
-        es.check(useLinearHdrExposure);
+        const bool useEffectiveExposure = vm.count("effectiveexposure") || vm.count("linearhdrexposure") || vm.count("pylinearexposure");
+        es.check(useEffectiveExposure);
         if (es.size() == 0)
             throw std::runtime_error("No input found / list of exposures to merge is empty!");
 
@@ -632,13 +578,13 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        // --blacklevel (+ --whitepoint): fixed levels, exactly as linearhdr's rawconvert -k (-S)
+        // --blacklevel (+ --whitepoint): the same fixed levels for every frame
         es.load(vm.count("blacklevel") ? vm["blacklevel"].as<int>() : -1,
                 vm.count("blacklevel") && vm.count("whitepoint") ? vm["whitepoint"].as<int>() : -1);
         if (!badpixels.empty())
             es.repairBadPixels();
 
-        if (pylinear_colorspace) {
+        if (hasColorOptions) {
             for (int i = 0; i < 3; ++i)
                 es.white_saturation[i] = white_saturation_hint[i];
         } else if (apply_cam2rgb) {
@@ -662,7 +608,7 @@ int main(int argc, char **argv) {
         }
 
         if (vm.count("blacklevel")) {
-            cout << "Using fixed black level (as linearhdr -black): " << es.blacklevel << endl;
+            cout << "Using fixed black level: " << es.blacklevel << endl;
         }
 
         if (vm.count("whitepoint")) {
@@ -673,8 +619,8 @@ int main(int argc, char **argv) {
         if (es.whitepoint <= es.blacklevel)
             throw std::runtime_error("The sensor white point must be greater than the black level!");
 
-        /* linearhdr passes the premultipliers to rawconvert (-r), so LibRaw scales the RAW data
-           itself; the XYZCAM rows above carry the same multipliers. */
+        /* The premultipliers scale the RAW data itself; the XYZCAM rows above carry the
+           same multipliers. */
         if (!rawmult_v.empty()) {
             const float multipliers[3] = { rawmult_v[0], rawmult_v[1], rawmult_v[2] };
             es.applyRawMultipliers(multipliers);
@@ -732,8 +678,8 @@ int main(int argc, char **argv) {
                      << "times, rather than the fit vs EXIF." << endl << endl;
         }
 
-        if ((vm.count("linearhdrexposure") || vm.count("pylinearexposure")) && !vm.count("exptimes")) {
-            applyPylinearEffectiveExposure(
+        if (useEffectiveExposure && !vm.count("exptimes")) {
+            applyEffectiveExposure(
                 es,
                 vm.count("nominal") != 0,
                 vm.count("shutterc") ? vm["shutterc"].as<float>() : 0.0f,
@@ -757,13 +703,13 @@ int main(int argc, char **argv) {
         bool rgb_output = demosaic || rawgrid;
         const bool demosaic_first = vm.count("demosaicfirst") != 0;
         if (demosaic_first) {
-            /// Steps 1+3 in the other order: demosaic each exposure, then merge (pylinearhdr --interpfirst)
+            /// Steps 2 and 3 swapped: demosaic each frame, then merge the RGB frames
             if (!demosaic)
                 throw std::runtime_error("--demosaicfirst cannot be combined with --rawgrid or --nodemosaic.");
-            if (merge_method != EMergePyLinear)
-                throw std::runtime_error("--demosaicfirst requires --mergestyle linearhdr.");
+            if (merge_method != EMergeNeighborhood)
+                throw std::runtime_error("--demosaicfirst requires --mergestyle neighborhood.");
             if (demosaic_method != EDemosaicDHT)
-                throw std::runtime_error("--demosaicfirst uses DHT (as pylinearhdr --interpfirst); pass --demosaic dht.");
+                throw std::runtime_error("--demosaicfirst uses DHT; pass --demosaic dht.");
             const float identity[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
             es.mergeDemosaicFirst(apply_cam2rgb ? cam2rgb : identity, false);
         } else {

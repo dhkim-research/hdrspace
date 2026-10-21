@@ -10,8 +10,8 @@
 #include "colorcalibrate.h"
 #include "glareeval.h"
 #include "hdrimage.h"
-#include "hdrmerge.h"
-#include "shadowband_native.h"
+#include "mergehdrcore.h"
+#include "shadowband.h"
 
 #include <algorithm>
 #include <array>
@@ -77,7 +77,7 @@ struct RunOptions {
     bool fisheye = false;
     bool bloomPrevent = false;
     bool rawgrid = false;
-    bool demosaicFirst = false;   // --demosaic-first: pylinearhdr --interpfirst order (default off)
+    bool demosaicFirst = false;   // --demosaic-first: demosaic each frame, then merge (default off)
     bool fisheyeOverride = false;
     bool colorspaceOverride = false;
     bool demosaicOverride = false;
@@ -101,7 +101,7 @@ struct RunOptions {
 
     std::string colorspace = "rad";
     std::string demosaic = "ahd";
-    std::string mergeWeight = "hdrmerge";
+    std::string mergeWeight = "pixel";
     std::string xyzcamText;
     std::string rawMultipliersText;
     std::string badpixelsText;
@@ -211,7 +211,7 @@ struct HdrProjectOptions {
 
 struct EvalGlareCliOptions {
     bool help = false;
-    EvalGlareOptions native;
+    EvalGlareOptions analysis;
     EvalGlareCliParseResult parsed;  // -v/-a texts, usage errors, --version
 };
 
@@ -220,7 +220,7 @@ struct ViewVisibilityCliOptions {
     bool writeDebugDump = false;
     std::string outputPath;
     std::string debugDir;
-    ViewVisibilitySummaryOptions native;
+    ViewVisibilitySummaryOptions analysis;
 };
 
 struct ViewVosCalculationOptions {
@@ -238,7 +238,7 @@ struct PerceptualMapCliOptions {
     bool help = false;
     std::string outputPath;
     std::string mapName;
-    PerceptualMapOptions native;
+    PerceptualMapOptions analysis;
 };
 
 struct ShadowbandCliOptions {
@@ -250,7 +250,7 @@ struct ShadowbandCliOptions {
     std::string rawExt = "CR2";
     std::string bandCfg;
     std::string ndCfg;
-    ShadowbandMergeOptions native;
+    ShadowbandMergeOptions analysis;
 };
 
 struct ExtractOptions {
@@ -338,9 +338,12 @@ std::string lowerCopy(const std::string &value) {
 }
 
 std::string canonicalMergeWeight(const std::string &value) {
+    // Older names, still accepted: hdrmerge = pixel, linearhdr/pylinear = neighborhood.
     std::string token = lowerCopy(value);
-    if (token == "pylinear")
-        return "linearhdr";
+    if (token == "hdrmerge")
+        return "pixel";
+    if (token == "linearhdr" || token == "pylinear")
+        return "neighborhood";
     return token;
 }
 
@@ -1405,13 +1408,13 @@ std::array<double, 3> interpolateVignettingFactors(
     return result;
 }
 
-HdrImage applyVignettingCorrectionPylinearhdr(
+HdrImage applyAngleTableVignetting(
         const HdrImage &image, const VignettingTable &table) {
     if (image.width == 0 || image.height == 0)
         throw std::runtime_error("Vignetting correction requires a non-empty HDR image.");
     if (image.width != image.height)
         throw std::runtime_error(
-            "pylinearhdr-compatible vignetting correction requires a square final HDR image.");
+            "Vignetting correction with an angle table requires a square HDR image.");
     if (table.empty())
         throw std::runtime_error("Vignetting correction table is empty.");
 
@@ -1455,12 +1458,12 @@ std::vector<std::string> appendVignettingHeaderLines(
     }
     const int stepIndex = nextMergeHdrStepIndex(lines);
     lines.push_back("MERGEHDR_STEP_" + std::to_string(stepIndex) +
-                    "= pylinearhdr-compatible angle-table vignetting; "
+                    "= angle-table vignetting; "
                     "piecewise-linear with endpoint extrapolation; "
                     "destination RGB after lens projection");
     lines.push_back("VIGNETTING_CORRECTION= " + vfilePath);
-    lines.push_back("MERGEHDR_VIGNETTING_METHOD= pylinearhdr-compatible 180-degree "
-                    "equiangular pixel-center angle; RGB multiplication");
+    lines.push_back("MERGEHDR_VIGNETTING_METHOD= 180-degree equiangular pixel-center angle; "
+                    "RGB multiplication");
     return dedupeLines(lines);
 }
 
@@ -1820,14 +1823,14 @@ std::vector<std::string> buildSingleFisheyeHeaderLines(const HdrImage &source,
 
     const int stepIndex = nextMergeHdrStepIndex(lines);
     lines.push_back("MERGEHDR_STEP_" + std::to_string(stepIndex) +
-                    "= native Paul Bourke angle-polynomial fisheye to 180-degree equidistant; one-pass bilinear");
+                    "= angle-polynomial fisheye to 180-degree equidistant; one-pass bilinear");
     lines.push_back("MERGEHDR_PROJECTION= equidistant");
     lines.push_back("MERGEHDR_PROJECTION_SOURCE= Paul Bourke empirical Canon EF8-15mm fisheye at 8mm");
     lines.push_back("MERGEHDR_PROJECTION_TARGET= equidistant 180 degree");
     lines.push_back("MERGEHDR_PROJECTION_INPUT= cropped merged RAW bracket");
     lines.push_back("MERGEHDR_PROJECTION_SOURCE_SIZE= " + std::to_string(source.width) + " " +
                     std::to_string(source.height));
-    lines.push_back("MERGEHDR_PROJECTION_METHOD= native angle polynomial; direct radial map; one-pass bilinear");
+    lines.push_back("MERGEHDR_PROJECTION_METHOD= angle polynomial; direct radial map; one-pass bilinear");
     if (!opts.projectionReferenceCal.empty())
         lines.push_back("MERGEHDR_PROJECTION_REFERENCE_CAL= " + opts.projectionReferenceCal);
 
@@ -1859,7 +1862,7 @@ std::vector<std::string> buildSingleFisheyeHeaderLines(const HdrImage &source,
     lines.push_back("MERGEHDR_PROJECTION_LITERAL_VALID_HALF_ANGLE_DEG= " + validHalfText.str());
     lines.push_back("MERGEHDR_PROJECTION_LITERAL_VALID_FOV_DEG= " + validFovText.str());
     lines.push_back("MERGEHDR_PROJECTION_LITERAL_VALID_OUTPUT_RADIUS_PX= " + validRadiusText.str());
-    lines.push_back("MERGEHDR_PROJECTION_RESAMPLING= native one-pass bilinear");
+    lines.push_back("MERGEHDR_PROJECTION_RESAMPLING= one-pass bilinear");
     lines.push_back("MERGEHDR_PROJECTION_OUTSIDE_VALID_SOURCE= RGB 0 0 0");
     lines.push_back("VIEW= " + opts.projectionView);
     return dedupeLines(lines);
@@ -1948,7 +1951,7 @@ std::vector<std::string> buildHdrRotateHeaderLines(const HdrImage &source,
     angle << std::setprecision(15) << opts.angleDegrees;
     lines.push_back("MERGEHDR_ROTATION_DEGREES= " + angle.str());
     lines.push_back("MERGEHDR_ROTATION_DIRECTION= positive counter-clockwise; negative clockwise");
-    lines.push_back("MERGEHDR_ROTATION_RESAMPLING= native one-pass bilinear");
+    lines.push_back("MERGEHDR_ROTATION_RESAMPLING= one-pass bilinear");
     lines.push_back("MERGEHDR_ROTATION_CANVAS= fixed " + std::to_string(source.width) + " " +
                     std::to_string(source.height));
     lines.push_back("MERGEHDR_ROTATION_OUTSIDE_SOURCE= RGB 0 0 0");
@@ -2023,7 +2026,7 @@ std::vector<std::string> buildHdrProjectHeaderLines(const HdrImage &source, cons
     if (opts.polynomialCoefficients.empty()) {
         if (opts.hemispherical) {
             lines.push_back("MERGEHDR_PROJECTION_SOURCE= Radiance hemispherical fisheye (-vth)");
-            lines.push_back("MERGEHDR_PROJECTION_METHOD= vth2ang; native inverse radial map; one-pass bilinear");
+            lines.push_back("MERGEHDR_PROJECTION_METHOD= vth2ang; inverse radial map; one-pass bilinear");
             lines.push_back("MERGEHDR_PROJECTION_FORWARD_ORDER= r_source=0.5*sin(pi*r_output)");
         } else {
             lines.push_back("MERGEHDR_PROJECTION_SOURCE= equisolid");
@@ -2035,7 +2038,7 @@ std::vector<std::string> buildHdrProjectHeaderLines(const HdrImage &source, cons
     }
 
     lines.push_back("MERGEHDR_PROJECTION_SOURCE= empirical angle-polynomial fisheye");
-    lines.push_back("MERGEHDR_PROJECTION_METHOD= native angle polynomial; direct radial map; one-pass bilinear");
+    lines.push_back("MERGEHDR_PROJECTION_METHOD= angle polynomial; direct radial map; one-pass bilinear");
     lines.push_back("MERGEHDR_PROJECTION_SOURCE_RADIUS_PX= " +
                     (boost::format("%1$.15g") % opts.sourceRadius).str());
     lines.push_back("MERGEHDR_PROJECTION_TARGET_RADIUS_PX= " +
@@ -2058,7 +2061,7 @@ std::vector<std::string> buildHdrProjectHeaderLines(const HdrImage &source, cons
                     (boost::format("%1$.15g") % (2.0 * validHalfDegrees)).str());
     lines.push_back("MERGEHDR_PROJECTION_LITERAL_VALID_OUTPUT_RADIUS_PX= " +
                     (boost::format("%1$.15g") % validOutputRadius).str());
-    lines.push_back("MERGEHDR_PROJECTION_RESAMPLING= native one-pass bilinear");
+    lines.push_back("MERGEHDR_PROJECTION_RESAMPLING= one-pass bilinear");
     lines.push_back("MERGEHDR_PROJECTION_OUTSIDE_VALID_SOURCE= RGB 0 0 0");
     lines.push_back("VIEW= " + opts.projectionView);
     return lines;
@@ -2292,7 +2295,7 @@ std::string buildCoreStep(const RunOptions &opts, const std::vector<float> &xyzc
     parts.push_back(opts.colorspace);
     if (opts.fisheye)
         parts.push_back("--solid2ang");
-    parts.push_back("--linearhdrexposure");
+    parts.push_back("--effectiveexposure");
     parts.push_back("--exposurescale");
     parts.push_back((boost::format("%1$.12g") % (opts.scale * std::pow(10.0, opts.nd))).str());
     parts.push_back("--saturation");
@@ -3670,8 +3673,8 @@ ResolvedRawLevels resolveRawLevels(bool blackOverride, int blacklevel,
         levels.headerWhitepoint = rawLevels.whitepoint;
     }
 
-    // An explicit (profile) black is the black LibRaw subtracts from every frame,
-    // as linearhdr's rawconvert -k; LibRaw's own black is then only checked.
+    // An explicit (profile) black is subtracted from every frame as a fixed value;
+    // LibRaw's own per-frame black is then only checked, not used.
     levels.coreBlacklevel = blackOverride ? levels.headerBlacklevel : -1;
     if (levels.headerBlacklevel >= 0 && levels.headerWhitepoint >= 0)
         levels.coreWhitepoint = levels.headerBlacklevel + levels.headerWhitepoint;
@@ -3788,7 +3791,7 @@ void applyCalibrationDefaults(CalibrationCommonOptions &opts, const ConfigValues
 void finalizeOptionFlags(RunOptions &opts) {
     if (opts.bloomPrevent) {
         if (!opts.mergeWeightOverride)
-            opts.mergeWeight = "linearhdr";
+            opts.mergeWeight = "neighborhood";
         if (!opts.demosaicOverride)
             opts.demosaic = "dht";
     }
@@ -3844,11 +3847,11 @@ std::string topLevelHelp() {
     oss << "  colorcalibrate      Fit XYZCAM from reference and test chart data.\n\n";
     oss << "  hdrcrop             Crop an HDR while keeping and extending its metadata.\n\n";
     oss << "  rotate              Rotate an HDR natively on its original canvas.\n\n";
-    oss << "  shadowband          Native HDR-only shadowband merge for H/V/ND fisheye inputs.\n\n";
+    oss << "  shadowband          Merge shadowband HDRs (H, V and ND fisheye) into one sky image.\n\n";
     oss << "  extract             Extract section/region profiles from an HDR.\n\n";
     oss << "  convertprojection   Reproject an HDR while keeping and extending its metadata.\n\n";
-    oss << "  evalglare           Native port of Radiance evalglare 3.06 (all view types).\n\n";
-    oss << "  view_visibility     Native HDR-VDP3 style reference/test visibility analysis.\n\n";
+    oss << "  evalglare           Glare analysis based on evalglare 3.06 (all view types).\n\n";
+    oss << "  view_visibility     How much of a reference view stays visible in a test image (HDR-VDP 3).\n\n";
     oss << "  view-vos-calculation\n";
     oss << "                      DA3/SAM3 building and greenery volume-of-sight calculation.\n\n";
     oss << "  perceptualmap       Experimental single-image perceptual maps.\n\n";
@@ -3863,12 +3866,12 @@ std::string topLevelHelp() {
     oss << "  --xyzcam            Override the XYZ->camera matrix.\n";
     oss << "  --badpixels         Repair listed RAW bad pixels before merging.\n";
     oss << "  --demosaic          Demosaicing: ahd or dht.\n";
-    oss << "  --merge-weight      Merge weighting: hdrmerge or linearhdr.\n";
+    oss << "  --merge-weight      Merge weighting: pixel or neighborhood.\n";
     oss << "  --rawgrid           Export a sparse 3-channel raw grid without interpolation.\n";
-    oss << "  -vfile, --vfile     Apply a pylinearhdr-compatible angle/RGB vignetting table.\n";
+    oss << "  -vfile, --vfile     Apply an angle/RGB vignetting table.\n";
     oss << "  --saturation        Highlight offset from sensor white.\n";
     oss << "  --fisheye           Apply equisolid -> equiangular reprojection.\n";
-    oss << "  --bloom-prevent     Shortcut for --merge-weight linearhdr --demosaic dht.\n";
+    oss << "  --bloom-prevent     Shortcut for --merge-weight neighborhood --demosaic dht.\n";
     oss << "  --verbose           Print detailed progress.\n";
     oss << "  See `mergehdr run --help` for the full option list.\n\n";
     oss << "Profiles:\n";
@@ -3896,12 +3899,14 @@ std::string runHelp(const std::string &command) {
     oss << "                     Bad pixel coordinates as \"x,y x,y ...\".\n";
     oss << "  --rawgrid           Export a sparse 3-channel raw grid without interpolation.\n";
     oss << "                     Forces colorspace raw and skips fisheye reprojection.\n";
-    oss << "  --demosaic-first    Demosaic each exposure (DHT) before merging, as pylinearhdr\n";
-    oss << "                     --interpfirst; needs --merge-weight linearhdr --demosaic dht.\n";
+    oss << "  --demosaic-first    Demosaic each exposure (DHT) before merging instead of after;\n";
+    oss << "                     needs --merge-weight neighborhood --demosaic dht.\n";
     oss << "  --demosaic TEXT\n";
     oss << "                     Demosaicing: ahd or dht.\n";
     oss << "  --merge-weight TEXT\n";
-    oss << "                     Merge weighting: hdrmerge or linearhdr.\n";
+    oss << "                     Merge weighting: pixel (default; each pixel weighted by its\n";
+    oss << "                     own value, two passes) or neighborhood (5x5 neighbours; frames\n";
+    oss << "                     with clipped pixels nearby are left out, against sensor bloom).\n";
     oss << "  -rawmultipliers, --rawmultipliers TEXT\n";
     oss << "                     Camera premultipliers (3 or 4 values) applied\n";
     oss << "                     before Camera2RGB is derived.\n";
@@ -3909,8 +3914,8 @@ std::string runHelp(const std::string &command) {
     oss << "                     Output RGB calibration scale.\n";
     oss << "  -vfile, --vfile PATH\n";
     oss << "                     Vignetting table: angle+factor or angle+R+G+B.\n";
-    oss << "                     Applied after lens projection using pylinearhdr's\n";
-    oss << "                     180-degree pixel-center angle and linear interpolation.\n";
+    oss << "                     Applied after lens projection, by the angle of each pixel\n";
+    oss << "                     centre in the 180-degree image, linearly interpolated.\n";
     oss << "  -scale, --scale FLOAT\n";
     oss << "                     Calibration scale factor.\n";
     oss << "  -nd, --nd FLOAT    Neutral-density optical density; multiplier is 10^ND.\n";
@@ -3923,7 +3928,7 @@ std::string runHelp(const std::string &command) {
     oss << "  -fo, --fo TEXT     Aperture override pairs nominal,exact.\n";
     oss << "  --fisheye           Apply equisolid -> equiangular reprojection.\n";
     oss << "  --no-fisheye        Skip fisheye reprojection.\n";
-    oss << "  --bloom-prevent     Shortcut for --merge-weight linearhdr --demosaic dht.\n";
+    oss << "  --bloom-prevent     Shortcut for --merge-weight neighborhood --demosaic dht.\n";
     oss << "  --correct           Apply shutter/aperture correction.\n";
     oss << "  --no-correct        Use nominal shutter/aperture values.\n";
     oss << "  -o, --output PATH   Write to a file instead of stdout.\n";
@@ -4077,13 +4082,13 @@ void validateRunOptions(const RunOptions &opts) {
     if (demosaic != "ahd" && demosaic != "dht")
         throw std::runtime_error("Demosaicing must be 'ahd' or 'dht'.");
     std::string mergeWeight = canonicalMergeWeight(opts.mergeWeight);
-    if (mergeWeight != "hdrmerge" && mergeWeight != "linearhdr")
-        throw std::runtime_error("Merge weighting must be 'hdrmerge' or 'linearhdr'.");
+    if (mergeWeight != "pixel" && mergeWeight != "neighborhood")
+        throw std::runtime_error("Merge weighting must be 'pixel' or 'neighborhood'.");
     if (opts.demosaicFirst) {
         if (opts.rawgrid)
             throw std::runtime_error("--demosaic-first cannot be combined with --rawgrid.");
-        if (mergeWeight != "linearhdr" || demosaic != "dht")
-            throw std::runtime_error("--demosaic-first needs --merge-weight linearhdr --demosaic dht (e.g. --bloom-prevent).");
+        if (mergeWeight != "neighborhood" || demosaic != "dht")
+            throw std::runtime_error("--demosaic-first needs --merge-weight neighborhood --demosaic dht (e.g. --bloom-prevent).");
     }
     if (opts.dualFisheye) {
         if (opts.fisheye)
@@ -4265,9 +4270,9 @@ std::string colorCalibrateHelp(const std::string &command) {
     oss << "  - Convert the reference to XYZ using -refcol.\n";
     oss << "  - Interpret the test with --xyzcam, or from HDR headers if available.\n";
     oss << "  - Solve luminance, RGB, linear 3x3, and non-linear color refinements.\n";
-    oss << "  - Print candidate XYZCAM matrices ranked by the same metrics used in linearhdr.\n\n";
+    oss << "  - Print candidate XYZCAM matrices ranked by their chart errors.\n\n";
     oss << "Notes:\n";
-    oss << "  Cell files are required for HDR inputs in this native version.\n";
+    oss << "  HDR inputs need a cell file.\n";
     oss << "  The first sampled patch should still be the white patch.\n\n";
     oss << "Options:\n";
     oss << "  -rc PATH            Cell file for the reference HDR.\n";
@@ -4361,7 +4366,7 @@ std::string shadowbandHelp(const std::string &command) {
     oss << "  V_input             Vertical shadowband HDR, raw directory, or quoted raw glob.\n";
     oss << "  ND_input            No-shadowband HDR, raw directory, or quoted raw glob.\n\n";
     oss << "What it does:\n";
-    oss << "  - If an input is raw, first runs native mergehdr raw merge on that set.\n";
+    oss << "  - RAW inputs are first merged as with mergehdr run.\n";
     oss << "  - Optionally aligns H to V.\n";
     oss << "  - Optionally converts equisolid fisheye to equiangular.\n";
     oss << "  - Blends H/V safe regions.\n";
@@ -4396,8 +4401,8 @@ std::string hdrProjectHelp(const std::string &command) {
     oss << "    -p C1 C2 C3 C4 -o output.hdr input.hdr\n\n";
     oss << "Reproject an HDR while keeping its header metadata.\n\n";
     oss << "What it does:\n";
-    oss << "  - Reads the source HDR natively.\n";
-    oss << "  - Applies the native equisolid or Radiance hemispherical (-vth)\n";
+    oss << "  - Reads the source HDR.\n";
+    oss << "  - Applies the equisolid or Radiance hemispherical (-vth)\n";
     oss << "    to equidistant reprojection, or an empirical angle polynomial\n";
     oss << "    when -p is supplied.\n";
     oss << "  - Keeps the existing header lines.\n";
@@ -4457,7 +4462,7 @@ std::string viewVisibilityHelp(const std::string &command) {
     std::ostringstream oss;
     oss << "Usage:\n";
     oss << "  mergehdr " << command << " -ref reference.hdr -test test.hdr [options]\n\n";
-    oss << "Compute native view visibility and write the packed final HDR.\n\n";
+    oss << "Compute view visibility and write the result HDR.\n\n";
     oss << "Options:\n";
     oss << "  -ref, --ref PATH           Reference HDR.\n";
     oss << "  -test, --test PATH         Test HDR.\n";
@@ -4470,7 +4475,7 @@ std::string viewVisibilityHelp(const std::string &command) {
     oss << "  --input-color TEXT         rad, srgb, xyz (Radiance units), or xyz-cdm2 (XYZ already in cd/m2).\n";
     oss << "                             Values are multiplied by 179 (not for xyz-cdm2) and divided by EXPOSURE.\n";
     oss << "                             Default: rad.\n";
-    oss << "  --debug-dir PATH           Write native debug dump directory.\n";
+    oss << "  --debug-dir PATH           Write the intermediate maps to this folder.\n";
     oss << "  --help                     Show this help.\n\n";
     oss << "Output HDR channels:\n";
     oss << "  R = test contrast\n";
@@ -4896,7 +4901,7 @@ EvalGlareCliOptions parseEvalGlareOptions(const std::vector<std::string> &args) 
     EvalGlareCliOptions opts;
     opts.parsed = parseEvalGlareArguments(args);
     opts.help = opts.parsed.showHelp;
-    opts.native = opts.parsed.options;
+    opts.analysis = opts.parsed.options;
     return opts;
 }
 
@@ -5039,14 +5044,14 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
         ("version", "version")
         ("config,c", po::value<std::string>(), "config")
         ("profile,p", po::value<std::string>(), "profile")
-        ("ref", po::value<std::string>(&opts.native.referencePath), "reference")
-        ("reference", po::value<std::string>(&opts.native.referencePath), "reference")
-        ("test", po::value<std::string>(&opts.native.testPath), "test")
-        ("mask", po::value<std::string>(&opts.native.maskPath), "mask")
+        ("ref", po::value<std::string>(&opts.analysis.referencePath), "reference")
+        ("reference", po::value<std::string>(&opts.analysis.referencePath), "reference")
+        ("test", po::value<std::string>(&opts.analysis.testPath), "test")
+        ("mask", po::value<std::string>(&opts.analysis.maskPath), "mask")
         ("output,o", po::value<std::string>(&opts.outputPath), "output")
-        ("ppd", po::value<double>(&opts.native.pixelsPerDegree)->default_value(30.0), "pixels per degree")
-        ("sensitivity", po::value<double>(&opts.native.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
-        ("spectral-emission", po::value<std::string>(&opts.native.spectralEmissionPath), "spectral emission")
+        ("ppd", po::value<double>(&opts.analysis.pixelsPerDegree)->default_value(30.0), "pixels per degree")
+        ("sensitivity", po::value<double>(&opts.analysis.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
+        ("spectral-emission", po::value<std::string>(&opts.analysis.spectralEmissionPath), "spectral emission")
         ("detail", po::value<std::string>(&detail)->default_value("hdrvdp3"), "detail mode")
         ("input-color", po::value<std::string>(&inputColor)->default_value("rad"), "input color space")
         ("debug-dir", po::value<std::string>(&opts.debugDir), "debug dump");
@@ -5062,8 +5067,8 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
 
     opts.help = vm.count("help") != 0;
     opts.writeDebugDump = !opts.debugDir.empty();
-    opts.native.detailMode = parseViewVisibilityDetailMode(detail);
-    opts.native.inputColor = parseViewVisibilityInputColor(inputColor);
+    opts.analysis.detailMode = parseViewVisibilityDetailMode(detail);
+    opts.analysis.inputColor = parseViewVisibilityInputColor(inputColor);
     return opts;
 }
 
@@ -5111,9 +5116,9 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
         ("profile,p", po::value<std::string>(), "profile")
         ("map", po::value<std::string>(&opts.mapName), "map kind")
         ("output,o", po::value<std::string>(&opts.outputPath), "output")
-        ("ppd", po::value<double>(&opts.native.pixelsPerDegree)->default_value(30.0), "pixels per degree")
-        ("sensitivity", po::value<double>(&opts.native.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
-        ("spectral-emission", po::value<std::string>(&opts.native.spectralEmissionPath), "spectral emission")
+        ("ppd", po::value<double>(&opts.analysis.pixelsPerDegree)->default_value(30.0), "pixels per degree")
+        ("sensitivity", po::value<double>(&opts.analysis.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
+        ("spectral-emission", po::value<std::string>(&opts.analysis.spectralEmissionPath), "spectral emission")
         ("input-files", po::value<std::vector<std::string> >(), "input");
 
     po::positional_options_description positional;
@@ -5137,7 +5142,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
         ? vm["input-files"].as<std::vector<std::string> >()
         : std::vector<std::string>();
     if (!inputs.empty())
-        opts.native.inputPath = inputs.front();
+        opts.analysis.inputPath = inputs.front();
     return opts;
 }
 
@@ -5167,21 +5172,21 @@ ShadowbandCliOptions parseShadowbandOptions(const std::vector<std::string> &args
         ("config,c", po::value<std::string>(), "config")
         ("profile,p", po::value<std::string>(), "profile")
         ("output,o", po::value<std::string>(&opts.outputPath)->default_value("blended.hdr"), "output")
-        ("envmap", po::value<std::string>(&opts.native.envmapPath), "optional sky-only environment map output")
-        ("roh", po::value<double>(&opts.native.roh)->default_value(0.0), "horizontal band rotation correction in degrees")
-        ("rov", po::value<double>(&opts.native.rov)->default_value(0.0), "vertical band rotation correction in degrees")
-        ("sfov", po::value<double>(&opts.native.sfov)->default_value(2.0), "valid field of view around source in ND image")
-        ("srcsize", po::value<double>(&opts.native.srcsize)->default_value(6.7967e-05), "source solid angle in steradians")
-        ("bw", po::value<double>(&opts.native.bw)->default_value(2.0), "shadow band width in degrees")
-        ("margin", po::value<int>(&opts.native.margin)->default_value(20), "pixel margin to crop before alignment/reprojection")
-        ("align", po::bool_switch(&opts.native.align)->default_value(true), "align H to V before blending")
+        ("envmap", po::value<std::string>(&opts.analysis.envmapPath), "optional sky-only environment map output")
+        ("roh", po::value<double>(&opts.analysis.roh)->default_value(0.0), "horizontal band rotation correction in degrees")
+        ("rov", po::value<double>(&opts.analysis.rov)->default_value(0.0), "vertical band rotation correction in degrees")
+        ("sfov", po::value<double>(&opts.analysis.sfov)->default_value(2.0), "valid field of view around source in ND image")
+        ("srcsize", po::value<double>(&opts.analysis.srcsize)->default_value(6.7967e-05), "source solid angle in steradians")
+        ("bw", po::value<double>(&opts.analysis.bw)->default_value(2.0), "shadow band width in degrees")
+        ("margin", po::value<int>(&opts.analysis.margin)->default_value(20), "pixel margin to crop before alignment/reprojection")
+        ("align", po::bool_switch(&opts.analysis.align)->default_value(true), "align H to V before blending")
         ("no-align", po::bool_switch()->default_value(false), "disable alignment")
-        ("fisheye", po::bool_switch(&opts.native.fisheye)->default_value(true), "convert equisolid fisheye to equiangular")
+        ("fisheye", po::bool_switch(&opts.analysis.fisheye)->default_value(true), "convert equisolid fisheye to equiangular")
         ("no-fisheye", po::bool_switch()->default_value(false), "skip fisheye reprojection")
         ("rawext", po::value<std::string>(&opts.rawExt)->default_value("CR2"), "raw extension for directory inputs")
         ("bandcfg", po::value<std::string>(&opts.bandCfg), "profile or .cfg for H/V raw merge")
         ("ndcfg", po::value<std::string>(&opts.ndCfg), "profile or .cfg for ND raw merge")
-        ("check", po::value<std::string>(&opts.native.checkPrefix), "debug output prefix")
+        ("check", po::value<std::string>(&opts.analysis.checkPrefix), "debug output prefix")
         ("input-files", po::value<std::vector<std::string> >(), "input");
 
     po::positional_options_description positional;
@@ -5202,9 +5207,9 @@ ShadowbandCliOptions parseShadowbandOptions(const std::vector<std::string> &args
 
     opts.help = vm.count("help") != 0;
     if (vm["no-align"].as<bool>())
-        opts.native.align = false;
+        opts.analysis.align = false;
     if (vm["no-fisheye"].as<bool>())
-        opts.native.fisheye = false;
+        opts.analysis.fisheye = false;
 
     const std::vector<std::string> inputs = vm.count("input-files")
         ? vm["input-files"].as<std::vector<std::string> >()
@@ -5216,9 +5221,9 @@ ShadowbandCliOptions parseShadowbandOptions(const std::vector<std::string> &args
     if (inputs.size() > 2)
         opts.noShadowPath = inputs[2];
     if (!sunlocValues.empty()) {
-        opts.native.haveSunloc = true;
-        opts.native.sunPixelX = sunlocValues[0];
-        opts.native.sunPixelY = sunlocValues[1];
+        opts.analysis.haveSunloc = true;
+        opts.analysis.sunPixelX = sunlocValues[0];
+        opts.analysis.sunPixelY = sunlocValues[1];
     }
     return opts;
 }
@@ -5356,17 +5361,17 @@ void validateEvalGlareOptions(const EvalGlareOptions &opts) {
 }
 
 void validateViewVisibilityOptions(const ViewVisibilityCliOptions &opts) {
-    if (opts.native.referencePath.empty())
+    if (opts.analysis.referencePath.empty())
         throw std::runtime_error("view_visibility requires -ref/--ref.");
-    if (opts.native.testPath.empty())
+    if (opts.analysis.testPath.empty())
         throw std::runtime_error("view_visibility requires -test/--test.");
-    if (!fileExists(opts.native.referencePath))
-        throw std::runtime_error("Reference HDR not found: " + opts.native.referencePath);
-    if (!fileExists(opts.native.testPath))
-        throw std::runtime_error("Test HDR not found: " + opts.native.testPath);
-    if (!opts.native.maskPath.empty() && !fileExists(opts.native.maskPath))
-        throw std::runtime_error("Mask HDR not found: " + opts.native.maskPath);
-    if (!(opts.native.pixelsPerDegree > 0.0))
+    if (!fileExists(opts.analysis.referencePath))
+        throw std::runtime_error("Reference HDR not found: " + opts.analysis.referencePath);
+    if (!fileExists(opts.analysis.testPath))
+        throw std::runtime_error("Test HDR not found: " + opts.analysis.testPath);
+    if (!opts.analysis.maskPath.empty() && !fileExists(opts.analysis.maskPath))
+        throw std::runtime_error("Mask HDR not found: " + opts.analysis.maskPath);
+    if (!(opts.analysis.pixelsPerDegree > 0.0))
         throw std::runtime_error("view_visibility --ppd must be positive.");
     if (!opts.outputPath.empty() && lowerExtension(opts.outputPath) != ".hdr" && lowerExtension(opts.outputPath) != ".pic")
         throw std::runtime_error("view_visibility output must be .hdr or .pic.");
@@ -5396,13 +5401,13 @@ void validateViewVosCalculationOptions(const ViewVosCalculationOptions &opts) {
 }
 
 void validatePerceptualMapOptions(const PerceptualMapCliOptions &opts) {
-    if (opts.native.inputPath.empty())
+    if (opts.analysis.inputPath.empty())
         throw std::runtime_error("perceptualmap expects one input HDR.");
-    if (!fileExists(opts.native.inputPath))
-        throw std::runtime_error("Input HDR not found: " + opts.native.inputPath);
+    if (!fileExists(opts.analysis.inputPath))
+        throw std::runtime_error("Input HDR not found: " + opts.analysis.inputPath);
     if (opts.mapName.empty())
         throw std::runtime_error("perceptualmap requires --map.");
-    if (!(opts.native.pixelsPerDegree > 0.0))
+    if (!(opts.analysis.pixelsPerDegree > 0.0))
         throw std::runtime_error("perceptualmap --ppd must be positive.");
     if (!opts.outputPath.empty() && lowerExtension(opts.outputPath) != ".hdr" && lowerExtension(opts.outputPath) != ".pic")
         throw std::runtime_error("perceptualmap output must be .hdr or .pic.");
@@ -5451,19 +5456,19 @@ void validateShadowbandOptions(const ShadowbandCliOptions &opts) {
         validateShadowbandConfigSpec(opts.bandCfg, "--bandcfg");
     if (shadowbandInputNeedsRawMerge(opts.noShadowPath))
         validateShadowbandConfigSpec(opts.ndCfg, "--ndcfg");
-    if (!(opts.native.sfov > 0.0))
+    if (!(opts.analysis.sfov > 0.0))
         throw std::runtime_error("shadowband --sfov must be positive.");
-    if (!(opts.native.srcsize > 0.0))
+    if (!(opts.analysis.srcsize > 0.0))
         throw std::runtime_error("shadowband --srcsize must be positive.");
-    if (!(opts.native.bw > 0.0))
+    if (!(opts.analysis.bw > 0.0))
         throw std::runtime_error("shadowband --bw must be positive.");
-    if (opts.native.margin < 0)
+    if (opts.analysis.margin < 0)
         throw std::runtime_error("shadowband --margin must be non-negative.");
     if (trimCopy(opts.rawExt).empty())
         throw std::runtime_error("shadowband --rawext must not be empty.");
     if (!opts.outputPath.empty() && lowerExtension(opts.outputPath) != ".hdr" && lowerExtension(opts.outputPath) != ".pic")
         throw std::runtime_error("shadowband output must be .hdr or .pic.");
-    if (!opts.native.envmapPath.empty() && lowerExtension(opts.native.envmapPath) != ".hdr" && lowerExtension(opts.native.envmapPath) != ".pic")
+    if (!opts.analysis.envmapPath.empty() && lowerExtension(opts.analysis.envmapPath) != ".hdr" && lowerExtension(opts.analysis.envmapPath) != ".pic")
         throw std::runtime_error("shadowband --envmap output must be .hdr or .pic.");
 }
 
@@ -5519,8 +5524,8 @@ CalibrationSampleResult runCalibrationSample(const CalibrationCommonOptions &opt
     commandArgs.push_back("--samplechannel");
     commandArgs.push_back(lowerCopy(channel));
     commandArgs.push_back("--mergestyle");
-    commandArgs.push_back("linearhdr");
-    commandArgs.push_back("--linearhdrexposure");
+    commandArgs.push_back("neighborhood");
+    commandArgs.push_back("--effectiveexposure");
     commandArgs.push_back("--exposurescale");
     commandArgs.push_back((boost::format("%1$.12g") % (opts.scale * std::pow(10.0, opts.nd))).str());
     commandArgs.push_back("--saturation");
@@ -5836,16 +5841,16 @@ int printColorCalibration(const GlobalOptions &global, const ColorCalibrateOptio
 int printChartCells(const GlobalOptions &global, const ChartCellsCliOptions &opts) {
     (void) global;
     validateChartCellsOptions(opts);
-    ChartCellsOptions native;
-    native.imagePath = opts.imagePath;
-    native.outputPath = opts.outputPath;
-    native.previewPath = opts.previewPath;
-    native.patchCount = opts.layoutExplicit ? 0 : opts.patchCount;
-    native.columns = opts.columns;
-    native.rows = opts.rows;
-    native.inset = opts.inset;
-    native.whiteFirst = opts.whiteFirst;
-    return runChartCells(native, std::cout, std::cerr);
+    ChartCellsOptions cells;
+    cells.imagePath = opts.imagePath;
+    cells.outputPath = opts.outputPath;
+    cells.previewPath = opts.previewPath;
+    cells.patchCount = opts.layoutExplicit ? 0 : opts.patchCount;
+    cells.columns = opts.columns;
+    cells.rows = opts.rows;
+    cells.inset = opts.inset;
+    cells.whiteFirst = opts.whiteFirst;
+    return runChartCells(cells, std::cout, std::cerr);
 }
 
 int printHdrCrop(const GlobalOptions &global, const HdrCropOptions &opts) {
@@ -6085,18 +6090,18 @@ int printViewVisibility(const ViewVisibilityCliOptions &opts) {
     validateViewVisibilityOptions(opts);
     ViewVisibilityCliOptions resolved = opts;
     if (resolved.outputPath.empty())
-        resolved.outputPath = defaultViewVisibilityOutputPath(resolved.native.testPath);
+        resolved.outputPath = defaultViewVisibilityOutputPath(resolved.analysis.testPath);
 
     std::string implicitMaskPath;
     try {
-        if (resolved.native.maskPath.empty()) {
-            implicitMaskPath = makeImplicitWhiteMask(resolved.native.referencePath);
-            resolved.native.maskPath = implicitMaskPath;
+        if (resolved.analysis.maskPath.empty()) {
+            implicitMaskPath = makeImplicitWhiteMask(resolved.analysis.referencePath);
+            resolved.analysis.maskPath = implicitMaskPath;
         }
 
-        const ViewVisibilitySummaryResult result = analyzeViewVisibilitySummary(resolved.native);
+        const ViewVisibilitySummaryResult result = analyzeViewVisibilitySummary(resolved.analysis);
         if (resolved.writeDebugDump)
-            writeViewVisibilityDebugDump(resolved.native, resolved.debugDir);
+            writeViewVisibilityDebugDump(resolved.analysis, resolved.debugDir);
         writeViewVisibilityResultHdr(resolved.outputPath, result);
 
         std::cout << std::fixed << std::setprecision(12);
@@ -6123,9 +6128,9 @@ int printPerceptualMap(const PerceptualMapCliOptions &opts) {
     const PerceptualMapKind kind = parsePerceptualMapKind(opts.mapName);
     PerceptualMapCliOptions resolved = opts;
     if (resolved.outputPath.empty())
-        resolved.outputPath = defaultPerceptualMapOutputPath(resolved.native.inputPath, perceptualMapKindOutputName(kind));
+        resolved.outputPath = defaultPerceptualMapOutputPath(resolved.analysis.inputPath, perceptualMapKindOutputName(kind));
 
-    const PerceptualMapResult result = analyzePerceptualMap(resolved.native, kind);
+    const PerceptualMapResult result = analyzePerceptualMap(resolved.analysis, kind);
     writePerceptualMapHdr(resolved.outputPath, result);
 
     std::cout << "map\t" << result.label << "\n";
@@ -6179,11 +6184,11 @@ int printShadowband(const ShadowbandCliOptions &opts) {
     resolved.verticalPath = ensureShadowbandHdrInput(resolved, resolved.verticalPath, resolved.bandCfg, "V");
     resolved.noShadowPath = ensureShadowbandHdrInput(resolved, resolved.noShadowPath, resolved.ndCfg, "ND");
 
-    if (!resolved.native.haveSunloc) {
+    if (!resolved.analysis.haveSunloc) {
         std::array<double, 3> headerDirection{{0.0, 0.0, 0.0}};
         if (tryParseSolarSourceDirectionFromHdrHeader(resolved.noShadowPath, headerDirection)) {
-            resolved.native.haveSunDirection = true;
-            resolved.native.sunDirection = headerDirection;
+            resolved.analysis.haveSunDirection = true;
+            resolved.analysis.sunDirection = headerDirection;
         }
     }
 
@@ -6202,23 +6207,23 @@ int printShadowband(const ShadowbandCliOptions &opts) {
     vertical = convertShadowbandInputToRadiance(vertical, vColor);
     noShadow = convertShadowbandInputToRadiance(noShadow, nColor);
 
-    const ShadowbandMergeResult result = mergeShadowbandNative(horizontal, vertical, noShadow, resolved.native);
+    const ShadowbandMergeResult result = mergeShadowbandNative(horizontal, vertical, noShadow, resolved.analysis);
 
     std::vector<std::string> header;
     std::ostringstream sbopts;
     sbopts << std::fixed << std::setprecision(3)
-           << "SHADOWBAND= roh:" << resolved.native.roh
-           << " rov:" << resolved.native.rov
-           << " sfov:" << resolved.native.sfov
-           << " srcsize:" << std::setprecision(4) << resolved.native.srcsize
-           << " bw:" << resolved.native.bw
-           << " align:" << (resolved.native.align ? "True" : "False")
-           << " fisheye:" << (resolved.native.fisheye ? "True" : "False");
-    if (resolved.native.haveSunloc)
-        sbopts << " sunloc:" << resolved.native.sunPixelX << "," << resolved.native.sunPixelY;
+           << "SHADOWBAND= roh:" << resolved.analysis.roh
+           << " rov:" << resolved.analysis.rov
+           << " sfov:" << resolved.analysis.sfov
+           << " srcsize:" << std::setprecision(4) << resolved.analysis.srcsize
+           << " bw:" << resolved.analysis.bw
+           << " align:" << (resolved.analysis.align ? "True" : "False")
+           << " fisheye:" << (resolved.analysis.fisheye ? "True" : "False");
+    if (resolved.analysis.haveSunloc)
+        sbopts << " sunloc:" << resolved.analysis.sunPixelX << "," << resolved.analysis.sunPixelY;
     else
         sbopts << " sunloc:None";
-    sbopts << " margin:" << resolved.native.margin;
+    sbopts << " margin:" << resolved.analysis.margin;
     header.push_back(sbopts.str());
     header.push_back(formatPrimariesHeader(parseColorSpaceSpec("rad").primaries));
     header.push_back(formatPairHeader("TargetWhitePoint", parseColorSpaceSpec("rad").white));
@@ -6245,7 +6250,7 @@ int printShadowband(const ShadowbandCliOptions &opts) {
 
     writeRadianceHDR(resolved.outputPath, result.blended, header, false, true);
 
-    if (!resolved.native.envmapPath.empty() && result.hasSkyOnly) {
+    if (!resolved.analysis.envmapPath.empty() && result.hasSkyOnly) {
         std::vector<std::string> envHeader = header;
         if (result.hasSource) {
             const double pi = std::acos(-1.0);
@@ -6260,15 +6265,15 @@ int printShadowband(const ShadowbandCliOptions &opts) {
                   << result.outputSourceDirection[2] << " "
                   << srcDegrees;
             envHeader.push_back(solar.str());
-            envHeader.push_back("SKYSOURCE= void colorpict imgfunc 9 red green blue " + resolved.native.envmapPath +
+            envHeader.push_back("SKYSOURCE= void colorpict imgfunc 9 red green blue " + resolved.analysis.envmapPath +
                                 " fisheye.cal fish_u fish_v -rz 180 0 0 imgfunc glow imgglow 0 0 4 1 1 1 0 imgglow source sky 0 0 4 0 -1 0 180");
         }
-        writeRadianceHDR(resolved.native.envmapPath, result.skyOnly, envHeader, false, true);
+        writeRadianceHDR(resolved.analysis.envmapPath, result.skyOnly, envHeader, false, true);
     }
 
     std::cout << "output\t" << resolved.outputPath << "\n";
-    if (!resolved.native.envmapPath.empty() && result.hasSkyOnly)
-        std::cout << "envmap\t" << resolved.native.envmapPath << "\n";
+    if (!resolved.analysis.envmapPath.empty() && result.hasSkyOnly)
+        std::cout << "envmap\t" << resolved.analysis.envmapPath << "\n";
     if (result.hasSource) {
         std::cout << std::fixed << std::setprecision(12);
         std::cout << "source_dir\t"
@@ -6419,7 +6424,7 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
     commandArgs.push_back("native");
     commandArgs.push_back("--colorspace");
     commandArgs.push_back(resolved.colorspace);
-    commandArgs.push_back("--linearhdrexposure");
+    commandArgs.push_back("--effectiveexposure");
     commandArgs.push_back("--exposurescale");
     commandArgs.push_back((boost::format("%1$.12g") % scaleTotal).str());
     commandArgs.push_back("--saturation");
@@ -6542,7 +6547,7 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
                     crop, resolved.projectionCoefficients,
                     resolved.projectionSourceRadius, resolved.projectionTargetRadius);
                 if (applyVignetting) {
-                    projected = applyVignettingCorrectionPylinearhdr(
+                    projected = applyAngleTableVignetting(
                         projected, vignettingTable);
                     leftHeader = appendVignettingHeaderLines(
                         leftHeader, resolved.vfilePath);
@@ -6557,7 +6562,7 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
                     crop, resolved.projectionCoefficients,
                     resolved.projectionSourceRadius, resolved.projectionTargetRadius);
                 if (applyVignetting) {
-                    projected = applyVignettingCorrectionPylinearhdr(
+                    projected = applyAngleTableVignetting(
                         projected, vignettingTable);
                     rightHeader = appendVignettingHeaderLines(
                         rightHeader, resolved.vfilePath);
@@ -6583,7 +6588,7 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
             std::vector<std::string> projectedHeader =
                 buildSingleFisheyeHeaderLines(source, resolved);
             if (applyVignetting) {
-                projected = applyVignettingCorrectionPylinearhdr(
+                projected = applyAngleTableVignetting(
                     projected, vignettingTable);
                 projectedHeader = appendVignettingHeaderLines(
                     projectedHeader, resolved.vfilePath);
@@ -6607,7 +6612,7 @@ int runMerge(const GlobalOptions &global, const RunOptions &opts) {
     if (applyVignetting) {
         try {
             const HdrImage source = readRadianceHDRTopDown(hdrPath.string());
-            const HdrImage corrected = applyVignettingCorrectionPylinearhdr(
+            const HdrImage corrected = applyAngleTableVignetting(
                 source, vignettingTable);
             const std::vector<std::string> correctedHeader =
                 appendVignettingHeaderLines(
@@ -6825,8 +6830,8 @@ int main(int argc, char **argv) {
                 std::cout << opts.parsed.stdoutText << std::flush;
                 return opts.parsed.exitCode;
             }
-            validateEvalGlareOptions(opts.native);
-            return printEvalGlare(opts.native);
+            validateEvalGlareOptions(opts.analysis);
+            return printEvalGlare(opts.analysis);
         }
 
         if (command == "view_visibility") {

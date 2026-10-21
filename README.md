@@ -26,8 +26,9 @@ Wasilewski's linearhdr / pylinearhdr method.
 2. **Exposure** of each frame from shutter, aperture and ISO, with optional fitted
    corrections for the real shutter times and apertures of your camera
    (`mergehdr shutter`, `mergehdr aperture`). Mixed-aperture brackets work.
-3. **Merging** with linearhdr weighting and DHT demosaicing, or a faster hdrmerge-style
-   path with AHD demosaicing.
+3. **Merging**: *neighborhood* weighting (from linearhdr; frames with clipped pixels nearby
+   are left out, against sensor bloom) with DHT demosaicing, or the faster *pixel* weighting
+   (from hdrmerge) with AHD demosaicing.
 4. **Colour**: camera RGB → XYZ with the camera matrix from the RAW file, or one fitted to a
    photographed colour chart (`mergehdr colorcalibrate`, `mergehdr chartcells`). Output in
    Radiance RGB, linear sRGB or XYZ, with the primaries stored in the header.
@@ -63,7 +64,7 @@ luminance meter before relying on absolute values.
   are shown as *Unknown* until you say what they are.
 - **Merge HDR / Calibrate**: the pipeline above, plus colour, shutter and aperture
   calibration.
-- **Glare**: evalglare 3.06 ported to C++ (DGP, DGI, UGR, glare sources, bands, zones).
+- **Glare**: DGP, DGI, UGR, glare sources, bands and zones, based on evalglare 3.06.
 - **View Visibility**: how much of a view's detectable contrast is kept in a second image
   (e.g. with blinds), using the visibility stages of HDR-VDP 3.
 - **Perceptual maps**: cone and rod response, local adaptation, detectable contrast and

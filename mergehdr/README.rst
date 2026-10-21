@@ -23,9 +23,12 @@ Run modes
 ``mergehdr`` has two practical run modes:
 
 - default mode
-  fast merge with AHD demosaicing
+  fast merge (``--merge-weight pixel``) with AHD demosaicing
 - ``--bloom-prevent``
-  heavier merge weighting with DHT demosaicing for highlight protection
+  ``--merge-weight neighborhood`` with DHT demosaicing: a frame is left out wherever a
+  nearby pixel is clipped, which protects highlights from sensor bloom
+
+The older values ``hdrmerge`` and ``linearhdr`` are still accepted for ``--merge-weight``.
 
 Typical usage::
 

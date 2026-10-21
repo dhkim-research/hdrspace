@@ -15,7 +15,7 @@ constexpr int kRadiancePixStandard = kRadianceYMajor | kRadianceYDecr; // "-Y <h
 struct HdrImage {
     size_t width = 0;
     size_t height = 0;
-    std::vector<float> rgb; // Stored bottom-up so cell coordinates match linearhdr files.
+    std::vector<float> rgb; // Stored bottom-up (row 0 = bottom), the row order the cell files use.
     std::vector<std::string> headerLines;
     std::map<std::string, std::string> header;
     // Added for Radiance-faithful consumers (evalglare). Defaults describe a standard file.
@@ -50,13 +50,13 @@ void writeRadianceHDR(const std::string &path,
         const std::vector<std::string> &headerLines = std::vector<std::string>(),
         bool radianceCompatibility = false,
         bool topDownInput = false);
-void writeRadianceHDRMatlabCompatible(const std::string &path,
+void writeRadianceHDRRounded(const std::string &path,
         const HdrImage &image,
         const std::vector<std::string> &headerLines = std::vector<std::string>(),
         bool radianceCompatibility = false,
         bool topDownInput = false);
 void quantizeRadianceRgbRoundTrip(std::vector<float> &rgb);
 float quantizeRadianceGrayRoundTrip(float value);
-float quantizeRadianceGrayRoundTripMatlabCompatible(float value);
+float quantizeRadianceGrayRoundTripRounded(float value);
 
 #endif
