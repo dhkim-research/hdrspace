@@ -516,6 +516,8 @@ PfsToneMappingCommand buildPfsToneMappingCommand(const PfsToneMappingRequest& re
             const std::string displayPicture = shellQuote(output + ".pcond.hdr");
             std::string source = shellQuote(request.inputPath.string());
             std::ostringstream script;
+            // pcond starts pfilt itself (through cmd.exe), so the Radiance bin folder goes on PATH.
+            script << "export PATH=" << shellQuote(request.radianceDirectory.string() + ";") << "\"$PATH\"\n";
             script << "status=0\n{\n";
             if (reduce) {
                 script << "  set -- $(" << shellQuote((request.radianceDirectory / "getinfo.exe").string()) << " -d < "

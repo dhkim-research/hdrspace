@@ -436,6 +436,7 @@ jobs:
             Dismiss "c0"; Click 78 637 5; Shot "c1-panel"
             Click 798 206 6; Keys "^a"; Keys "C:\scene\room.rad{ENTER}"; Start-Sleep -Seconds 4
             Click 798 338 6; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
+            Click 798 470 6; Keys "^a"; Keys "C:\vv\a47.hdr{ENTER}"; Start-Sleep -Seconds 6
             Shot "c2-loaded"
             Click 632 410 60; Shot "c3-preview"; Dismiss "c3"
             Click 806 687 5; Shot "c4-render-started"
