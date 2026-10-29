@@ -43,28 +43,34 @@ def compare(name, got, plain, radiance):
     print(f"  {name} max {got.max():.6g}, source max {plain.max():.6g}")
 
 
-src_head, plain, radiance = read_radiance(sys.argv[1])
-print("source header:", [l for l in src_head if l.split("=")[0] in ("PRIMARIES", "EXPOSURE", "VIEW", "FORMAT")])
-for path in sys.argv[2:]:
-    print(f"== {path}")
-    try:
-        if path.lower().endswith(".exr"):
-            import OpenEXR
-            with OpenEXR.File(path) as f:
-                hdr = f.header()
-                for k in sorted(hdr):
-                    v = hdr[k]
-                    print(f"  header {k}: {str(v)[:120]}")
-                chans = f.channels()
-                for k, c in chans.items():
-                    print(f"  channel {k}: {c.pixels.dtype} {c.pixels.shape}")
-                rgb = chans["RGB"].pixels if "RGB" in chans else (
-                    chans["RGBA"].pixels[..., :3] if "RGBA" in chans else
-                    np.dstack([chans[n].pixels for n in "RGB"]))
-                compare(path, rgb.astype(np.float64), plain, radiance)
-        else:
-            head, p2, r2 = read_radiance(path)
-            print("  header lines:", head)
-            compare(path, p2, plain, radiance)
-    except Exception as e:  # report and go on with the next file
-        print(f"  ERROR {type(e).__name__}: {e}")
+def main():
+    sys.stdout.reconfigure(encoding="utf-8")
+    src_head, plain, radiance = read_radiance(sys.argv[1])
+    print("source header:", [l for l in src_head if l.split("=")[0] in ("PRIMARIES", "EXPOSURE", "VIEW", "FORMAT")])
+    for path in sys.argv[2:]:
+        print(f"== {path}")
+        try:
+            if path.lower().endswith(".exr"):
+                import OpenEXR
+                with OpenEXR.File(path) as f:
+                    hdr = f.header()
+                    for k in sorted(hdr):
+                        v = hdr[k]
+                        print(f"  header {k}: {str(v)[:120]}")
+                    chans = f.channels()
+                    for k, c in chans.items():
+                        print(f"  channel {k}: {c.pixels.dtype} {c.pixels.shape}")
+                    rgb = chans["RGB"].pixels if "RGB" in chans else (
+                        chans["RGBA"].pixels[..., :3] if "RGBA" in chans else
+                        np.dstack([chans[n].pixels for n in "RGB"]))
+                    compare(path, rgb.astype(np.float64), plain, radiance)
+            else:
+                head, p2, r2 = read_radiance(path)
+                print("  header lines:", head)
+                compare(path, p2, plain, radiance)
+        except Exception as e:  # report and go on with the next file
+            print(f"  ERROR {type(e).__name__}: {e}")
+
+
+if __name__ == "__main__":
+    main()

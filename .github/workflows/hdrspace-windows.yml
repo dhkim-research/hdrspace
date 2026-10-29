@@ -333,6 +333,109 @@ jobs:
           python -m pip install --quiet OpenEXR numpy
           $exported = @(Get-ChildItem C:\guiout -Include *.exr,*.hdr -Recurse | ForEach-Object { $_.FullName })
           python src/.github/scripts/check_export.py "$picture" @exported 2>&1 | Tee-Object gui-result/check.txt
+      - name: GUI workflows (Tonemapping Ward, View Visibility, Merge HDR, Create View)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $env:GALLIUM_DRIVER = "llvmpipe"
+          New-Item -ItemType Directory -Force gui-flow, C:\raw, C:\scene, C:\vv | Out-Null
+          # test data: the R5m2 RAW bracket from the release, a white mask, a small Radiance room
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/crossplatform-raw-data/raw-bracket.zip" -OutFile raw.zip
+          Expand-Archive raw.zip -DestinationPath rawzip
+          Get-ChildItem rawzip -Recurse -Filter *.CR3 | Copy-Item -Destination C:\raw
+          $raws = @(Get-ChildItem C:\raw -Filter *.CR3 | Sort-Object Name | ForEach-Object { $_.Name })
+          "RAW files: $raws" | Tee-Object gui-flow/status.txt
+          Copy-Item src/.github/scripts/scene/* C:\scene
+          Copy-Item src/mergehdr/tests/crossplatform/data/a47.hdr, src/mergehdr/tests/crossplatform/data/a64.hdr C:\vv
+          $rad = (Resolve-Path hdrspace-windows-x64/Resources/radiance/bin).Path
+          cmd /c "`"$rad\pcomb.exe`" -e `"ro=1;go=1;bo=1`" -x 512 -y 512 > C:\vv\white.hdr"
+          Get-ChildItem C:\vv | Format-Table Name, Length | Out-String | Tee-Object -Append gui-flow/status.txt
+
+          $app = Start-Process smoke/bin/hdrspace.exe -ArgumentList "C:\vv\a47.hdr" -PassThru `
+            -RedirectStandardOutput flow-stdout.txt -RedirectStandardError flow-stderr.txt
+          Start-Sleep -Seconds 30
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          Add-Type -Namespace Win -Name Mouse -MemberDefinition @"
+          [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+          [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extra);
+          "@
+          function Shot($name) {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save("$pwd/gui-flow/$name.png")
+          }
+          function Click($x, $y, $wait) {
+            [Win.Mouse]::SetCursorPos($x, $y) | Out-Null
+            Start-Sleep -Milliseconds 400
+            [Win.Mouse]::mouse_event(2, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [Win.Mouse]::mouse_event(4, 0, 0, 0, 0)
+            Start-Sleep -Seconds $wait
+          }
+          function Keys($k) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 500 }
+          function Step($name, [scriptblock]$body) {
+            try { & $body } catch { "step $name failed: $_" | Tee-Object -Append gui-flow/status.txt }
+          }
+          # wait until a new file matching $pattern appears (or $seconds pass)
+          function WaitFile($pattern, $seconds) {
+            for ($i = 0; $i -lt $seconds; $i += 5) {
+              $f = Get-ChildItem $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($f) { Start-Sleep -Seconds 3; return $f }
+              Start-Sleep -Seconds 5
+            }
+            return $null
+          }
+
+          Step "tonemapping" {
+            Click 80 131 5; Shot "t1-tonemapping"            # the only operator tile on Windows: Ward '97
+            Click 790 199 30; Shot "t2-ward-preview"
+            Click 806 689 30; Shot "t3-ward-full"
+          }
+          Step "view-visibility" {
+            Click 83 453 5; Shot "v1-panel"
+            Click 900 198 1; Keys "^a"; Keys "C:\vv\a47.hdr{ENTER}"
+            Click 900 236 1; Keys "^a"; Keys "C:\vv\a64.hdr{ENTER}"
+            Click 900 274 1; Keys "^a"; Keys "C:\vv\white.hdr{ENTER}"
+            Shot "v2-paths"
+            Click 790 312 15; Shot "v3-loaded"
+            Click 868 689 120; Shot "v4-computed"
+          }
+          Step "merge-hdr" {
+            Click 75 191 5; Shot "m1-panel"
+            Click 861 172 6; Shot "m2-dialog"
+            Keys "^a"; Keys "C:\raw{ENTER}"; Start-Sleep -Seconds 2
+            Keys ("^a" + (($raws | ForEach-Object { "`"$_`"" }) -join " ") + "{ENTER}"); Start-Sleep -Seconds 4
+            Shot "m3-files"
+            Click 868 689 5; Shot "m4-running"
+            $out = WaitFile "C:\raw\*.hdr" 420
+            Shot "m5-done"
+            "merge output: $out" | Tee-Object -Append gui-flow/status.txt
+          }
+          Step "create-view" {
+            Click 78 637 5; Shot "c1-panel"
+            Click 798 206 6; Keys "^a"; Keys "C:\scene\room.rad{ENTER}"; Start-Sleep -Seconds 4
+            Click 798 338 6; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
+            Shot "c2-loaded"
+            Click 632 410 60; Shot "c3-preview"
+            Click 806 687 5; Shot "c4-render-started"
+            $r = WaitFile "C:\scene\*.hdr" 300
+            Shot "c5-render-done"
+            "create view output: $r" | Tee-Object -Append gui-flow/status.txt
+          }
+          "app still running: $(-not $app.HasExited)" | Tee-Object -Append gui-flow/status.txt
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          Copy-Item flow-stdout.txt, flow-stderr.txt gui-flow/ -ErrorAction SilentlyContinue
+          Get-ChildItem C:\raw, C:\scene, C:\vv | Format-Table FullName, Length | Out-String | Tee-Object -Append gui-flow/status.txt
+
+          # headers and pixel statistics of what the GUI wrote
+          python -m pip install --quiet numpy
+          Start-Sleep -Seconds 20
+          $outputs = @(Get-ChildItem C:\raw\*.hdr, C:\scene\*.hdr -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          foreach ($o in $outputs) {
+            python -c "import sys; d=open(sys.argv[1],'rb').read(65536); print(sys.argv[1]); print(d.split(b'\n\n')[0].decode('latin1'))" $o | Tee-Object -Append gui-flow/headers.txt
+            python src/.github/scripts/compare_hdr.py $o $o 2>&1 | Tee-Object -Append gui-flow/headers.txt
+          }
+          Get-ChildItem C:\scene\*.hdr -ErrorAction SilentlyContinue | Copy-Item -Destination gui-flow/
+          Get-ChildItem C:\raw\*.hdr -ErrorAction SilentlyContinue | Copy-Item -Destination gui-flow/
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -340,3 +443,4 @@ jobs:
           path: |
             smoke-result/
             gui-result/
+            gui-flow/

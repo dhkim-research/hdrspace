@@ -112,6 +112,11 @@ namespace {
 constexpr const char* kAppDisplayName = "hdrspace";
 constexpr const char* kNativeToneDescription = "Real-time global exposure with uniform, center-weighted, or Gaussian gaze metering.";
 constexpr const char* kHdrspaceAppIconAsset = "hdrspace_icon_1024.png";
+#if defined(_WIN32)
+constexpr auto kDefaultToneMappingProvider = native::EPfsToneMappingProvider::Ward97;      // no pfstools on Windows
+#else
+constexpr auto kDefaultToneMappingProvider = native::EPfsToneMappingProvider::Reinhard02;
+#endif
 constexpr size_t kMaxPfsToneMappingParameters = 12;
 constexpr size_t kMaxPfsToneMappingToggles = 8;
 
@@ -6483,6 +6488,7 @@ private:
         auto* title = new Label(titlePanel, std::string(sectionTitle), "sans-bold", 18);
         title->set_color(hdrspaceInk());
         if (sectionTitle == "Merge HDR") mergePanelHeader_ = title;
+        if (sectionTitle == "AI Segmentation") aiSegPanelHeader_ = title;
         return titlePanel;
     }
 
@@ -10705,7 +10711,7 @@ private:
         );
         toneMappingProviderCombo_->set_fixed_width(kInspectorContentWidth);
         for (size_t index = 0; index < native::pfsToneMappingProviderSpecs().size(); ++index) {
-            if (native::pfsToneMappingProviderSpecs()[index].provider == native::EPfsToneMappingProvider::Reinhard02) {
+            if (native::pfsToneMappingProviderSpecs()[index].provider == kDefaultToneMappingProvider) {
                 toneMappingProviderCombo_->set_selected_index(static_cast<int>(index));
             }
         }
@@ -10758,7 +10764,11 @@ private:
 
         auto* operatorHeader = new InspectorSectionHeader(scrollContent, "Operator");
         operatorHeader->set_fixed_width(kInspectorContentWidth);
+#if defined(_WIN32)
+        operatorHeader->setDetail("Radiance");   // pfstools is not part of the Windows version
+#else
         operatorHeader->setDetail("pfstools · Radiance");
+#endif
         auto* tileGrid = new Widget(scrollContent);
         tileGrid->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 0, 6});
         tileGrid->set_fixed_width(kInspectorContentWidth);
@@ -10767,6 +10777,11 @@ private:
             if (spec.provider == native::EPfsToneMappingProvider::NativeInteractive) {
                 continue;
             }
+#if defined(_WIN32)
+            if (spec.provider != native::EPfsToneMappingProvider::Ward97) {
+                continue;   // pfstools operators: pfstools is not part of the Windows version
+            }
+#endif
             auto* tile = new InspectorTile(tileGrid, spec.shortName, spec.detail);
             tile->set_fixed_width((kInspectorContentWidth - 6) / 2);
             tile->set_tooltip(spec.label);
@@ -11643,6 +11658,10 @@ private:
         if (item.plane == RightPlane::MergeHdr) {
             // Calibrate reopens the calibration page that was used last.
             setActiveSection(item.section == LeftSection::Color ? lastCalibrationSection_ : item.section);
+        }
+        // View Volume and AI Segmentation share one panel; its title follows the tool.
+        if (item.plane == RightPlane::AiSegmentation && aiSegPanelHeader_) {
+            aiSegPanelHeader_->set_caption(item.focus == RailFocus::Vos ? "View Volume" : "AI Segmentation");
         }
         setActiveRightPlane(item.plane);
         hdrspaceRailActivating_ = false;
@@ -26999,6 +27018,7 @@ private:
     Label* workspaceFilename_ = nullptr;
     Label* workspaceStatusLabel_ = nullptr;
     Label* mergePanelHeader_ = nullptr;
+    Label* aiSegPanelHeader_ = nullptr;   // "AI Segmentation", or "View Volume" when opened from that tool
     Button* workspaceExport_ = nullptr;
     Button* workspaceSettings_ = nullptr;
     PanelToggleButton* workspaceInspector_ = nullptr;
@@ -27105,8 +27125,7 @@ private:
     Button* toneMappingPfsRestoreButton_ = nullptr;
     Button* toneMappingPfsCopyCommandButton_ = nullptr;
     std::map<native::EPfsToneMappingProvider, ToneMappingPfsProviderValues> toneMappingPfsValues_;
-    native::EPfsToneMappingProvider toneMappingSelectedProvider_ =
-        native::EPfsToneMappingProvider::Reinhard02;
+    native::EPfsToneMappingProvider toneMappingSelectedProvider_ = kDefaultToneMappingProvider;
     std::vector<std::pair<native::EPfsToneMappingProvider, InspectorTile*>> toneMappingTiles_;
     InspectorSegmentButton* toneMappingPresetDefaultButton_ = nullptr;
     InspectorSegmentButton* toneMappingPresetExampleButton_ = nullptr;
