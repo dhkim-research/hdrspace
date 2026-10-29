@@ -252,8 +252,71 @@ jobs:
           Copy-Item smoke-stdout.txt, smoke-stderr.txt smoke-result/ -ErrorAction SilentlyContinue
           Get-Content smoke-stderr.txt -ErrorAction SilentlyContinue | Select-Object -First 80
           if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+      - name: GUI check (Korean file name, every tool, Export image)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $env:GALLIUM_DRIVER = "llvmpipe"
+          New-Item -ItemType Directory -Force "gui 테스트", gui-result, C:\guiout | Out-Null
+          Copy-Item src/mergehdr/tests/crossplatform/data/a47.hdr "gui 테스트/한글 그림.hdr"
+          $picture = (Resolve-Path "gui 테스트/한글 그림.hdr").Path
+          $app = Start-Process smoke/bin/hdrspace.exe -ArgumentList "`"$picture`"" -PassThru `
+            -RedirectStandardOutput gui-stdout.txt -RedirectStandardError gui-stderr.txt
+          Start-Sleep -Seconds 30
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          Add-Type -Namespace Win -Name Mouse -MemberDefinition @"
+          [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+          [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extra);
+          "@
+          function Shot($name) {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save("$pwd/gui-result/$name.png")
+          }
+          function Click($x, $y, $wait) {
+            [Win.Mouse]::SetCursorPos($x, $y) | Out-Null
+            Start-Sleep -Milliseconds 400
+            [Win.Mouse]::mouse_event(2, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [Win.Mouse]::mouse_event(4, 0, 0, 0, 0)
+            Start-Sleep -Seconds $wait
+          }
+          function Export($typed, $name) {
+            Click 847 27 6; Shot "$name-dialog"
+            if ($typed -match '[^\x00-\x7F]') {
+              Set-Clipboard -Value $typed; [System.Windows.Forms.SendKeys]::SendWait("^a^v")
+            } else {
+              [System.Windows.Forms.SendKeys]::SendWait("^a$typed")
+            }
+            Start-Sleep -Seconds 1; Shot "$name-typed"
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}"); Start-Sleep -Seconds 10; Shot "$name-after"
+          }
+          Shot "00-korean-name"
+          # Export image from the Viewer (Export image is at 847,27 on the 1024 x 768 screen)
+          Export "C:\guiout\export.exr" "01-exr"
+          Export "C:\guiout\export.hdr" "02-hdr"
+          Export "C:\guiout\export.png" "03-png"
+          Export "C:\guiout\내보내기.exr" "04-korean-exr"
+          # every tool in the rail, then the help and settings buttons
+          $tools = @(@("10-viewer",65,99), @("11-tonemapping",80,131), @("12-merge",75,191), @("13-calibrate",70,223),
+                     @("14-crop",91,297), @("15-blur",58,329), @("16-glare",61,389), @("17-statistics",72,421),
+                     @("18-viewvisibility",83,453), @("19-viewvolume",80,485), @("20-perceptual",89,517),
+                     @("21-aisegmentation",89,577), @("22-createview",78,637))
+          foreach ($t in $tools) { Click $t[1] $t[2] 5; Shot $t[0] }
+          Click 65 99 3
+          Click 962 27 4; Shot "30-help"; [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep 2
+          Click 928 27 4; Shot "31-settings"; [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep 2
+          "app still running: $(-not $app.HasExited)" | Tee-Object gui-result/status.txt
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          Get-ChildItem C:\guiout | Format-Table Name, Length | Out-String | Tee-Object gui-result/files.txt
+          Copy-Item C:\guiout\* gui-result/ -ErrorAction SilentlyContinue
+          Copy-Item gui-stdout.txt, gui-stderr.txt gui-result/ -ErrorAction SilentlyContinue
+          python -m pip install --quiet OpenEXR numpy
+          $exported = @(Get-ChildItem C:\guiout -Include *.exr,*.hdr -Recurse | ForEach-Object { $_.FullName })
+          python .github/scripts/check_export.py "$picture" @exported 2>&1 | Tee-Object gui-result/check.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: smoke-test
-          path: smoke-result/
+          path: |
+            smoke-result/
+            gui-result/
