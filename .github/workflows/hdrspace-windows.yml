@@ -433,6 +433,7 @@ jobs:
             "merge output: $out" | Tee-Object -Append gui-flow/status.txt
           }
           Step "create-view" {
+            Start-Sleep -Seconds 30   # the app is still loading the 8222 x 5488 merge result
             Dismiss "c0"; Click 78 637 5; Shot "c1-panel"
             Click 798 206 6; Keys "^a"; Keys "C:\scene\room.rad{ENTER}"; Start-Sleep -Seconds 4
             Click 798 338 6; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
