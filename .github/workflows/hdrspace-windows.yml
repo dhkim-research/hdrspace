@@ -280,15 +280,33 @@ jobs:
             [Win.Mouse]::mouse_event(2, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [Win.Mouse]::mouse_event(4, 0, 0, 0, 0)
             Start-Sleep -Seconds $wait
           }
-          function Export($typed, $name) {
-            Click 847 27 6; Shot "$name-dialog"
-            if ($typed -match '[^\x00-\x7F]') {
-              Set-Clipboard -Value $typed; [System.Windows.Forms.SendKeys]::SendWait("^a^v")
-            } else {
-              [System.Windows.Forms.SendKeys]::SendWait("^a$typed")
+          # Types any text (also Korean) as Unicode key events
+          Add-Type -TypeDefinition @"
+          using System; using System.Runtime.InteropServices;
+          public static class Typer {
+            [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr extra; }
+            [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr extra; }
+            [StructLayout(LayoutKind.Explicit)] struct U { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+            [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public U u; }
+            [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+            public static void Type(string s) {
+              foreach (char c in s) {
+                var a = new INPUT[2];
+                a[0].type = 1; a[0].u.ki.wScan = c; a[0].u.ki.dwFlags = 4;
+                a[1].type = 1; a[1].u.ki.wScan = c; a[1].u.ki.dwFlags = 6;
+                SendInput(2, a, Marshal.SizeOf(typeof(INPUT)));
+                System.Threading.Thread.Sleep(15);
+              }
             }
-            Start-Sleep -Seconds 1; Shot "$name-typed"
-            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}"); Start-Sleep -Seconds 10; Shot "$name-after"
+          }
+          "@
+          function Export($typed, $name) {
+            try {
+              Click 847 27 6; Shot "$name-dialog"
+              [System.Windows.Forms.SendKeys]::SendWait("^a"); [Typer]::Type($typed)
+              Start-Sleep -Seconds 1; Shot "$name-typed"
+              [System.Windows.Forms.SendKeys]::SendWait("{ENTER}"); Start-Sleep -Seconds 10; Shot "$name-after"
+            } catch { "export $name failed: $_" | Tee-Object -Append gui-result/status.txt }
           }
           Shot "00-korean-name"
           # Export image from the Viewer (Export image is at 847,27 on the 1024 x 768 screen)
