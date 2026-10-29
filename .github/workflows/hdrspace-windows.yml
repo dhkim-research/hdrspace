@@ -386,7 +386,7 @@ jobs:
             if ($xs.Count -gt 20) {
               $bitmap.Save("$pwd/gui-flow/$name-dialog.png")
               $cx = [int](($xs | Measure-Object -Average).Average); $cy = [int](($ys | Measure-Object -Average).Average)
-              "$name: message box, OK clicked at $cx,$cy" | Tee-Object -Append gui-flow/status.txt
+              "${name}: message box, OK clicked at $cx,$cy" | Tee-Object -Append gui-flow/status.txt
               Click $cx $cy 2
             }
           }
