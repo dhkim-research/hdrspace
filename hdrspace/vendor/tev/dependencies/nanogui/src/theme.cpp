@@ -15,6 +15,9 @@
 #include <nanogui/opengl.h>
 #include <nanogui/icons.h>
 #include <nanogui_resources.h>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 
 NAMESPACE_BEGIN(nanogui)
@@ -91,6 +94,46 @@ Theme::Theme(NVGcontext *ctx) {
     if (m_font_sans_regular == -1 || m_font_sans_bold == -1 ||
         m_font_icons == -1 || m_font_mono_regular == -1)
         throw std::runtime_error("Could not load fonts!");
+
+    // Roboto has no Korean, Chinese or Japanese glyphs. Use a system font for those
+    // characters (file names, paths); nothing happens if the font is not installed.
+    struct FallbackFont { const char *path; int index; };
+#if defined(_WIN32)
+    std::string fonts_dir = std::string(std::getenv("WINDIR") ? std::getenv("WINDIR") : "C:\\Windows") + "\\Fonts\\";
+    const std::string regular_path = fonts_dir + "malgun.ttf", bold_path = fonts_dir + "malgunbd.ttf";
+    const FallbackFont regular = { regular_path.c_str(), 0 }, bold = { bold_path.c_str(), 0 };
+#elif defined(__APPLE__)
+    // Arial Unicode (part of macOS) covers Hangul, CJK and most other scripts in one file.
+    FILE *probe_supplemental = std::fopen("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "rb");
+    const char *mac_path = probe_supplemental ? "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+                                              : "/System/Library/Fonts/Supplemental/AppleGothic.ttf";
+    if (probe_supplemental)
+        std::fclose(probe_supplemental);
+    const FallbackFont regular = { mac_path, 0 }, bold = { mac_path, 0 };
+#else
+    const FallbackFont regular = { "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0 };
+    const FallbackFont bold = { "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc", 0 };
+#endif
+    const auto load = [&](const char *name, const FallbackFont &font) {
+        const int existing = nvgFindFont(ctx, name);   // loaded by an earlier theme
+        if (existing != -1)
+            return existing;
+        FILE *probe = std::fopen(font.path, "rb");
+        if (!probe)
+            return -1;
+        std::fclose(probe);
+        return nvgCreateFontAtIndex(ctx, name, font.path, font.index);
+    };
+    int fallback_regular = load("sans-fallback", regular);
+    int fallback_bold = std::string(bold.path) == regular.path ? -1 : load("sans-bold-fallback", bold);
+    if (fallback_bold == -1)
+        fallback_bold = fallback_regular;
+    if (fallback_regular != -1) {
+        nvgAddFallbackFontId(ctx, m_font_sans_regular, fallback_regular);
+        nvgAddFallbackFontId(ctx, m_font_mono_regular, fallback_regular);
+    }
+    if (fallback_bold != -1)
+        nvgAddFallbackFontId(ctx, m_font_sans_bold, fallback_bold);
 }
 
 NAMESPACE_END(nanogui)

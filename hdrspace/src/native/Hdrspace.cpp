@@ -8635,7 +8635,11 @@ private:
             outCombo->set_chevron_icon(0);
         };
 
+#if defined(_WIN32)
+        aiSegStatusLabel_ = new Label(content, "Not available in the Windows version (the AI models run on macOS only).", "sans", 12);
+#else
         aiSegStatusLabel_ = new Label(content, "Ready", "sans", 12);
+#endif
         aiSegStatusLabel_->set_color(Color{214, 217, 220, 220});
 
         auto* aiHintLabel = new Label(content, "Comma-separated prompts work well. Click points are best for refinement after the first pass.", "sans", 12);
@@ -8843,7 +8847,11 @@ private:
             "4. Image VOS (experimental)",
             "SAM3 separates buildings and greenery; HDR VIEW metadata selects equidistant tiling or direct perspective DA3Metric."
         );
+#if defined(_WIN32)
+        imageVosStatusLabel_ = new Label(content, "Not available in the Windows version (Depth Anything 3 runs on macOS only).", "sans", 12);
+#else
         imageVosStatusLabel_ = new Label(content, "DA3 Metric runtime not checked.", "sans", 12);
+#endif
         imageVosStatusLabel_->set_fixed_width(kGlareFullRowWidth);
         imageVosStatusLabel_->set_color(Color(214, 217, 220, 220));
 
@@ -11504,7 +11512,12 @@ private:
                               RightPlane plane, LeftSection section, RailFocus focus, int shortcutKey) {
             auto* button = new HdrspaceRailButton(workspaceRail_, name, icon, detail);
             const std::string label = detail.empty() ? name : name + " (" + detail + ")";
-            button->set_tooltip(shortcutKey != 0 ? std::format("{}  -  Opt+Cmd+{}", label, shortcutKey - GLFW_KEY_0) : label);
+#if defined(__APPLE__)
+            constexpr const char* kToolShortcut = "Opt+Cmd";
+#else
+            constexpr const char* kToolShortcut = "Ctrl+Alt";
+#endif
+            button->set_tooltip(shortcutKey != 0 ? std::format("{}  -  {}+{}", label, kToolShortcut, shortcutKey - GLFW_KEY_0) : label);
             const size_t index = hdrspaceRail_.size();
             button->set_callback([this, index] { activateRailItem(index); });
             hdrspaceRail_.push_back({group, name, plane, section, focus, shortcutKey, button});
@@ -11663,23 +11676,31 @@ private:
 
     // Workspace shortcuts, consulted before tev's own bindings. Typing in a focused text
     // box is consumed by NanoGUI before this handler runs.
-    //   Opt+Cmd+1..5  primary tools          Cmd+B        inspector (tev's "toggle GUI")
-    //   Ctrl+Cmd+S    tool rail (macOS "Show Sidebar")   Shift+Cmd+F  focus on the image
+    //   macOS:   Opt+Cmd+1..5 primary tools, Cmd+B inspector (tev's "toggle GUI"),
+    //            Ctrl+Cmd+S tool rail (macOS "Show Sidebar"), Shift+Cmd+F focus on the image
+    //   Windows: Ctrl+Alt+1..5, Ctrl+B, Ctrl+Alt+S, Ctrl+Shift+F (Ctrl takes Cmd's place)
     bool handleHdrspaceShortcut(int key, int modifiers) {
         const int mods = modifiers & (GLFW_MOD_SHIFT | GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
-        if (mods == GLFW_MOD_SUPER && key == GLFW_KEY_B) {
+#if defined(__APPLE__)
+        constexpr int kCommand = GLFW_MOD_SUPER;
+        constexpr int kToolRail = GLFW_MOD_SUPER | GLFW_MOD_CONTROL;
+#else
+        constexpr int kCommand = GLFW_MOD_CONTROL;
+        constexpr int kToolRail = GLFW_MOD_CONTROL | GLFW_MOD_ALT;
+#endif
+        if (mods == kCommand && key == GLFW_KEY_B) {
             toggleInspector();
             return true;
         }
-        if (mods == (GLFW_MOD_SUPER | GLFW_MOD_CONTROL) && key == GLFW_KEY_S) {
+        if (mods == kToolRail && key == GLFW_KEY_S) {
             toggleToolRail();
             return true;
         }
-        if (mods == (GLFW_MOD_SUPER | GLFW_MOD_SHIFT) && key == GLFW_KEY_F) {
+        if (mods == (kCommand | GLFW_MOD_SHIFT) && key == GLFW_KEY_F) {
             toggleFocusMode();
             return true;
         }
-        if (mods != (GLFW_MOD_SUPER | GLFW_MOD_ALT)) {
+        if (mods != (kCommand | GLFW_MOD_ALT)) {
             return false;
         }
         for (size_t i = 0; i < hdrspaceRail_.size(); ++i) {
@@ -24738,6 +24759,18 @@ private:
         if (imageVosAnalyzeButton_) {
             imageVosAnalyzeButton_->set_enabled(hasCurrentImage && !imageVosTask_.active);
         }
+#if defined(_WIN32)
+        // The AI models (SAM 3, Depth Anything 3) are not part of the Windows version.
+        for (Button* button : {glareAiPickPositiveButton_, glareAiPickNegativeButton_, glareAiPointUndoButton_,
+                 glareAiPointClearButton_, glareAiGenerateButton_, glareAiReplaceButton_, glareAiAddButton_,
+                 glareAiSubtractButton_, aiSegSelectAllButton_, aiSegSelectNoneButton_, aiSegSavePreviewButton_,
+                 imageVosInstallButton_, imageVosChooseExteriorButton_, imageVosClearExteriorButton_,
+                 imageVosAnalyzeButton_}) {
+            if (button) {
+                button->set_enabled(false);
+            }
+        }
+#endif
 
         refreshAiReviewSummaryUi();
 

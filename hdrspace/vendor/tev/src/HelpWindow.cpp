@@ -583,8 +583,13 @@ HelpWindow::HelpWindow(Widget* parent, weak_ptr<Ipc> weakIpc, function<void()> c
     };
 
     section("Workspace");
+#if defined(__APPLE__)
     addRow(ALT + "+" + COMMAND + "+1…5", "Viewer … View Visibility (main tools)");
     addRow("Ctrl+" + COMMAND + "+S", "Show / hide the tool list");
+#else
+    addRow(COMMAND + "+" + ALT + "+1…5", "Viewer … View Visibility (main tools)");
+    addRow(COMMAND + "+" + ALT + "+S", "Show / hide the tool list");
+#endif
     addRow(COMMAND + "+B", "Show / hide the inspector");
     addRow("Shift+" + COMMAND + "+F", "Focus on the image (hide all panels)");
 

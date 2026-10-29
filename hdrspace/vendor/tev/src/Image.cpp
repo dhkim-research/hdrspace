@@ -34,11 +34,15 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <istream>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <ranges>
+#include <span>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -171,6 +175,122 @@ ParsedRadianceHeader parseRadianceHeader(const fs::path& path) {
     }
 
     return parsed;
+}
+
+// ---- Writing Radiance pictures that keep the source header (hdrspace) ----------------------
+
+bool isRadianceExtension(const fs::path& path) {
+    std::string e = toString(path.extension());
+    for (char& c : e) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return e == ".hdr" || e == ".pic" || e == ".rgbe";
+}
+
+// Information header of a Radiance picture, without the "#?" line; nullopt if the file is
+// not a Radiance picture.
+std::optional<std::vector<std::string>> readRadianceHeaderLines(const fs::path& path) {
+    if (path.empty()) {
+        return std::nullopt;
+    }
+    std::ifstream input{path, std::ios::binary};
+    std::string line;
+    if (!input || !std::getline(input, line) || !line.starts_with("#?")) {
+        return std::nullopt;
+    }
+    std::vector<std::string> lines;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            return lines;
+        }
+        lines.push_back(line);
+    }
+    return std::nullopt;
+}
+
+// Radiance setcolr(): shared exponent, mantissas truncated.
+void floatToRgbe(float r, float g, float b, uint8_t out[4]) {
+    const auto clean = [](float v) { return std::isfinite(v) && v > 0.0f ? v : 0.0f; };
+    r = clean(r);
+    g = clean(g);
+    b = clean(b);
+    const float m = std::max(r, std::max(g, b));
+    if (m <= 1e-32f) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+        return;
+    }
+    int e = 0;
+    const double d = std::frexp(static_cast<double>(m), &e) * 256.0 / m;
+    out[0] = static_cast<uint8_t>(std::min(255.0, r * d));
+    out[1] = static_cast<uint8_t>(std::min(255.0, g * d));
+    out[2] = static_cast<uint8_t>(std::min(255.0, b * d));
+    out[3] = static_cast<uint8_t>(e + 128);
+}
+
+// One component of a new-style run-length scanline (runs of 4 or more are coded as runs).
+void writeRleComponent(std::ostream& out, const uint8_t* data, int n) {
+    int cur = 0;
+    while (cur < n) {
+        int begRun = cur, runCount = 0, oldRunCount = 0;
+        while (runCount < 4 && begRun < n) {
+            begRun += runCount;
+            oldRunCount = runCount;
+            runCount = 1;
+            while (begRun + runCount < n && runCount < 127 && data[begRun] == data[begRun + runCount]) {
+                ++runCount;
+            }
+        }
+        if (oldRunCount > 1 && oldRunCount == begRun - cur) {
+            out.put(static_cast<char>(128 + oldRunCount));
+            out.put(static_cast<char>(data[cur]));
+            cur = begRun;
+        }
+        while (cur < begRun) {
+            const int literal = std::min(128, begRun - cur);
+            out.put(static_cast<char>(literal));
+            out.write(reinterpret_cast<const char*>(data + cur), literal);
+            cur += literal;
+        }
+        if (runCount >= 4) {
+            out.put(static_cast<char>(128 + runCount));
+            out.put(static_cast<char>(data[begRun]));
+            cur += runCount;
+        }
+    }
+}
+
+void writeRadiancePicture(std::ostream& out, std::span<const float> rgba, Vector2i size, const std::vector<std::string>& headerLines) {
+    out << "#?RADIANCE\n";
+    for (const auto& line : headerLines) {
+        out << line << "\n";
+    }
+    out << "FORMAT=32-bit_rle_rgbe\n\n";
+    out << "-Y " << size.y() << " +X " << size.x() << "\n";
+    const int w = size.x();
+    std::vector<uint8_t> pixels(static_cast<size_t>(w) * 4), component(static_cast<size_t>(w));
+    for (int y = 0; y < size.y(); ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float* px = &rgba[(static_cast<size_t>(y) * w + x) * 4];
+            floatToRgbe(px[0], px[1], px[2], &pixels[static_cast<size_t>(x) * 4]);
+        }
+        if (w < 8 || w > 0x7fff) {
+            out.write(reinterpret_cast<const char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
+            continue;
+        }
+        out.put(2);
+        out.put(2);
+        out.put(static_cast<char>(w >> 8));
+        out.put(static_cast<char>(w & 0xff));
+        for (int c = 0; c < 4; ++c) {
+            for (int x = 0; x < w; ++x) {
+                component[static_cast<size_t>(x)] = pixels[static_cast<size_t>(x) * 4 + c];
+            }
+            writeRleComponent(out, component.data(), w);
+        }
+    }
 }
 
 [[maybe_unused]] std::optional<chroma_t> parseTargetChroma(const ParsedRadianceHeader& header) {
@@ -1721,6 +1841,40 @@ Task<void> Image::save(
     ofstream f{path, ios_base::binary};
     if (!f) {
         throw ImageSaveError{format("Could not open file {}", path)};
+    }
+
+    // Radiance pictures keep the header of the picture they were made from (EXPOSURE,
+    // PRIMARIES, VIEW, ...), so the values keep their meaning. VIEW only describes the
+    // full, unchanged picture and is left out for a crop or a comparison.
+    if (isRadianceExtension(path)) {
+        const auto rgbaHdrData =
+            co_await getRgbaHdrImageData(reference, imageRegion, requestedChannelGroup, metric, mask, bg, false, priority);
+        const bool fullPicture = !reference && imageRegion.min == Vector2i{0} && imageRegion.max == this->size();
+        std::vector<std::string> lines;
+        if (const auto source = readRadianceHeaderLines(mPath)) {
+            for (const auto& line : *source) {
+                if (line.starts_with("FORMAT=") || (!fullPicture && line.starts_with("VIEW="))) {
+                    continue;
+                }
+                lines.push_back(line);
+            }
+        } else {
+            // Other formats are held in linear Rec. 709 (sRGB primaries) inside the viewer.
+            lines.push_back("PRIMARIES= 0.6400 0.3300 0.3000 0.6000 0.1500 0.0600 0.3127 0.3290");
+        }
+        std::string note = "hdrspace Export image";
+        if (!fullPicture) {
+            note += format(" (region {} {} {} {})", imageRegion.min.x(), imageRegion.min.y(), size.x(), size.y());
+        }
+        if (reference) {
+            note += format(" (difference to {})", tev::toString(reference->path().filename()));
+        }
+        lines.push_back(note);
+        writeRadiancePicture(f, rgbaHdrData, size, lines);
+        if (!f) {
+            throw ImageSaveError{format("Could not write {}", path)};
+        }
+        co_return;
     }
 
     for (const auto& saver : ImageSaver::getSavers()) {

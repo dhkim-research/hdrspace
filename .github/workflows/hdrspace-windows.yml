@@ -185,7 +185,9 @@ jobs:
       # app only for this check. Opens a test picture and takes a screenshot of the desktop.
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: mergehdr/tests/crossplatform/data
+          sparse-checkout: |
+            mergehdr/tests/crossplatform/data
+            .github/scripts
           path: src
       - name: Package self-test (shell jobs, mergehdr, Radiance)
         shell: pwsh
@@ -330,7 +332,7 @@ jobs:
           Copy-Item gui-stdout.txt, gui-stderr.txt gui-result/ -ErrorAction SilentlyContinue
           python -m pip install --quiet OpenEXR numpy
           $exported = @(Get-ChildItem C:\guiout -Include *.exr,*.hdr -Recurse | ForEach-Object { $_.FullName })
-          python .github/scripts/check_export.py "$picture" @exported 2>&1 | Tee-Object gui-result/check.txt
+          python src/.github/scripts/check_export.py "$picture" @exported 2>&1 | Tee-Object gui-result/check.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
