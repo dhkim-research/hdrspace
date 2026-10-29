@@ -49,10 +49,15 @@ ProcessResult runShellCommandWithCapturedOutput(const std::string &command) {
         }
         return result + "'";
     };
+    // Command lines written for macOS start with "zsh -lc '<script>'"; busybox sh has no zsh,
+    // so it runs the quoted script itself.
+    std::string script = command;
+    if (script.rfind("zsh -lc ", 0) == 0)
+        script = "eval " + script.substr(8);
     ProcessResult result;
     try {
         const pid_t pid = hdrspaceSpawnShell(
-            command + " 1>" + quote(stdoutPath.string()) + " 2>" + quote(stderrPath.string()), logPath);
+            script + " 1>" + quote(stdoutPath.string()) + " 2>" + quote(stderrPath.string()), logPath);
         int status = 0;
         waitpid(pid, &status, 0);
         result.exitCode = status;

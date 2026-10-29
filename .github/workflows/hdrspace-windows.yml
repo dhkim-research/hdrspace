@@ -371,6 +371,25 @@ jobs:
             [Win.Mouse]::mouse_event(2, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [Win.Mouse]::mouse_event(4, 0, 0, 0, 0)
             Start-Sleep -Seconds $wait
           }
+          # a message box shows a yellow OK button over the canvas: take a picture, then click it
+          function Dismiss($name) {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $xs = @(); $ys = @()
+            for ($y = 250; $y -lt 520; $y += 4) {
+              for ($x = 250; $x -lt 720; $x += 4) {
+                $c = $bitmap.GetPixel($x, $y)
+                if ($c.R -gt 225 -and $c.G -gt 165 -and $c.G -lt 215 -and $c.B -lt 110) { $xs += $x; $ys += $y }
+              }
+            }
+            if ($xs.Count -gt 20) {
+              $bitmap.Save("$pwd/gui-flow/$name-dialog.png")
+              $cx = [int](($xs | Measure-Object -Average).Average); $cy = [int](($ys | Measure-Object -Average).Average)
+              "$name: message box, OK clicked at $cx,$cy" | Tee-Object -Append gui-flow/status.txt
+              Click $cx $cy 2
+            }
+          }
           function Keys($k) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 500 }
           function Step($name, [scriptblock]$body) {
             try { & $body } catch { "step $name failed: $_" | Tee-Object -Append gui-flow/status.txt }
@@ -387,38 +406,41 @@ jobs:
 
           Step "tonemapping" {
             Click 80 131 5; Shot "t1-tonemapping"            # the only operator tile on Windows: Ward '97
-            Click 790 199 30; Shot "t2-ward-preview"
-            Click 806 689 30; Shot "t3-ward-full"
+            Click 790 199 30; Shot "t2-ward-preview"; Dismiss "t2"
+            Click 806 689 30; Shot "t3-ward-full"; Dismiss "t3"
+            $p = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter "*-ward97-*.bmp" -ErrorAction SilentlyContinue | Select-Object -First 3
+            "ward previews: $($p.FullName)" | Tee-Object -Append gui-flow/status.txt
+            $p | Copy-Item -Destination gui-flow/ -ErrorAction SilentlyContinue
           }
           Step "view-visibility" {
-            Click 83 453 5; Shot "v1-panel"
+            Dismiss "v0"; Click 83 453 5; Shot "v1-panel"
             Click 900 198 1; Keys "^a"; Keys "C:\vv\a47.hdr{ENTER}"
             Click 900 236 1; Keys "^a"; Keys "C:\vv\a64.hdr{ENTER}"
             Click 900 274 1; Keys "^a"; Keys "C:\vv\white.hdr{ENTER}"
             Shot "v2-paths"
             Click 790 312 15; Shot "v3-loaded"
-            Click 868 689 120; Shot "v4-computed"
+            Click 868 689 120; Shot "v4-computed"; Dismiss "v4"
           }
           Step "merge-hdr" {
-            Click 75 191 5; Shot "m1-panel"
+            Dismiss "m0"; Click 75 191 5; Shot "m1-panel"
             Click 861 172 6; Shot "m2-dialog"
             Keys "^a"; Keys "C:\raw{ENTER}"; Start-Sleep -Seconds 2
             Keys ("^a" + (($raws | ForEach-Object { "`"$_`"" }) -join " ") + "{ENTER}"); Start-Sleep -Seconds 4
             Shot "m3-files"
             Click 868 689 5; Shot "m4-running"
             $out = WaitFile "C:\raw\*.hdr" 420
-            Shot "m5-done"
+            Shot "m5-done"; Dismiss "m5"
             "merge output: $out" | Tee-Object -Append gui-flow/status.txt
           }
           Step "create-view" {
-            Click 78 637 5; Shot "c1-panel"
+            Dismiss "c0"; Click 78 637 5; Shot "c1-panel"
             Click 798 206 6; Keys "^a"; Keys "C:\scene\room.rad{ENTER}"; Start-Sleep -Seconds 4
             Click 798 338 6; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
             Shot "c2-loaded"
-            Click 632 410 60; Shot "c3-preview"
+            Click 632 410 60; Shot "c3-preview"; Dismiss "c3"
             Click 806 687 5; Shot "c4-render-started"
             $r = WaitFile "C:\scene\*.hdr" 300
-            Shot "c5-render-done"
+            Shot "c5-render-done"; Dismiss "c5"
             "create view output: $r" | Tee-Object -Append gui-flow/status.txt
           }
           "app still running: $(-not $app.HasExited)" | Tee-Object -Append gui-flow/status.txt

@@ -433,7 +433,13 @@ PfsToneMappingCommand buildPfsToneMappingCommand(const PfsToneMappingRequest& re
         result.error = "Native interactive tone mapping does not use a pfstools command.";
         return result;
     }
-    if (request.toolsDirectory.empty()) {
+#if defined(_WIN32)
+    // Windows has no pfstools; Ward '97 runs on the bundled Radiance tools alone.
+    const bool needsPfsTools = request.provider != EPfsToneMappingProvider::Ward97;
+#else
+    const bool needsPfsTools = true;
+#endif
+    if (needsPfsTools && request.toolsDirectory.empty()) {
         result.error = "Choose a pfstools bin directory.";
         return result;
     }
@@ -456,6 +462,15 @@ PfsToneMappingCommand buildPfsToneMappingCommand(const PfsToneMappingRequest& re
             result.error = "Ward (pcond) reads Radiance pictures. Open the .hdr version of this image.";
             return result;
         }
+#if defined(_WIN32)
+        const fs::path pcond = request.radianceDirectory / "pcond.exe";
+        const fs::path pfilt = request.radianceDirectory / "pfilt.exe";
+        const fs::path raBmp = request.radianceDirectory / "ra_bmp.exe";
+        if (request.radianceDirectory.empty() || !fs::exists(pcond) || !fs::exists(pfilt) || !fs::exists(raBmp)) {
+            result.error = "Radiance pcond / pfilt / ra_bmp were not found in the bundled Radiance tools.";
+            return result;
+        }
+#else
         const fs::path pcond = request.radianceDirectory / "pcond";
         const fs::path pfilt = request.radianceDirectory / "pfilt";
         if (request.radianceDirectory.empty() || !fs::exists(pcond) || !fs::exists(pfilt)) {
@@ -468,6 +483,7 @@ PfsToneMappingCommand buildPfsToneMappingCommand(const PfsToneMappingRequest& re
                 return result;
             }
         }
+#endif
         const std::string wardWidth = trim(request.previewWidth);
         const bool reduce = !wardWidth.empty() && wardWidth != "full" && wardWidth != "Full";
         if (reduce && (!std::all_of(wardWidth.begin(), wardWidth.end(), [](unsigned char ch) { return std::isdigit(ch); }) ||
@@ -491,6 +507,37 @@ PfsToneMappingCommand buildPfsToneMappingCommand(const PfsToneMappingRequest& re
                 options << " " << parameterSpec.option << " " << shellQuote(value);
             }
         }
+#if defined(_WIN32)
+        {
+            // busybox sh: pcond writes display-linear RGBE and ra_bmp applies the post gamma
+            // (-g 1 keeps it linear). The preview is a BMP; the temporary pictures sit next to it.
+            const std::string output = request.outputPath.string();
+            const std::string reduced = shellQuote(output + ".in.hdr");
+            const std::string displayPicture = shellQuote(output + ".pcond.hdr");
+            std::string source = shellQuote(request.inputPath.string());
+            std::ostringstream script;
+            script << "status=0\n{\n";
+            if (reduce) {
+                script << "  set -- $(" << shellQuote((request.radianceDirectory / "getinfo.exe").string()) << " -d < "
+                       << source << " | tr -d '\\r')\n";
+                script << "  if [ \"$4\" -gt " << wardWidth << " ]; then\n";
+                script << "    " << shellQuote(pfilt.string()) << " -1 -x " << wardWidth << " -y $(( ($2 * " << wardWidth
+                       << " + $4 / 2) / $4 )) " << source << " > " << reduced << "\n";
+                script << "  else\n    cp " << source << " " << reduced << "\n  fi &&\n";
+                source = reduced;
+            }
+            script << "  " << shellQuote(pcond.string()) << options.str() << " " << source << " > " << displayPicture << " &&\n";
+            script << "  " << shellQuote(raBmp.string()) << " -g " << shellQuote(wardGamma.empty() ? std::string("1") : wardGamma)
+                   << " " << displayPicture << " " << shellQuote(output) << "\n";
+            script << "} || status=1\n";
+            script << "rm -f " << reduced << " " << displayPicture << "\n";
+            script << "exit $status\n";
+            result.ok = true;
+            result.displayCommand = script.str();
+            result.command = "zsh -lc " + shellQuote(result.displayCommand);
+            return result;
+        }
+#endif
         std::ostringstream pipeline;
         pipeline << "set -o pipefail\n";
         pipeline << "export PATH=" << shellQuote(request.toolsDirectory.string()) << ":"

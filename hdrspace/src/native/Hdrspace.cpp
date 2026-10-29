@@ -9503,10 +9503,15 @@ private:
         native::PfsToneMappingRequest keyRequest = currentToneMappingPfsRequest({});
         const std::string key = toneMappingPfsCacheKey(keyRequest);
         const std::string stem = inputPath.stem().string();
+#if defined(_WIN32)
+        const std::string previewExtension = ".bmp";   // Radiance ra_bmp writes the Windows preview
+#else
+        const std::string previewExtension = ".png";
+#endif
         const fs::path outputPath =
-            cacheDirectory / (stem + "-" + spec.slug + "-" + key + ".png");
+            cacheDirectory / (stem + "-" + spec.slug + "-" + key + previewExtension);
         const fs::path temporaryPath =
-            cacheDirectory / (stem + "-" + spec.slug + "-" + key + ".tmp.png");
+            cacheDirectory / (stem + "-" + spec.slug + "-" + key + ".tmp" + previewExtension);
 
         native::PfsToneMappingRequest request = currentToneMappingPfsRequest(temporaryPath);
         toneMappingPfsForceFull_ = false;
