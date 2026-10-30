@@ -439,10 +439,19 @@ jobs:
             Click 798 338 6; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
             Click 798 470 6; Keys "^a"; Keys "C:\vv\a47.hdr{ENTER}"; Start-Sleep -Seconds 6
             Shot "c2-loaded"
-            Click 632 410 60; Shot "c3-preview"; Dismiss "c3"
-            Click 806 687 5; Shot "c4-render-started"
-            $r = WaitFile "C:\scene\*.hdr" 300
-            Shot "c5-render-done"; Dismiss "c5"
+            Click 632 410 90; Shot "c3-preview"; Dismiss "c3"
+            $pv = Get-ChildItem "$env:LOCALAPPDATA\hdrspace\cache\create_view_preview" -ErrorAction SilentlyContinue
+            "create view preview files: $($pv | ForEach-Object { "$($_.Name)=$($_.Length)" })" | Tee-Object -Append gui-flow/status.txt
+            $pv | Where-Object { $_.Name -like "latest_preview.*" } | Copy-Item -Destination gui-flow/
+            # scroll the inspector down to the render settings (Size W / H) and take pictures on the way
+            [Win.Mouse]::SetCursorPos(860, 450) | Out-Null
+            for ($n = 1; $n -le 6; $n++) {
+              for ($k = 0; $k -lt 5; $k++) { [Win.Mouse]::mouse_event(0x0800, 0, 0, -120, 0); Start-Sleep -Milliseconds 150 }
+              Start-Sleep -Seconds 1; Shot "c4-scroll-$n"
+            }
+            Click 806 687 60; Shot "c5-render-60s"; Dismiss "c5"
+            $r = WaitFile "C:\scene\*.hdr" 5
+            Click 946 687 5; Shot "c6-stopped"; Dismiss "c6"
             "create view output: $r" | Tee-Object -Append gui-flow/status.txt
           }
           "app still running: $(-not $app.HasExited)" | Tee-Object -Append gui-flow/status.txt

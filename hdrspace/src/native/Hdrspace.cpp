@@ -113,6 +113,12 @@ constexpr const char* kAppDisplayName = "hdrspace";
 constexpr const char* kNativeToneDescription = "Real-time global exposure with uniform, center-weighted, or Gaussian gaze metering.";
 constexpr const char* kHdrspaceAppIconAsset = "hdrspace_icon_1024.png";
 #if defined(_WIN32)
+constexpr const char* kCreateViewStripCr = " | tr -d '\\r'";  // Windows Radiance tools end lines with CR LF
+#else
+constexpr const char* kCreateViewStripCr = "";
+#endif
+
+#if defined(_WIN32)
 constexpr auto kDefaultToneMappingProvider = native::EPfsToneMappingProvider::Ward97;      // no pfstools on Windows
 #else
 constexpr auto kDefaultToneMappingProvider = native::EPfsToneMappingProvider::Reinhard02;
@@ -18922,8 +18928,20 @@ private:
         command << "set -- $(vwrays -d " << buildCreateViewRenderViewArgs()
                 << " -x 1000"
                 << " -y 1000"
-                << ") && ";
+                << kCreateViewStripCr << ") && ";
         command << "printf 'Preview actual resolution: %sx%s\\n' \"$2\" \"$4\" && ";
+#if defined(_WIN32)
+        // Windows Radiance has no rxpiece: one rpict process renders the preview.
+        command << "rpict"
+                << " -x \"$2\" -y \"$4\""
+                << " " << buildCreateViewRenderViewArgs()
+                << " -ab 0 -aa 0 -av 0 0 0"
+                << " -ps 1 -pj 0 -pt 0"
+                << " -dv+ -dt 0 -dj 0 -ds 0 -dc 1"
+                << " " << shellQuote(sceneOctPath.string())
+                << " > " << shellQuote(rawPreviewPath.string())
+                << " && ";
+#else
         command << "rxpiece -n 8"
                 << " -x \"$2\" -y \"$4\""
                 << " -X 4 -Y 4"
@@ -18934,6 +18952,7 @@ private:
                 << " -o " << shellQuote(rawPreviewPath.string())
                 << " " << shellQuote(sceneOctPath.string())
                 << " && ";
+#endif
         command << "ra_rgbe -r " << shellQuote(rawPreviewPath.string()) << " " << shellQuote(outputPath.string())
                 << " && rm -f " << shellQuote(rawPreviewPath.string());
 
@@ -19108,9 +19127,24 @@ private:
         command << "set -- $(vwrays -d " << buildCreateViewRenderViewArgs()
                 << " -x " << width
                 << " -y " << height
-                << ") && ACT_X=\"$2\" && ACT_Y=\"$4\" && ";
+                << kCreateViewStripCr << ") && ACT_X=\"$2\" && ACT_Y=\"$4\" && ";
         command << "printf 'Actual view resolution: %sx%s\\n' \"$ACT_X\" \"$ACT_Y\" && ";
         if (fastDirectMode) {
+#if defined(_WIN32)
+            // Windows Radiance has no rxpiece: one rpict process renders the picture.
+            command << "printf 'Fast direct mode enabled (no overture, direct-only rpict).\\n' && ";
+            command << "printf 'Starting fast direct rpict render...\\n' && ";
+            command << "rpict "
+                    << buildCreateViewRenderViewArgs()
+                    << " -ab 0 -aa 0 -av 0 0 0"
+                    << " -ps 1 -pj 0 -pt 0"
+                    << " -dv+ -dt 0 -dj 0 -ds 0 -dc 1"
+                    << " -x " << width
+                    << " -y " << height
+                    << " " << shellQuote(sceneOctPath.string())
+                    << " > " << shellQuote(rawOutputPath.string())
+                    << " && ";
+#else
             command << "printf 'Fast direct mode enabled (no overture, direct-only rxpiece).\\n' && ";
             command << "printf 'Using rxpiece tile grid: 8x8\\n' && ";
             command << "printf 'Starting fast direct rxpiece render...\\n' && ";
@@ -19125,9 +19159,35 @@ private:
                     << " -o " << shellQuote(rawOutputPath.string())
                     << " " << shellQuote(sceneOctPath.string())
                     << " && ";
+#endif
         } else {
             command << "OV_X=$(( ACT_X / 6 )) && OV_Y=$(( ACT_Y / 6 )) && ";
             command << "printf 'Using overture resolution: %sx%s\\n' \"$OV_X\" \"$OV_Y\" && ";
+#if defined(_WIN32)
+            // Windows: rtrace and rpict run as one process each (no -n, no rxpiece); busybox sh has no $SECONDS.
+            command << "ot0=$(date +%s) && ";
+            command << "cnt -s \"$OV_X\" \"$OV_Y\" | "
+                    << "vwrays -ff -i " << buildCreateViewRenderViewArgs()
+                    << " -x \"$OV_X\" -y \"$OV_Y\" -pj 0 | "
+                    << "rtrace -ff -ov"
+                    << " -x \"$OV_X\" -y \"$OV_Y\""
+                    << " -aa 0.075 -ab 4 -ad 3000 -as 1500 -lw 1e-4 -dt 0 -dr 3 -ds 0.02 -st 0.15 -ar 1000"
+                    << " -af " << shellQuote(ambPath.string())
+                    << " " << shellQuote(sceneOctPath.string())
+                    << " > /dev/null && ";
+            command << "overture_seconds=$(( $(date +%s) - ot0 )) && printf 'Finished overture in %ss\\n' \"$overture_seconds\" && ";
+            command << "printf 'Starting rpict final render...\\n' && ";
+            command << "rpict "
+                    << buildCreateViewRenderViewArgs()
+                    << " -aa 0.075 -ab 4 -ad 3000 -as 1500 -lw 1e-4 -dt 0 -dr 3 -ds 0.02 -st 0.15 -ar 1000"
+                    << " -x " << width
+                    << " -y " << height
+                    << " -af " << shellQuote(ambPath.string())
+                    << " -ps 1 -pt 0.05 -pj 0.67"
+                    << " " << shellQuote(sceneOctPath.string())
+                    << " > " << shellQuote(rawOutputPath.string())
+                    << " && ";
+#else
             command << "printf 'Using rxpiece tile grid: 8x8\\n' && ";
             command << "ot0=$SECONDS && ";
             command << "cnt -s \"$OV_X\" \"$OV_Y\" | "
@@ -19152,6 +19212,7 @@ private:
                     << " -o " << shellQuote(rawOutputPath.string())
                     << " " << shellQuote(sceneOctPath.string())
                     << " && ";
+#endif
         }
         if (applyRgbeConversion) {
             command << "ra_rgbe -r " << shellQuote(rawOutputPath.string()) << " " << shellQuote(outputPath.string()) << " && ";
