@@ -449,9 +449,14 @@ jobs:
               for ($k = 0; $k -lt 5; $k++) { [Win.Mouse]::mouse_event(0x0800, 0, 0, -120, 0); Start-Sleep -Milliseconds 150 }
               Start-Sleep -Seconds 1; Shot "c4-scroll-$n"
             }
-            Click 806 687 60; Shot "c5-render-60s"; Dismiss "c5"
-            $r = WaitFile "C:\scene\*.hdr" 5
-            Click 946 687 5; Shot "c6-stopped"; Dismiss "c6"
+            # the Size boxes only show 6000 as a placeholder: type a small size for the CI machine
+            Click 850 474 1; Keys "300{ENTER}"
+            Click 938 474 1; Keys "300{ENTER}"
+            Shot "c5-size"
+            Click 806 687 5; Shot "c6-render-started"; Dismiss "c6"
+            $r = WaitFile "C:\scene\create_view_render_sm.hdr" 900
+            Shot "c7-render-done"; Dismiss "c7"
+            Get-ChildItem "$env:LOCALAPPDATA\hdrspace\cache\create_view_render" -Filter *.log -ErrorAction SilentlyContinue | Copy-Item -Destination gui-flow/
             "create view output: $r" | Tee-Object -Append gui-flow/status.txt
           }
           "app still running: $(-not $app.HasExited)" | Tee-Object -Append gui-flow/status.txt
