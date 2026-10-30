@@ -19031,6 +19031,12 @@ private:
 
         int width = 6000;
         int height = 6000;
+        // The boxes only show 6000 as a placeholder; an empty box asks for a number.
+        if (trim(createViewRenderWidthBox_ ? createViewRenderWidthBox_->value() : "").empty() ||
+            trim(createViewRenderHeightBox_ ? createViewRenderHeightBox_->value() : "").empty()) {
+            showMessage("Enter the render size in pixels in both Size W / H boxes (for example 6000 and 6000).");
+            return;
+        }
         if (!parseCreateViewRenderResolution(createViewRenderWidthBox_ ? createViewRenderWidthBox_->value() : "", width) ||
             !parseCreateViewRenderResolution(createViewRenderHeightBox_ ? createViewRenderHeightBox_->value() : "", height)) {
             showMessage("Render resolution must be positive integers.");
@@ -20813,7 +20819,13 @@ private:
         createViewMaterialStatusLabel_->set_fixed_width(kInspectorContentWidth);
         createViewMaterialStatusLabel_->set_color(hdrspaceMutedInk(214));
 
+#if defined(_WIN32)
+        makeStepHeading("Rendering", "Run rpict with the current room, view, environment, and material state. "
+                                     "On Windows it renders on one CPU core: a full-size render with the overture can take hours; "
+                                     "use Fast direct mode or a smaller size for quick results.");
+#else
         makeStepHeading("Rendering", "Run rxpiece with the current room, view, environment, and material state.");
+#endif
 
         auto* renderCard = new Widget(content);
         renderCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
@@ -20850,6 +20862,13 @@ private:
         createViewRenderFastDirectCheck_->set_font_size(14);
         createViewRenderFastDirectCheck_->set_tooltip("No overture pass; rxpiece computes direct light only.");
         createViewRenderFastDirectCheck_->set_checked(false);
+#if defined(_WIN32)
+        auto* windowsRenderNote = new Label(renderPostRow,
+            "Windows renders on one CPU core: a full-size render with the overture can take hours. "
+            "Use Fast direct mode or a smaller size for quick results.", "sans", 12);
+        windowsRenderNote->set_fixed_width(kInspectorContentWidth);
+        windowsRenderNote->set_color(hdrspaceMutedInk(214));
+#endif
 
         auto* renderStatusCard = new Widget(renderCard);
         renderStatusCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
