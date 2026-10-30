@@ -449,9 +449,11 @@ jobs:
               for ($k = 0; $k -lt 5; $k++) { [Win.Mouse]::mouse_event(0x0800, 0, 0, -120, 0); Start-Sleep -Milliseconds 150 }
               Start-Sleep -Seconds 1; Shot "c4-scroll-$n"
             }
-            # the Size boxes only show 6000 as a placeholder: type a small size for the CI machine
+            # the Size boxes only show 6000 as a placeholder: type a small size for the CI machine;
+            # Fast direct mode (no overture) keeps the render short; the overture is timed in the next step
             Click 850 474 1; Keys "300{ENTER}"
             Click 938 474 1; Keys "300{ENTER}"
+            Click 733 576 1
             Shot "c5-size"
             Click 806 687 5; Shot "c6-render-started"; Dismiss "c6"
             $r = WaitFile "C:\scene\create_view_render_sm.hdr" 900
@@ -474,6 +476,32 @@ jobs:
           }
           Get-ChildItem C:\scene\*.hdr -ErrorAction SilentlyContinue | Copy-Item -Destination gui-flow/
           Get-ChildItem C:\raw\*.hdr -ErrorAction SilentlyContinue | Copy-Item -Destination gui-flow/
+      - name: Create View overture in busybox sh (timed)
+        shell: pwsh
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          # the same overture pipeline the app runs (cnt | vwrays | rtrace -af), first at -ab 1, then with the app's settings
+          $root = (Resolve-Path hdrspace-windows-x64).Path
+          New-Item -ItemType Directory -Force overture | Out-Null
+          Copy-Item src/.github/scripts/scene/room.rad overture/
+          $work = (Resolve-Path overture).Path
+          $view = "-vtv -vp 2 1 1.5 -vd 0 1 0 -vu 0 0 1 -vh 60 -vv 45"
+          $script = @"
+          export PATH='$root\Resources\radiance\bin;'"`$PATH"
+          export RAYPATH='$root\Resources\radiance\lib'
+          cd '$work'
+          oconv room.rad > room.oct || exit 1
+          t0=`$(date +%s)
+          cnt -s 10 7 | vwrays -ff -i $view -x 10 -y 7 -pj 0 | rtrace -ff -ov -x 10 -y 7 -ab 1 -af ab1.amb room.oct > /dev/null
+          echo "ab1 overture 10x7: exit `$? in `$(( `$(date +%s) - t0 ))s, amb `$(wc -c < ab1.amb) bytes"
+          t0=`$(date +%s)
+          cnt -s 50 35 | vwrays -ff -i $view -x 50 -y 35 -pj 0 | rtrace -ff -ov -x 50 -y 35 -aa 0.075 -ab 4 -ad 3000 -as 1500 -lw 1e-4 -dt 0 -dr 3 -ds 0.02 -st 0.15 -ar 1000 -af app.amb room.oct > /dev/null
+          echo "app overture 50x35: exit `$? in `$(( `$(date +%s) - t0 ))s, amb `$(wc -c < app.amb) bytes"
+          "@
+          New-Item -ItemType Directory -Force gui-flow | Out-Null
+          & "$root/bin/busybox.exe" sh -c $script 2>&1 | Tee-Object gui-flow/overture.txt
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
