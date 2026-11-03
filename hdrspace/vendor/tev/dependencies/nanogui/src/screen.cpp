@@ -752,6 +752,19 @@ void Screen::draw_all() {
         draw_setup();
         draw_contents();
         draw_widgets();
+#if defined(NANOGUI_USE_METAL)
+        if (m_capture_callback) {
+            std::vector<uint8_t> rgba;
+            Vector2i size(0);
+            if (metal_read_texture_rgba8(m_metal_texture, rgba, size)) {
+                auto callback = std::move(m_capture_callback);
+                m_capture_callback = nullptr;
+                callback(std::move(rgba), size);
+            } else {
+                redraw();  // this drawable was still write-only: take the next frame
+            }
+        }
+#endif
         draw_teardown();
 
 #if defined(NANOGUI_USE_METAL)
@@ -762,6 +775,17 @@ void Screen::draw_all() {
 
 void Screen::draw_contents() {
     clear();
+}
+
+void Screen::capture_next_frame(std::function<void(std::vector<uint8_t>, Vector2i)> callback) {
+#if defined(NANOGUI_USE_METAL)
+    metal_window_set_framebuffer_only(m_nswin, false);
+    m_capture_callback = std::move(callback);
+    redraw();
+#else
+    if (callback)
+        callback({}, Vector2i(0));
+#endif
 }
 
 void Screen::nvg_flush() {

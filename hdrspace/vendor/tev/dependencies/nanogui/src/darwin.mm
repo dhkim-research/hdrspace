@@ -174,6 +174,68 @@ void metal_window_next_drawable(void *nswin_, void **drawable_, void **texture_)
     *drawable_ = (__bridge_retained void *) drawable;
 }
 
+void metal_window_set_framebuffer_only(void *nswin_, bool value) {
+    NSWindow *nswin = (__bridge NSWindow *) nswin_;
+    CAMetalLayer *layer = (CAMetalLayer *) nswin.contentView.layer;
+    layer.framebufferOnly = value ? YES : NO;
+}
+
+bool metal_read_texture_rgba8(void *texture_, std::vector<uint8_t> &rgba, Vector2i &size) {
+    id<MTLTexture> texture = (__bridge id<MTLTexture>) texture_;
+    if (!texture || texture.framebufferOnly)
+        return false;
+    const MTLPixelFormat format = texture.pixelFormat;
+    const bool half = format == MTLPixelFormatRGBA16Float;
+    const bool bgra = format == MTLPixelFormatBGRA8Unorm || format == MTLPixelFormatBGRA8Unorm_sRGB;
+    if (!half && !bgra)
+        return false;
+
+    const NSUInteger width = texture.width, height = texture.height;
+    const NSUInteger bytes_per_row = width * (half ? 8 : 4);
+    id<MTLDevice> device = (__bridge id<MTLDevice>) s_metal_device;
+    id<MTLCommandQueue> command_queue = (__bridge id<MTLCommandQueue>) s_metal_command_queue;
+    id<MTLBuffer> buffer = [device newBufferWithLength: bytes_per_row * height
+                                               options: MTLResourceStorageModeShared];
+    if (!buffer)
+        return false;
+    // Same queue as the frame itself, so the copy runs after everything drawn so far.
+    id<MTLCommandBuffer> command_buffer = [command_queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [command_buffer blitCommandEncoder];
+    [blit copyFromTexture: texture
+              sourceSlice: 0
+              sourceLevel: 0
+             sourceOrigin: MTLOriginMake(0, 0, 0)
+               sourceSize: MTLSizeMake(width, height, 1)
+                 toBuffer: buffer
+        destinationOffset: 0
+   destinationBytesPerRow: bytes_per_row
+ destinationBytesPerImage: bytes_per_row * height];
+    [blit endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+
+    size = Vector2i((int) width, (int) height);
+    rgba.resize((size_t) width * height * 4);
+    const uint8_t *src = (const uint8_t *) buffer.contents;
+    for (size_t i = 0; i < (size_t) width * height; ++i) {
+        if (half) {
+            // Extended sRGB: values above 1 (HDR highlights) are clipped for the picture.
+            const __fp16 *p = (const __fp16 *) (src + i * 8);
+            for (int c = 0; c < 3; ++c) {
+                float v = (float) p[c];
+                v = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+                rgba[i * 4 + c] = (uint8_t) (v * 255.f + 0.5f);
+            }
+        } else {
+            rgba[i * 4 + 0] = src[i * 4 + 2];
+            rgba[i * 4 + 1] = src[i * 4 + 1];
+            rgba[i * 4 + 2] = src[i * 4 + 0];
+        }
+        rgba[i * 4 + 3] = 255;
+    }
+    return true;
+}
+
 void metal_present_and_release_drawable(void *drawable_) {
     id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>) drawable_;
     id<MTLCommandQueue> command_queue = (__bridge id<MTLCommandQueue>) s_metal_command_queue;

@@ -5194,6 +5194,16 @@ void ImageViewer::focusCropControls() {
     redraw();
 }
 
+void ImageViewer::scrollSidebarTo(float fraction) {
+    setUiVisible(true);
+    updateLayout();
+    if (auto* scroll = dynamic_cast<VScrollPanel*>(mSidebar)) {
+        scroll->set_scroll(std::clamp(fraction, 0.0f, 1.0f));
+        scroll->perform_layout(m_nvg_context);
+    }
+    redraw();
+}
+
 void ImageViewer::openInspectionModeMenu() {
     if (!mValueModePopupButton) {
         return;

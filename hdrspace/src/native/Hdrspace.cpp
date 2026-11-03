@@ -320,6 +320,14 @@ struct HiddenFukuokaDemoOptions {
     bool maximizeWindow = true;
 };
 
+// hdrspace --gui-test <folder>: open every tool, save a picture of the window for each, quit.
+struct GuiTestOptions {
+    fs::path outputDir;
+    Vector2i windowSize{1440, 900};
+    bool expectImage = false;
+};
+std::atomic<int> sGuiTestExitCode{0};
+
 void applyHdrspaceDockIconIfAvailable() {
 #if defined(__APPLE__)
     const fs::path iconPath = hdrspaceBrandingResourcePath(kHdrspaceAppIconAsset);
@@ -905,6 +913,36 @@ bool parseCreateViewTurntableCli(int argc, char** argv, CreateViewTurntableExpor
 
     if (options.roomPath.empty() || options.viewPath.empty() || options.environmentPath.empty() || options.outputVideoPath.empty()) {
         error = "Usage: --export-create-view-turntable --room <room.rad> --view <view.vf> --env <env.hdr> --output <movie.mp4> [--size WIDTHxHEIGHT] [--frames N] [--fps N] [--zoom Z] [--env-alpha A] [--bg white|black|transparent]";
+    }
+    return true;
+}
+
+bool parseGuiTestCli(int argc, char** argv, GuiTestOptions& options, std::string& error) {
+    int index = -1;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] && std::string_view{argv[i]} == "--gui-test") {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0) {
+        return false;
+    }
+    const std::string usage = "Usage: hdrspace --gui-test <output folder> [--size WIDTHxHEIGHT] [image.hdr ...]";
+    if (index + 1 >= argc || std::string_view{argv[index + 1]}.rfind("--", 0) == 0) {
+        error = usage;
+        return true;
+    }
+    options.outputDir = fs::u8path(argv[index + 1]);
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string_view{argv[i]} == "--size") {
+            int w = 0, h = 0;
+            if (std::sscanf(argv[i + 1], "%dx%d", &w, &h) != 2 || w < 984 || h < 700) {
+                error = usage + " (the window is at least 984 x 700)";
+                return true;
+            }
+            options.windowSize = {w, h};
+        }
     }
     return true;
 }
@@ -6043,6 +6081,7 @@ public:
 
     CreateViewTurntableExportResult exportCreateViewTurntable(const CreateViewTurntableExportOptions& options);
     void startHiddenFukuokaDemo(const HiddenFukuokaDemoOptions& options);
+    void startGuiTest(const GuiTestOptions& options);
 private:
     static constexpr int kGlareBandSelection = -2;
     static constexpr int kGlareZone1Selection = -3;
@@ -6355,6 +6394,138 @@ private:
                 std::cout << "[demo] Finished successfully." << std::endl;
             }
             if (options.quitOnFinish && viewer_ && viewer_->glfw_window()) {
+                glfwSetWindowShouldClose(viewer_->glfw_window(), GLFW_TRUE);
+            }
+        });
+    }
+
+    // gui-test: the app reads its own frames back (nanogui copies the Metal drawable), so nothing
+    // drives the mouse and macOS asks for no screen-recording permission.
+    std::pair<std::vector<uint8_t>, Vector2i> captureGuiTestFrame() {
+        auto promise = std::make_shared<std::promise<std::pair<std::vector<uint8_t>, Vector2i>>>();
+        auto future = promise->get_future();
+        runOnUiThreadSync([this, promise]() {
+            viewer_->capture_next_frame([promise](std::vector<uint8_t> rgba, Vector2i size) {
+                promise->set_value({std::move(rgba), size});
+            });
+        });
+        if (future.wait_for(15s) != std::future_status::ready) {
+            throw std::runtime_error("The window was not redrawn within 15 s.");
+        }
+        return future.get();
+    }
+
+    void runGuiTestWorker(GuiTestOptions options) {
+        int saved = 0;
+        std::string failure;
+        std::ofstream list;
+        try {
+            fs::create_directories(options.outputDir);
+            list.open(options.outputDir / "gui-test.txt");
+#ifdef HDRSPACE_VERSION
+            list << "hdrspace " << HDRSPACE_VERSION << " gui-test, window " << options.windowSize.x() << " x " << options.windowSize.y() << "\n";
+#endif
+            runOnUiThreadSync([this, &options]() {
+                if (viewer_->glfw_window()) {
+                    glfwRestoreWindow(viewer_->glfw_window());
+                    glfwSetWindowSize(viewer_->glfw_window(), options.windowSize.x(), options.windowSize.y());
+                }
+                viewer_->set_visible(true);
+                viewer_->setUiVisible(true);
+                relayoutDesktopPanelsPreserveViewerUi();
+            });
+            if (options.expectImage) {
+                waitForUiCondition([this]() { return viewer_->currentImage() != nullptr; }, 30s);
+            }
+            std::this_thread::sleep_for(1500ms);
+
+            // Every tool in the rail, plus the states a single click does not show.
+            struct Step {
+                std::string name;
+                std::function<void()> action;
+            };
+            auto slug = [](const std::string& text) {
+                std::string out;
+                for (const char c : text) {
+                    if (std::isalnum(static_cast<unsigned char>(c))) {
+                        out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    } else if (!out.empty() && out.back() != '-') {
+                        out += '-';
+                    }
+                }
+                while (!out.empty() && out.back() == '-') {
+                    out.pop_back();
+                }
+                return out;
+            };
+            std::vector<Step> steps;
+            const auto names = callOnUiThreadSync([this]() {
+                std::vector<std::string> out;
+                for (const auto& item : hdrspaceRail_) {
+                    out.push_back(item.name);
+                }
+                return out;
+            });
+            for (size_t i = 0; i < names.size(); ++i) {
+                steps.push_back({slug(names[i]), [this, i]() { activateRailItem(i); }});
+                if (names[i] == "Viewer") {
+                    steps.push_back({"viewer-lower", [this, i]() {
+                        activateRailItem(i);
+                        viewer_->scrollSidebarTo(1.0f);
+                    }});
+                } else if (names[i] == "Calibrate") {
+                    steps.push_back({"calibrate-shutter", [this]() { setActiveSection(LeftSection::Shutter); refreshHdrspaceNavigation(); }});
+                    steps.push_back({"calibrate-aperture", [this]() { setActiveSection(LeftSection::Aperture); refreshHdrspaceNavigation(); }});
+                } else if (names[i] == "Create View") {
+                    steps.push_back({"create-view-top", [this]() {
+                        createViewCanvasTab_ = 1;
+                        refreshCreateViewViewportVisibility();
+                        refreshHdrspaceNavigation();
+                    }});
+                    steps.push_back({"create-view-hdr", [this]() {
+                        createViewCanvasTab_ = 3;
+                        refreshCreateViewViewportVisibility();
+                        refreshHdrspaceNavigation();
+                    }});
+                }
+            }
+            steps.push_back({"settings", [this]() {
+                if (workspaceSettings_ && workspaceSettings_->callback()) {
+                    workspaceSettings_->callback()();
+                }
+            }});
+            steps.push_back({"help", [this]() { viewer_->toggleHelpWindow(); }});
+
+            for (size_t s = 0; s < steps.size(); ++s) {
+                const std::string file = std::format("{:02}-{}.png", s + 1, steps[s].name);
+                runOnUiThreadSync([this, &steps, s]() {
+                    steps[s].action();
+                    viewer_->cursor_pos_callback_event(-1000.0, -1000.0);  // no hover, no tooltip
+                    relayoutDesktopPanelsPreserveViewerUi();
+                });
+                std::this_thread::sleep_for(900ms);  // the inspector slides in
+                auto [rgba, size] = captureGuiTestFrame();
+                if (rgba.empty()) {
+                    throw std::runtime_error("This graphics backend cannot read frames back.");
+                }
+                const fs::path path = options.outputDir / file;
+                std::ofstream out(path, std::ios::binary);
+                tev::PngImageSaver saver;
+                saver.save(out, path, rgba, size, 4).get();
+                list << file << "  " << size.x() << " x " << size.y() << "\n";
+                ++saved;
+            }
+        } catch (const std::exception& e) {
+            failure = e.what();
+            sGuiTestExitCode = 1;
+        }
+        if (list) {
+            list << (failure.empty() ? "done: " : "FAILED: ") << (failure.empty() ? std::to_string(saved) + " pictures" : failure) << "\n";
+        }
+        std::cout << "[gui-test] " << saved << " pictures in " << options.outputDir.string()
+                  << (failure.empty() ? std::string{} : " FAILED: " + failure) << std::endl;
+        viewer_->scheduleToUiThread([this]() {
+            if (viewer_ && viewer_->glfw_window()) {
                 glfwSetWindowShouldClose(viewer_->glfw_window(), GLFW_TRUE);
             }
         });
@@ -27833,6 +28004,10 @@ void DesktopController::startHiddenFukuokaDemo(const HiddenFukuokaDemoOptions& o
     std::thread([this, options]() { runHiddenFukuokaDemoWorker(options); }).detach();
 }
 
+void DesktopController::startGuiTest(const GuiTestOptions& options) {
+    std::thread([this, options]() { runGuiTestWorker(options); }).detach();
+}
+
 CreateViewTurntableExportResult DesktopController::exportCreateViewTurntable(const CreateViewTurntableExportOptions& options) {
     const CreateViewRoomInfo roomInfo = parseCreateViewRoom(options.roomPath.string());
     if (!roomInfo.valid || !roomInfo.hasBounds) {
@@ -28037,6 +28212,13 @@ int runHdrspaceNativeApp(int argc, char** argv) {
         throw std::runtime_error(demoParseError);
     }
 
+    GuiTestOptions guiTestOptions;
+    std::string guiTestParseError;
+    const bool guiTestRequested = parseGuiTestCli(argc, argv, guiTestOptions, guiTestParseError);
+    if (guiTestRequested && !guiTestParseError.empty()) {
+        throw std::runtime_error(guiTestParseError);
+    }
+
     auto imagesLoader = std::make_shared<tev::BackgroundImagesLoader>();
 
     glfwSetErrorCallback([](int error, const char* description) { tlog::warning("GLFW error {}: {}", error, description); });
@@ -28074,6 +28256,7 @@ int runHdrspaceNativeApp(int argc, char** argv) {
             }
         }
     }
+    guiTestOptions.expectImage = !startupImages.empty();
 
     if (exportRequested) {
         const auto result = controller->exportCreateViewTurntable(exportOptions);
@@ -28110,7 +28293,10 @@ int runHdrspaceNativeApp(int argc, char** argv) {
     if (demoRequested) {
         controller->startHiddenFukuokaDemo(demoOptions);
     }
+    if (guiTestRequested) {
+        controller->startGuiTest(guiTestOptions);
+    }
     nanogui::run(nanogui::RunMode::Lazy);
 
-    return 0;
+    return guiTestRequested ? sGuiTestExitCode.load() : 0;
 }

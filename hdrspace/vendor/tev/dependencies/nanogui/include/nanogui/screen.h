@@ -124,6 +124,15 @@ public:
     void redraw();
 
     /**
+     * \brief hdrspace gui-test: read the next drawn frame back as 8-bit RGBA
+     *
+     * The callback runs on the UI thread with the pixels (top row first) and their size in
+     * framebuffer pixels. Only the Metal backend can read frames back; the others call back
+     * with an empty image.
+     */
+    void capture_next_frame(std::function<void(std::vector<uint8_t>, Vector2i)> callback);
+
+    /**
      * \brief Redraw the screen if the redraw flag is set
      *
      * This function does everything -- it calls \ref draw_setup(), \ref
@@ -342,6 +351,7 @@ protected:
     bool m_tooltip_force_visible = false;
     EMA<double> m_frame_timer;
     uint64_t m_frame_index;
+    std::function<void(std::vector<uint8_t>, Vector2i)> m_capture_callback;
 #if defined(NANOGUI_USE_METAL)
     void *m_metal_texture = nullptr;
     void *m_metal_drawable = nullptr;

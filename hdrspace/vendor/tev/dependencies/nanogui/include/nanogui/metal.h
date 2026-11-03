@@ -15,6 +15,7 @@
 #pragma once
 
 #include <nanogui/vector.h>
+#include <vector>
 
 #if defined(NANOGUI_USE_METAL)
 NAMESPACE_BEGIN(nanogui)
@@ -60,6 +61,12 @@ extern NANOGUI_EXPORT void metal_window_next_drawable(void *nswin, void **drawab
 
 /// Release a drawable back to the pool
 extern NANOGUI_EXPORT void metal_present_and_release_drawable(void *drawable);
+
+/// hdrspace gui-test: let the layer hand out drawables that can be read back
+extern NANOGUI_EXPORT void metal_window_set_framebuffer_only(void *nswin, bool value);
+
+/// hdrspace gui-test: copy a drawable texture to 8-bit RGBA, top row first; false if it cannot be read
+extern NANOGUI_EXPORT bool metal_read_texture_rgba8(void *texture, std::vector<uint8_t> &rgba, Vector2i &size);
 
 /// Check whether any connected display supports 10-bit or EDR mode
 extern NANOGUI_EXPORT std::pair<bool, bool> metal_10bit_edr_support();

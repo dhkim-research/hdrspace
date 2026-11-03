@@ -199,6 +199,8 @@ public:
     // A negative value restores the workspace top inset as the inspector origin.
     void setWorkspaceInspectorTop(int top);
     void focusCropControls();
+    // hdrspace gui-test: scroll the docked sidebar, 0 = top, 1 = bottom
+    void scrollSidebarTo(float fraction);
     // Colour space of the current file's values, as the Pixel values list shows it:
     // "Unknown", "Rad (header)", "Luminance (assigned)" and so on.
     std::string sourceColorCaption() const;
