@@ -13,6 +13,10 @@ back to the RAW files and settings that made it.
 The app is developed and tested on Apple Silicon Macs (macOS 26). A 64-bit Windows build is
 also available, with a few tools missing; see [Windows](#windows).
 
+**Download:** [hdrspace 1.01](https://github.com/dhkim-research/hdrspace/releases/tag/v1.01).
+On a Mac, unzip `hdrspace-macos-arm64.zip` and move `hdrspace.app` to Applications. The app
+is not notarized, so open it the first time with right-click → Open.
+
 **New here?** The [usage guide](docs/usage.md) walks through the app with screenshots.
 
 ![hdrspace viewer](docs/images/01-viewer.jpg)
@@ -96,7 +100,7 @@ Licence texts for all bundled components are in `hdrspace/assets/licenses`.
 ## Windows
 
 Download `hdrspace-windows-x64.zip` from the
-[latest Windows release](https://github.com/dhkim-research/hdrspace/releases/tag/windows-2026.10.09),
+[1.01 release](https://github.com/dhkim-research/hdrspace/releases/tag/v1.01),
 unzip it anywhere and start `hdrspace-windows-x64\bin\hdrspace.exe`. The program is not
 code-signed, so Windows may show a SmartScreen warning the first time ("More info" → "Run
 anyway"). Newer builds are made by GitHub Actions on every change (workflow "hdrspace Windows

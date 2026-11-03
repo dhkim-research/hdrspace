@@ -4,7 +4,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS deployment target" FORCE)
 endif()
 
-project(hdrspace VERSION 1.0.0 LANGUAGES C CXX)
+project(hdrspace VERSION 1.01 LANGUAGES C CXX)
 
 set(HDRSPACE_APP_NAME "hdrspace")
 set(HDRSPACE_GUI_IDENTIFIER "com.hdrspace.app")
