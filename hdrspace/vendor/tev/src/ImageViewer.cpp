@@ -2035,6 +2035,9 @@ ImageViewer::ImageViewer(
             panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
 
             mHistogram = new MultiGraph{panel, ""};
+            if (mSidebarOnRight) {
+                mHistogram->setQuiet(true);
+            }
 
             if (mSidebarOnRight) {
                 new SidebarSectionHeader{panel, "Region (ROI)"};

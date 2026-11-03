@@ -435,11 +435,17 @@ jobs:
           Step "create-view" {
             Start-Sleep -Seconds 30   # the app is still loading the 8222 x 5488 merge result
             Dismiss "c0"; Click 78 637 5; Shot "c1-panel"
-            Click 798 206 6; Keys "^a"; Keys "C:\scene\room.rad{ENTER}"; Start-Sleep -Seconds 4
-            Click 798 338 6; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
-            Click 798 470 6; Keys "^a"; Keys "C:\vv\a47.hdr{ENTER}"; Start-Sleep -Seconds 6
+            # Scene rows: Room, View and Environment path boxes (typing a path and Enter loads it)
+            Click 893 201 2; Keys "^a"; Keys "C:\scene\room.rad{ENTER}"; Start-Sleep -Seconds 4
+            Click 893 239 2; Keys "^a"; Keys "C:\scene\view.vf{ENTER}"; Start-Sleep -Seconds 6
+            Click 893 277 2; Keys "^a"; Keys "C:\vv\a47.hdr{ENTER}"; Start-Sleep -Seconds 6
             Shot "c2-loaded"
-            Click 632 410 90; Shot "c3-preview"; Dismiss "c3"
+            # canvas tabs above the viewport: Top view, HDR, back to 3D view
+            Click 358 70 3; Shot "c2-top"
+            Click 501 70 3; Shot "c2-hdr"
+            Click 280 70 2
+            # Preview section: Render 1000 px preview (the Preview tab opens by itself)
+            Click 928 387 90; Shot "c3-preview"; Dismiss "c3"
             $pv = Get-ChildItem "$env:LOCALAPPDATA\hdrspace\cache\create_view_preview" -ErrorAction SilentlyContinue
             "create view preview files: $($pv | ForEach-Object { "$($_.Name)=$($_.Length)" })" | Tee-Object -Append gui-flow/status.txt
             $pv | Where-Object { $_.Name -like "latest_preview.*" } | Copy-Item -Destination gui-flow/

@@ -71,6 +71,9 @@ public:
 
     void setZero(int zeroBin) { mZeroBin = zeroBin; }
 
+    // hdrspace: thin channel lines in a well, with min / mean / max under the plot.
+    void setQuiet(bool quiet) { mQuiet = quiet; }
+
 protected:
     std::string mCaption, mHeader, mFooter;
     nanogui::Color mBackgroundColor, mForegroundColor, mTextColor;
@@ -79,6 +82,7 @@ protected:
     int mNChannels = 1;
     float mMinimum = 0, mMean = 0, mMaximum = 0;
     int mZeroBin = 0;
+    bool mQuiet = false;
 };
 
 } // namespace tev

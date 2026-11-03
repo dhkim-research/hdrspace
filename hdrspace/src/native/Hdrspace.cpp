@@ -1785,6 +1785,32 @@ private:
     bool bare_ = false;
 };
 
+// Text field drawn like InspectorComboBox: flat fill, 1 px light edge, 4 px corners, a
+// lighter fill on hover and while typing. nanogui's inset look is switched off with an almost
+// transparent solid colour; text, caret, selection and units stay nanogui's.
+class InspectorTextBox final : public nanogui::TextBox {
+public:
+    explicit InspectorTextBox(Widget* parent) : TextBox(parent, "") {
+        set_solid_color(Color(0, 0, 0, 1));
+        set_corner_radius(4.0f);
+    }
+    void draw(NVGcontext* ctx) override {
+        const float x = m_pos.x(), y = m_pos.y(), w = m_size.x(), h = m_size.y();
+        const bool hot = (m_editable && focused()) || m_mouse_focus;
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, 4.0f);
+        nvgFillColor(ctx, inspectorFieldFill(hot));
+        nvgFill(ctx);
+        TextBox::draw(ctx);
+        // Over nanogui's dark edge: the drop-down edge as it looks on the panel.
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, 3.5f);
+        nvgStrokeColor(ctx, (!m_valid_format && focused()) ? Color(232, 108, 96, 220) : Color(54, 56, 57, 255));
+        nvgStrokeWidth(ctx, 1.0f);
+        nvgStroke(ctx);
+    }
+};
+
 // Two-line choice tile (name + one grey detail line). Selection is owned by the panel.
 class InspectorTile final : public nanogui::Button {
 public:
@@ -3387,6 +3413,19 @@ public:
         }
     }
 
+    // hdrspace 2026-11: on the canvas the viewport is opaque and fills the canvas, and the
+    // canvas tabs choose between the 3D view and the top view.
+    enum class CanvasView { Card, ThreeD, Top };
+    void setCanvasView(CanvasView view) {
+        if (canvasView_ == view) {
+            return;
+        }
+        canvasView_ = view;
+        if (screen()) {
+            screen()->redraw();
+        }
+    }
+
     Vector2i preferred_size_impl(NVGcontext*) const override {
         return {280, 272};
     }
@@ -3394,6 +3433,9 @@ public:
     bool mouse_button_event(const Vector2i& p, int button, bool down, int modifiers) override {
         if (!visible()) {
             return false;
+        }
+        if (canvasView_ == CanvasView::Top && (button == GLFW_MOUSE_BUTTON_1 || button == GLFW_MOUSE_BUTTON_2)) {
+            return true;  // the top view is a fixed plan: no orbit, pan or surface picking
         }
         if (button == GLFW_MOUSE_BUTTON_1 || button == GLFW_MOUSE_BUTTON_2) {
             if (down) {
@@ -3443,6 +3485,9 @@ public:
     }
 
     bool scroll_event(const Vector2i&, const Vector2f& rel) override {
+        if (canvasView_ == CanvasView::Top) {
+            return true;
+        }
         zoom_ = std::clamp(zoom_ * std::exp(-rel.y() * 0.08f), 0.35f, 4.5f);
         if (screen()) {
             screen()->redraw();
@@ -3456,33 +3501,42 @@ public:
         const float w = static_cast<float>(m_size.x());
         const float h = static_cast<float>(m_size.y());
         constexpr float radius = 12.0f;
-        const bool largeMode = w >= 760.0f || h >= 440.0f;
+        const bool canvas = canvasView_ != CanvasView::Card;
+        const bool largeMode = canvas || w >= 760.0f || h >= 440.0f;
 
         nvgSave(ctx);
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x, y, w, h, radius);
-        nvgFillPaint(ctx, nvgLinearGradient(
-            ctx,
-            x,
-            y,
-            x,
-            y + h,
-            Color(16, 20, 28, 208),
-            Color(12, 15, 22, 218)
-        ));
-        nvgFill(ctx);
+        if (canvas) {
+            // The canvas itself is the viewport: opaque, edge to edge, no card and no title.
+            nvgBeginPath(ctx);
+            nvgRect(ctx, x, y, w, h);
+            nvgFillColor(ctx, Color(20, 22, 24, 255));
+            nvgFill(ctx);
+        } else {
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, x, y, w, h, radius);
+            nvgFillPaint(ctx, nvgLinearGradient(
+                ctx,
+                x,
+                y,
+                x,
+                y + h,
+                Color(16, 20, 28, 208),
+                Color(12, 15, 22, 218)
+            ));
+            nvgFill(ctx);
 
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, radius);
-        nvgStrokeColor(ctx, Color(255, 255, 255, 18));
-        nvgStrokeWidth(ctx, 1.0f);
-        nvgStroke(ctx);
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, radius);
+            nvgStrokeColor(ctx, Color(255, 255, 255, 18));
+            nvgStrokeWidth(ctx, 1.0f);
+            nvgStroke(ctx);
 
-        nvgFontFace(ctx, "sans-bold");
-        nvgFontSize(ctx, 13.0f);
-        nvgFillColor(ctx, hdrspaceInk(240));
-        nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
-        nvgText(ctx, x + 14.0f, y + 12.0f, largeMode ? "Interactive 3D Viewport" : "Top + 3D Preview", nullptr);
+            nvgFontFace(ctx, "sans-bold");
+            nvgFontSize(ctx, 13.0f);
+            nvgFillColor(ctx, hdrspaceInk(240));
+            nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+            nvgText(ctx, x + 14.0f, y + 12.0f, largeMode ? "Interactive 3D Viewport" : "Top + 3D Preview", nullptr);
+        }
 
         if (!state_.projectionLabel.empty()) {
             nvgFontFace(ctx, "sans");
@@ -3494,9 +3548,9 @@ public:
 
         const float pad = 16.0f;
         const float innerX = x + pad;
-        const float innerY = y + 38.0f;
+        const float innerY = y + (canvas ? 16.0f : 38.0f);
         const float innerW = std::max(10.0f, w - pad * 2.0f);
-        const float innerH = std::max(10.0f, h - 54.0f);
+        const float innerH = std::max(10.0f, h - (canvas ? 32.0f : 54.0f));
         const float gap = 10.0f;
         const float panelW = (innerW - gap) * 0.5f;
         const float topX = innerX;
@@ -3527,7 +3581,9 @@ public:
             nvgText(ctx, px + 10.0f, py + 8.0f, title, nullptr);
         };
 
-        if (largeMode) {
+        if (canvas) {
+            // no frame: the canvas tab names the view
+        } else if (largeMode) {
             drawPanel(innerX, innerY, innerW, innerH, "3D View");
         } else {
             drawPanel(topX, topY, topW, topH, "Top View");
@@ -3535,11 +3591,23 @@ public:
         }
 
         if (!state_.hasRoomBounds && !state_.hasView) {
-            nvgFontFace(ctx, "sans");
-            nvgFontSize(ctx, 12.0f);
-            nvgFillColor(ctx, hdrspaceMutedInk(184));
-            nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-            nvgText(ctx, innerX + innerW * 0.5f, innerY + innerH * 0.5f, "Load a room .rad and a .vf file", nullptr);
+            if (canvas) {
+                nvgFontFace(ctx, "sans");
+                nvgFontSize(ctx, 14.0f);
+                nvgFillColor(ctx, hdrspaceInk(225));
+                nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_BOTTOM);
+                nvgText(ctx, x + w * 0.5f, y + h * 0.5f - 3.0f, "No scene yet", nullptr);
+                nvgFontSize(ctx, 12.0f);
+                nvgFillColor(ctx, hdrspaceMutedInk(170));
+                nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+                nvgText(ctx, x + w * 0.5f, y + h * 0.5f + 3.0f, "Choose a room (.rad) and a view (.vf) in the inspector", nullptr);
+            } else {
+                nvgFontFace(ctx, "sans");
+                nvgFontSize(ctx, 12.0f);
+                nvgFillColor(ctx, hdrspaceMutedInk(184));
+                nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+                nvgText(ctx, innerX + innerW * 0.5f, innerY + innerH * 0.5f, "Load a room .rad and a .vf file", nullptr);
+            }
             nvgRestore(ctx);
             return;
         }
@@ -3747,6 +3815,12 @@ public:
                 }
             }
         };
+
+        if (canvasView_ == CanvasView::Top) {
+            drawTopView(innerX, innerY, innerW, innerH, true);
+            nvgRestore(ctx);
+            return;
+        }
 
         std::array<double, 3> center{
             (state_.roomMin[0] + state_.roomMax[0]) * 0.5,
@@ -3961,7 +4035,9 @@ public:
             }
         }
 
-        if (largeMode) {
+        if (canvas) {
+            // the top view has its own canvas tab
+        } else if (largeMode) {
             const float insetW = std::min(300.0f, mainW * 0.30f);
             const float insetH = std::min(220.0f, mainH * 0.34f);
             const float insetX = mainX + 18.0f;
@@ -4049,6 +4125,7 @@ public:
 
 private:
     enum class DragMode { None, Orbit, Pan };
+    CanvasView canvasView_ = CanvasView::Card;
     struct PickedSurface {
         std::string identifier;
         std::string modifier;
@@ -4060,12 +4137,16 @@ private:
         const float y = static_cast<float>(m_pos.y());
         const float w = static_cast<float>(m_size.x());
         const float h = static_cast<float>(m_size.y());
-        const bool largeMode = w >= 760.0f || h >= 440.0f;
+        if (canvasView_ == CanvasView::Top) {
+            return std::nullopt;
+        }
+        const bool canvas = canvasView_ != CanvasView::Card;
+        const bool largeMode = canvas || w >= 760.0f || h >= 440.0f;
         const float pad = 16.0f;
         const float innerX = x + pad;
-        const float innerY = y + 38.0f;
+        const float innerY = y + (canvas ? 16.0f : 38.0f);
         const float innerW = std::max(10.0f, w - pad * 2.0f);
-        const float innerH = std::max(10.0f, h - 54.0f);
+        const float innerH = std::max(10.0f, h - (canvas ? 32.0f : 54.0f));
         const float gap = 10.0f;
         const float panelW = (innerW - gap) * 0.5f;
         const float mainX = largeMode ? innerX : innerX + panelW + gap;
@@ -4718,6 +4799,15 @@ public:
         renderRequestCallback_ = std::move(callback);
     }
 
+    // hdrspace 2026-11: in the canvas Preview tab the widget fills the canvas with no card,
+    // title or button; the render is started from the inspector.
+    void setCanvasStyle(bool canvas) {
+        canvas_ = canvas;
+        if (screen()) {
+            screen()->redraw();
+        }
+    }
+
     void setBusy(bool busy) {
         busy_ = busy;
         if (screen()) {
@@ -4774,7 +4864,7 @@ public:
 
         const Vector2f pt{static_cast<float>(p.x()), static_cast<float>(p.y())};
         if (down) {
-            if (contains(buttonRect(), pt)) {
+            if (!canvas_ && contains(buttonRect(), pt)) {
                 buttonArmed_ = true;
                 return true;
             }
@@ -4832,45 +4922,54 @@ public:
         const float h = static_cast<float>(m_size.y());
 
         nvgSave(ctx);
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x, y, w, h, 10.0f);
-        nvgFillColor(ctx, Color(10, 13, 19, 224));
-        nvgFill(ctx);
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, 10.0f);
-        nvgStrokeColor(ctx, Color(255, 255, 255, 18));
-        nvgStrokeWidth(ctx, 1.0f);
-        nvgStroke(ctx);
+        if (canvas_) {
+            nvgBeginPath(ctx);
+            nvgRect(ctx, x, y, w, h);
+            nvgFillColor(ctx, Color(20, 22, 24, 255));
+            nvgFill(ctx);
+        } else {
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, x, y, w, h, 10.0f);
+            nvgFillColor(ctx, Color(10, 13, 19, 224));
+            nvgFill(ctx);
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, 10.0f);
+            nvgStrokeColor(ctx, Color(255, 255, 255, 18));
+            nvgStrokeWidth(ctx, 1.0f);
+            nvgStroke(ctx);
 
-        nvgFontFace(ctx, "sans-bold");
-        nvgFontSize(ctx, 11.5f);
-        nvgFillColor(ctx, hdrspaceMutedInk(220));
-        nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
-        nvgText(ctx, x + 10.0f, y + 8.0f, "Preview", nullptr);
+            nvgFontFace(ctx, "sans-bold");
+            nvgFontSize(ctx, 11.5f);
+            nvgFillColor(ctx, hdrspaceMutedInk(220));
+            nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+            nvgText(ctx, x + 10.0f, y + 8.0f, "Preview", nullptr);
 
-        const Rect button = buttonRect();
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, button.x, button.y, button.w, button.h, 6.0f);
-        const Color buttonColor = busy_
-            ? Color(120, 120, 120, 80)
-            : (buttonArmed_ ? hdrspaceAccent(210) : Color(255, 255, 255, 20));
-        nvgFillColor(ctx, buttonColor);
-        nvgFill(ctx);
-        nvgStrokeColor(ctx, Color(255, 255, 255, 22));
-        nvgStrokeWidth(ctx, 1.0f);
-        nvgStroke(ctx);
-        nvgFontFace(ctx, "sans-bold");
-        nvgFontSize(ctx, 11.0f);
-        nvgFillColor(ctx, busy_ ? Color(255, 255, 255, 160) : hdrspaceInk(235));
-        nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-        const char* buttonLabel = busy_ ? "Working..." : (hasImage() ? "Refresh" : "Preview");
-        nvgText(ctx, button.x + button.w * 0.5f, button.y + button.h * 0.5f, buttonLabel, nullptr);
+            const Rect button = buttonRect();
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, button.x, button.y, button.w, button.h, 6.0f);
+            const Color buttonColor = busy_
+                ? Color(120, 120, 120, 80)
+                : (buttonArmed_ ? hdrspaceAccent(210) : Color(255, 255, 255, 20));
+            nvgFillColor(ctx, buttonColor);
+            nvgFill(ctx);
+            nvgStrokeColor(ctx, Color(255, 255, 255, 22));
+            nvgStrokeWidth(ctx, 1.0f);
+            nvgStroke(ctx);
+            nvgFontFace(ctx, "sans-bold");
+            nvgFontSize(ctx, 11.0f);
+            nvgFillColor(ctx, busy_ ? Color(255, 255, 255, 160) : hdrspaceInk(235));
+            nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            const char* buttonLabel = busy_ ? "Working..." : (hasImage() ? "Refresh" : "Preview");
+            nvgText(ctx, button.x + button.w * 0.5f, button.y + button.h * 0.5f, buttonLabel, nullptr);
+        }
 
         const Rect content = contentRect();
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, content.x, content.y, content.w, content.h, 8.0f);
-        nvgFillColor(ctx, Color(7, 10, 16, 235));
-        nvgFill(ctx);
+        if (!canvas_) {
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, content.x, content.y, content.w, content.h, 8.0f);
+            nvgFillColor(ctx, Color(7, 10, 16, 235));
+            nvgFill(ctx);
+        }
 
         ensureImageHandle(ctx);
         if (imageHandle_ != 0 && imageSize_.x() > 0 && imageSize_.y() > 0) {
@@ -4936,6 +5035,14 @@ private:
     }
 
     Rect contentRect() const {
+        if (canvas_) {
+            return {
+                static_cast<float>(m_pos.x() + 16),
+                static_cast<float>(m_pos.y() + 16),
+                std::max(10.0f, static_cast<float>(m_size.x() - 32)),
+                std::max(10.0f, static_cast<float>(m_size.y() - 32))
+            };
+        }
         return {
             static_cast<float>(m_pos.x() + 10),
             static_cast<float>(m_pos.y() + 38),
@@ -4985,6 +5092,7 @@ private:
     bool activeDrag_ = false;
     bool buttonArmed_ = false;
     bool busy_ = false;
+    bool canvas_ = false;
     float dragDistance_ = 0.0f;
     int imageHandle_ = 0;
     bool imageDirty_ = false;
@@ -6441,9 +6549,6 @@ private:
             runOnUiThreadSync([this]() {
                 if (createViewCanvasPreview_) {
                     createViewCanvasPreview_->setProgrammaticView(0.10f);
-                }
-                if (createViewPreviewWidget_) {
-                    createViewPreviewWidget_->setProgrammaticView(0.10f);
                 }
                 viewer_->redraw();
             });
@@ -11623,6 +11728,25 @@ private:
             });
             workspaceVisibilityButtons_[i] = button;
         }
+        // Create View shows its canvas tabs in the same row.
+        const std::array<std::string, 4> createViewTabs{"3D view", "Top view", "Preview", "HDR"};
+        const std::array<std::string, 4> createViewTabTips{
+            "Drag to orbit, Shift-drag or right-drag to pan, scroll to zoom; click a surface to select its material",
+            "Plan of the room with the camera",
+            "The last quick render",
+            "The current HDR image",
+        };
+        for (size_t i = 0; i < createViewTabs.size(); ++i) {
+            auto* button = new HdrspaceTabButton(workspacePreviewBar_, createViewTabs[i]);
+            button->set_font_size(13);
+            button->set_tooltip(createViewTabTips[i]);
+            button->set_callback([this, i] {
+                createViewCanvasTab_ = static_cast<int>(i);
+                refreshCreateViewViewportVisibility();
+                refreshHdrspaceNavigation();
+            });
+            workspaceCreateViewButtons_[i] = button;
+        }
         workspaceStatus_ = new DesktopFooterRailWindow(viewer_, "");
         workspaceStatus_->setMovable(false);
         workspaceStatusLabel_ = new Label(workspaceStatus_, "hdrspace  |  Native HDR workspace", "sans", 12);
@@ -11899,7 +12023,15 @@ private:
                 workspaceVisibilityButtons_[i]->set_enabled(i != 4 || viewVisibilityResult_.has_value());
             }
         }
-        workspaceFilename_->set_visible(activeRightPlane_ != RightPlane::ViewVisibility);
+        for (size_t i = 0; i < workspaceCreateViewButtons_.size(); ++i) {
+            if (workspaceCreateViewButtons_[i]) {
+                workspaceCreateViewButtons_[i]->set_visible(activeRightPlane_ == RightPlane::CreateView);
+                workspaceCreateViewButtons_[i]->set_pushed(createViewCanvasTab_ == static_cast<int>(i));
+                workspaceCreateViewButtons_[i]->set_enabled(i != 2 || createViewPreviewRequested_);
+            }
+        }
+        workspaceFilename_->set_visible(activeRightPlane_ != RightPlane::ViewVisibility &&
+                                        activeRightPlane_ != RightPlane::CreateView);
         layoutHdrspaceChrome();
     }
 
@@ -11969,6 +12101,12 @@ private:
         for (size_t i = 0; i < workspaceVisibilityButtons_.size(); ++i) {
             const int w = static_cast<int>(std::lround((i == 0 || i == 3 ? 88 : 65) * tabScale));
             place(workspaceVisibilityButtons_[i], previewX, 0, w, 36); previewX += w;
+        }
+        constexpr std::array<int, 4> kCreateViewTabWidths{76, 80, 74, 58};
+        int createViewTabX = 8;
+        for (size_t i = 0; i < workspaceCreateViewButtons_.size(); ++i) {
+            place(workspaceCreateViewButtons_[i], createViewTabX, 0, kCreateViewTabWidths[i], 36);
+            createViewTabX += kCreateViewTabWidths[i];
         }
         place(workspaceStatus_, 0, height - kHdrspaceStatusHeight, width, kHdrspaceStatusHeight);
         place(workspaceStatusLabel_, 16, 3, width - 32, 20);
@@ -12828,10 +12966,10 @@ private:
             createViewWindow_->set_visible(plane == RightPlane::CreateView);
         }
         if (createViewCanvasPreview_) {
-            createViewCanvasPreview_->set_visible(plane == RightPlane::CreateView);
+            createViewCanvasPreview_->set_visible(plane == RightPlane::CreateView && createViewCanvasTab_ <= 1);
         }
         if (createViewCanvasRenderPreview_) {
-            createViewCanvasRenderPreview_->set_visible(plane == RightPlane::CreateView);
+            createViewCanvasRenderPreview_->set_visible(plane == RightPlane::CreateView && createViewCanvasTab_ == 2);
         }
         if (imageStatsWindow_) {
             imageStatsWindow_->set_visible(plane == RightPlane::ImageStatistics);
@@ -13167,29 +13305,14 @@ private:
             createViewCanvasPreview_->set_position({canvasLeft, canvasTop});
             createViewCanvasPreview_->set_fixed_size(canvasSize);
             createViewCanvasPreview_->set_size(canvasSize);
-            createViewCanvasPreview_->set_visible(createViewViewportVisible_ && activeRightPlane_ == RightPlane::CreateView);
+            createViewCanvasPreview_->set_visible(activeRightPlane_ == RightPlane::CreateView && createViewCanvasTab_ <= 1);
         }
         if (createViewCanvasRenderPreview_ && createViewCanvasPreview_) {
-            const int canvasLeft = createViewCanvasPreview_->position().x();
-            const int canvasTop = createViewCanvasPreview_->position().y();
-            const int canvasWidth = createViewCanvasPreview_->size().x();
-            const int canvasHeight = createViewCanvasPreview_->size().y();
-            const float mainX = static_cast<float>(canvasLeft + 16);
-            const float mainY = static_cast<float>(canvasTop + 38);
-            const float mainW = std::max(10.0f, static_cast<float>(canvasWidth - 32));
-            const float mainH = std::max(10.0f, static_cast<float>(canvasHeight - 54));
-            const float insetW = std::min(300.0f, mainW * 0.30f);
-            const float insetH = std::min(220.0f, mainH * 0.34f);
-            const int previewX = static_cast<int>(std::lround(mainX + mainW - insetW - 18.0f));
-            const int previewY = static_cast<int>(std::lround(mainY + mainH - insetH - 18.0f));
-            const Vector2i previewSize{
-                static_cast<int>(std::lround(insetW)),
-                static_cast<int>(std::lround(insetH))
-            };
-            createViewCanvasRenderPreview_->set_position({previewX, previewY});
-            createViewCanvasRenderPreview_->set_fixed_size(previewSize);
-            createViewCanvasRenderPreview_->set_size(previewSize);
-            createViewCanvasRenderPreview_->set_visible(createViewViewportVisible_ && activeRightPlane_ == RightPlane::CreateView);
+            // The Preview tab shows the quick render where the viewport is.
+            createViewCanvasRenderPreview_->set_position(createViewCanvasPreview_->position());
+            createViewCanvasRenderPreview_->set_fixed_size(createViewCanvasPreview_->size());
+            createViewCanvasRenderPreview_->set_size(createViewCanvasPreview_->size());
+            createViewCanvasRenderPreview_->set_visible(activeRightPlane_ == RightPlane::CreateView && createViewCanvasTab_ == 2);
         }
 
         if (perceptualWindow_) {
@@ -13310,7 +13433,7 @@ private:
     }
 
     TextBox* smallTextBox(Widget* parent, std::string_view placeholder = {}) {
-        auto* box = new TextBox(parent, "");
+        auto* box = new InspectorTextBox(parent);
         box->set_font_size(14);
         box->set_editable(true);
         box->set_value("");
@@ -18535,22 +18658,34 @@ private:
             return;
         }
         createViewMaterialsPanel_->set_visible(createViewMaterialsExpanded_);
-        createViewMaterialsToggleButton_->set_caption(createViewMaterialsExpanded_ ? "Hide" : "Show");
+        createViewMaterialsToggleButton_->set_pushed(createViewMaterialsExpanded_);
         if (viewer_) {
             viewer_->perform_layout(viewer_->nvg_context());
             viewer_->redraw();
         }
     }
 
+    // Canvas tabs above Create View: 0 3D view, 1 Top view, 2 Preview (after a quick render),
+    // 3 HDR (the image itself, with the viewport out of the way).
     void refreshCreateViewViewportVisibility() {
-        if (createViewViewportToggleButton_) {
-            createViewViewportToggleButton_->set_caption(createViewViewportVisible_ ? "Hide" : "Show");
+        if (createViewCanvasTab_ == 2 && !createViewPreviewRequested_) {
+            createViewCanvasTab_ = 0;
         }
+        const bool createView = activeRightPlane_ == RightPlane::CreateView;
         if (createViewCanvasPreview_) {
-            createViewCanvasPreview_->set_visible(createViewViewportVisible_ && activeRightPlane_ == RightPlane::CreateView);
+            createViewCanvasPreview_->setCanvasView(createViewCanvasTab_ == 1
+                ? CreateViewSchematicWidget::CanvasView::Top
+                : CreateViewSchematicWidget::CanvasView::ThreeD);
+            createViewCanvasPreview_->set_visible(createView && createViewCanvasTab_ <= 1);
         }
         if (createViewCanvasRenderPreview_) {
-            createViewCanvasRenderPreview_->set_visible(createViewViewportVisible_ && activeRightPlane_ == RightPlane::CreateView);
+            createViewCanvasRenderPreview_->set_visible(createView && createViewCanvasTab_ == 2);
+        }
+        for (size_t i = 0; i < workspaceCreateViewButtons_.size(); ++i) {
+            if (workspaceCreateViewButtons_[i]) {
+                workspaceCreateViewButtons_[i]->set_pushed(createViewCanvasTab_ == static_cast<int>(i));
+                workspaceCreateViewButtons_[i]->set_enabled(i != 2 || createViewPreviewRequested_);
+            }
         }
         if (viewer_) {
             viewer_->perform_layout(viewer_->nvg_context());
@@ -19000,6 +19135,10 @@ private:
             createViewCanvasRenderPreview_->setBusy(true);
             createViewCanvasRenderPreview_->setStatusText("Rendering a fast preview at a 1000 × 1000 request...");
         }
+        // The Preview tab follows the render from the start.
+        createViewPreviewRequested_ = true;
+        createViewCanvasTab_ = 2;
+        refreshCreateViewViewportVisibility();
 
         std::thread([this, commandText = command.str(), logPath, outputPath]() {
             const pid_t pid = spawnShellJob(commandText, logPath);
@@ -20451,7 +20590,7 @@ private:
             }
         }
 
-        if (createViewPreviewWidget_) {
+        if (createViewCanvasPreview_) {
             CreateViewPreviewState state;
             state.hasRoomBounds = createViewRoomInfo_.hasBounds;
             state.roomMin = createViewRoomInfo_.min;
@@ -20529,10 +20668,7 @@ private:
                 }
             }
 
-            createViewPreviewWidget_->setState(state);
-            if (createViewCanvasPreview_) {
-                createViewCanvasPreview_->setState(state);
-            }
+            createViewCanvasPreview_->setState(state);
         }
 
         if (viewer_) {
@@ -20555,8 +20691,11 @@ private:
         refreshCreateViewMaterialEditorUi();
         refreshCreateViewSummaryLabels();
         if (createViewCanvasRenderPreview_) {
-            createViewCanvasRenderPreview_->clearPreview("Click Preview to render a fast 1000 × 1000 request for the current room, view, and HDR");
+            createViewCanvasRenderPreview_->clearPreview(kCreateViewPreviewHint);
         }
+        // A new scene drops the old quick render, so the Preview tab waits for the next one.
+        createViewPreviewRequested_ = false;
+        refreshCreateViewViewportVisibility();
         if (createViewRenderProgressBar_) {
             createViewRenderProgressBar_->set_value(0.0f);
         }
@@ -20614,53 +20753,54 @@ private:
         createViewStatusLabel_->set_color(hdrspaceMutedInk(220));
         createViewStatusDot->setSource(createViewStatusLabel_);
 
-        makeStepHeading("Room geometry", "Choose a Radiance .rad file. Nested room references are resolved for preview and rendering.");
-
-        auto* roomRow = new Widget(content);
-        roomRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 0});
-        roomRow->set_fixed_width(kInspectorContentWidth);
-        auto* chooseRoom = new Button(roomRow, "Choose room");
-        chooseRoom->set_fixed_width(kInspectorHalfWidth);
-        styleSecondaryButton(chooseRoom, true);
-        chooseRoom->set_callback([this] {
-            auto paths = file_dialog(viewer_, FileDialogType::Open);
-            if (!paths.empty() && createViewRoomBox_) {
-                createViewRoomBox_->set_value(paths.front());
+        // Scene inputs as in View Visibility: label, path, choose, and one more action. The 3D
+        // viewport lives on the canvas (tabs above it), so the inspector keeps only the inputs.
+        makeStepHeading("Scene", "Room geometry, camera view and environment. Typing a path and pressing Enter also loads it.");
+        constexpr int kCreateViewPathWidth = kInspectorContentWidth - kInspectorRowLabelWidth - 3 * 6 - 2 * 28;
+        auto pathRow = [&](const std::string& title, TextBox*& box, const std::string& placeholder,
+                           const std::string& tooltip, const std::string& chooseTooltip) -> Widget* {
+            auto* row = new Widget(content);
+            row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+            row->set_fixed_width(kInspectorContentWidth);
+            auto* label = new Label(row, title, "sans", 13);
+            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            box = smallTextBox(row, placeholder);
+            box->set_fixed_size({kCreateViewPathWidth, kInspectorRowHeight});
+            box->set_font_size(13);
+            box->set_alignment(TextBox::Alignment::Left);
+            box->set_tooltip(tooltip);
+            box->set_callback([this](const std::string&) {
                 refreshCreateViewAnalysis();
-            }
-        });
-        auto* refreshCreateView = new Button(roomRow, "Refresh");
-        refreshCreateView->set_fixed_width(kInspectorHalfWidth);
-        styleSecondaryButton(refreshCreateView, true);
-        refreshCreateView->set_callback([this] { refreshCreateViewAnalysis(); });
+                return true;
+            });
+            auto* choose = new Button(row, "", FA_FOLDER_OPEN);
+            choose->set_fixed_size({28, kInspectorRowHeight});
+            choose->set_tooltip(chooseTooltip);
+            styleUtilityButton(choose);
+            choose->set_callback([this, target = box] {
+                auto paths = file_dialog(viewer_, FileDialogType::Open);
+                if (!paths.empty()) {
+                    target->set_value(paths.front());
+                    refreshCreateViewAnalysis();
+                }
+            });
+            return row;
+        };
+        auto rowAction = [&](Widget* row, int icon, const std::string& tooltip, std::function<void()> action) {
+            auto* button = new Button(row, "", icon);
+            button->set_fixed_size({28, kInspectorRowHeight});
+            button->set_tooltip(tooltip);
+            styleUtilityButton(button);
+            button->set_callback(std::move(action));
+        };
 
-        createViewRoomBox_ = smallTextBox(content, "room.rad");
-        createViewRoomBox_->set_fixed_width(kInspectorContentWidth);
-        createViewRoomBox_->set_alignment(TextBox::Alignment::Left);
-        createViewRoomBox_->set_callback([this](const std::string&) {
-            refreshCreateViewAnalysis();
-            return true;
-        });
-
-        makeStepHeading("Camera view", "Load a .vf file or paste an rvu command line.");
-
-        auto* viewRow = new Widget(content);
-        viewRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 0});
-        viewRow->set_fixed_width(kInspectorContentWidth);
-        auto* chooseView = new Button(viewRow, "Choose .vf");
-        chooseView->set_fixed_width(kInspectorHalfWidth);
-        styleSecondaryButton(chooseView, true);
-        chooseView->set_callback([this] {
-            auto paths = file_dialog(viewer_, FileDialogType::Open);
-            if (!paths.empty() && createViewViewBox_) {
-                createViewViewBox_->set_value(paths.front());
-                refreshCreateViewAnalysis();
-            }
-        });
-        auto* clearCreateView = new Button(viewRow, "Clear");
-        clearCreateView->set_fixed_width(kInspectorHalfWidth);
-        styleSecondaryButton(clearCreateView, true);
-        clearCreateView->set_callback([this] {
+        auto* roomRow = pathRow("Room", createViewRoomBox_, "room.rad",
+            "Radiance .rad file. Nested room references are resolved for preview and rendering.", "Choose a room .rad file");
+        rowAction(roomRow, FA_SYNC, "Read the room, view and environment again", [this] { refreshCreateViewAnalysis(); });
+        auto* viewRow = pathRow("View", createViewViewBox_, ".vf or rvu -vta",
+            "A .vf file, or paste an rvu command line", "Choose a .vf file");
+        rowAction(viewRow, FA_TIMES, "Clear room, view and environment", [this] {
             if (createViewRoomBox_) {
                 createViewRoomBox_->set_value("");
             }
@@ -20672,107 +20812,56 @@ private:
             }
             refreshCreateViewAnalysis();
         });
-
-        createViewViewBox_ = smallTextBox(content, "15m.vf or rvu -vta ...");
-        createViewViewBox_->set_fixed_width(kInspectorContentWidth);
-        createViewViewBox_->set_alignment(TextBox::Alignment::Left);
-        createViewViewBox_->set_callback([this](const std::string&) {
-            refreshCreateViewAnalysis();
-            return true;
-        });
-
-        makeStepHeading("Environment", "Choose a 180 degree HDR environment map or a simple Radiance .rad source file.");
-
-        auto* environmentRow = new Widget(content);
-        environmentRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 0});
-        environmentRow->set_fixed_width(kInspectorContentWidth);
-        auto* chooseEnvironment = new Button(environmentRow, "Choose env");
-        chooseEnvironment->set_fixed_width(kInspectorHalfWidth);
-        styleSecondaryButton(chooseEnvironment, true);
-        chooseEnvironment->set_callback([this] {
-            auto paths = file_dialog(viewer_, FileDialogType::Open);
-            if (!paths.empty() && createViewEnvironmentBox_) {
-                createViewEnvironmentBox_->set_value(paths.front());
-                refreshCreateViewAnalysis();
-            }
-        });
-        auto* clearEnvironment = new Button(environmentRow, "Clear env");
-        clearEnvironment->set_fixed_width(kInspectorHalfWidth);
-        styleSecondaryButton(clearEnvironment, true);
-        clearEnvironment->set_callback([this] {
+        auto* environmentRow = pathRow("Environment", createViewEnvironmentBox_, "HDR or .rad",
+            "A 180 degree HDR environment map or a simple Radiance .rad source file", "Choose an environment");
+        rowAction(environmentRow, FA_TIMES, "Clear environment", [this] {
             if (createViewEnvironmentBox_) {
                 createViewEnvironmentBox_->set_value("");
             }
             refreshCreateViewAnalysis();
         });
 
-        createViewEnvironmentBox_ = smallTextBox(content, "environment_map.hdr");
-        createViewEnvironmentBox_->set_fixed_width(kInspectorContentWidth);
-        createViewEnvironmentBox_->set_alignment(TextBox::Alignment::Left);
-        createViewEnvironmentBox_->set_callback([this](const std::string&) {
-            refreshCreateViewAnalysis();
-            return true;
+        // What hdrspace read from the three files, folded away; the context strip under the
+        // canvas keeps the short version in view.
+        auto* sceneDetailsButton = new InspectorDisclosureButton(content, "Scene details");
+        sceneDetailsButton->set_fixed_width(kInspectorContentWidth);
+        auto* sceneDetails = new Widget(content);
+        sceneDetails->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
+        sceneDetails->set_fixed_width(kInspectorContentWidth);
+        sceneDetails->set_visible(false);
+        sceneDetailsButton->set_change_callback([this, sceneDetails](bool open) {
+            sceneDetails->set_visible(open);
+            relayoutDesktopPanelsPreserveViewerUi();
         });
 
-
-        auto* previewCard = new Widget(content);
-        previewCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
-        previewCard->set_fixed_width(kInspectorContentWidth);
-
-        auto* viewportRow = new Widget(previewCard);
-        viewportRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 0});
-        viewportRow->set_fixed_width(kInspectorContentWidth);
-        auto* viewportHeading = new Label(viewportRow, "VIEWPORT", "sans-bold", 11);
-        viewportHeading->set_color(hdrspaceMutedInk(210));
-        viewportHeading->set_fixed_width(kInspectorContentWidth - 80 - 8);
-        createViewViewportToggleButton_ = new Button(viewportRow, "Hide");
-        createViewViewportToggleButton_->set_fixed_width(80);
-        styleSecondaryButton(createViewViewportToggleButton_, true);
-        createViewViewportToggleButton_->set_callback([this] {
-            createViewViewportVisible_ = !createViewViewportVisible_;
-            refreshCreateViewViewportVisibility();
-        });
-
-        createViewPreviewWidget_ = new CreateViewSchematicWidget(previewCard);
-        createViewPreviewWidget_->set_fixed_size({kInspectorContentWidth, 272});
-        createViewPreviewWidget_->setSurfaceSelectionCallback([this](const std::string& materialName, const std::string& semanticLabel, const std::string& identifier) {
-            selectCreateViewMaterialByName(materialName, semanticLabel, identifier);
-        });
-
-        createViewRoomSummaryLabel_ = new Label(previewCard, "Room: --", "sans", 12);
+        createViewRoomSummaryLabel_ = new Label(sceneDetails, "Room: --", "sans", 12);
         createViewRoomSummaryLabel_->set_fixed_width(kInspectorContentWidth);
         createViewRoomSummaryLabel_->set_color(hdrspaceMutedInk(214));
 
-        createViewViewSummaryLabel_ = new Label(previewCard, "View: --", "sans", 12);
+        createViewViewSummaryLabel_ = new Label(sceneDetails, "View: --", "sans", 12);
         createViewViewSummaryLabel_->set_fixed_width(kInspectorContentWidth);
         createViewViewSummaryLabel_->set_color(hdrspaceMutedInk(214));
 
-        createViewEnvironmentSummaryLabel_ = new Label(previewCard, "Environment: --", "sans", 12);
+        createViewEnvironmentSummaryLabel_ = new Label(sceneDetails, "Environment: --", "sans", 12);
         createViewEnvironmentSummaryLabel_->set_fixed_width(kInspectorContentWidth);
         createViewEnvironmentSummaryLabel_->set_color(hdrspaceMutedInk(214));
 
-        auto* materialsCard = new Widget(content);
-        materialsCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
-        materialsCard->set_fixed_width(kInspectorContentWidth);
+        makeStepHeading("Preview", "A fast 1000 × 1000 render of the current room, view and environment. It opens in the Preview tab above the canvas.");
+        auto* quickPreviewButton = new Button(fieldRow(content, "Quick render"), "Render 1000 px preview");
+        quickPreviewButton->set_fixed_width(kCreateViewFieldWidth);
+        styleSecondaryButton(quickPreviewButton, true);
+        quickPreviewButton->set_callback([this] { startCreateViewQuickPreview(); });
 
-        auto* materialsHeadingRow = new Widget(materialsCard);
-        materialsHeadingRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 0});
-        materialsHeadingRow->set_fixed_width(kInspectorContentWidth);
-        auto* materialsHeading = new Label(materialsHeadingRow, "MATERIALS", "sans-bold", 11);
-        materialsHeading->set_color(hdrspaceMutedInk(210));
-        materialsHeading->set_fixed_width(kInspectorContentWidth - 80 - 8);
-        createViewMaterialsToggleButton_ = new Button(materialsHeadingRow, "Hide");
-        createViewMaterialsToggleButton_->set_fixed_width(80);
-        styleSecondaryButton(createViewMaterialsToggleButton_, true);
-        createViewMaterialsToggleButton_->set_callback([this] {
-            createViewMaterialsExpanded_ = !createViewMaterialsExpanded_;
+        makeStepHeading("Materials", "Inspect the current definition, preview an edit, then write it back to the source file");
+        createViewMaterialsToggleButton_ = new InspectorDisclosureButton(content, "Material editor");
+        createViewMaterialsToggleButton_->set_fixed_width(kInspectorContentWidth);
+        createViewMaterialsToggleButton_->set_pushed(createViewMaterialsExpanded_);
+        createViewMaterialsToggleButton_->set_change_callback([this](bool open) {
+            createViewMaterialsExpanded_ = open;
             refreshCreateViewMaterialsVisibility();
         });
-        auto* materialsCaption = new Label(materialsCard, "Inspect the current definition, preview an edit, then write it back to the source file", "sans", 12);
-        materialsCaption->set_color(hdrspaceMutedInk(214));
-        materialsCaption->set_fixed_width(kInspectorContentWidth);
 
-        createViewMaterialsPanel_ = new Widget(materialsCard);
+        createViewMaterialsPanel_ = new Widget(content);
         createViewMaterialsPanel_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         createViewMaterialsPanel_->set_fixed_width(kInspectorContentWidth);
 
@@ -20960,8 +21049,10 @@ private:
         createViewCanvasRenderPreview_->set_fixed_size({300, 220});
         createViewCanvasRenderPreview_->set_size({300, 220});
         createViewCanvasRenderPreview_->set_visible(false);
-        createViewCanvasRenderPreview_->setStatusText("Click Preview to render a fast 1000 × 1000 request for the current room, view, and HDR");
+        createViewCanvasRenderPreview_->setCanvasStyle(true);
+        createViewCanvasRenderPreview_->setStatusText(kCreateViewPreviewHint);
         createViewCanvasRenderPreview_->setRenderRequestCallback([this] { startCreateViewQuickPreview(); });
+        createViewCanvasPreview_->setCanvasView(CreateViewSchematicWidget::CanvasView::ThreeD);
     }
 
     void buildMergeTab(Widget* parent) {
@@ -27164,6 +27255,7 @@ private:
     HdrspaceWorkspace hdrspaceWorkspace_ = HdrspaceWorkspace::View;
     std::array<RightPlane, 4> hdrspaceLastPlane_{RightPlane::ImageViewer, RightPlane::ToneMapping, RightPlane::MergeHdr, RightPlane::EvaluateGlare};
     std::array<HdrspaceTabButton*, 5> workspaceVisibilityButtons_{};
+    std::array<HdrspaceTabButton*, 4> workspaceCreateViewButtons_{};   // 3D view, Top view, Preview, HDR
     DesktopFooterRailWindow* workspaceHeader_ = nullptr;
     DesktopFooterRailWindow* workspaceRail_ = nullptr;
     DesktopFooterRailWindow* workspacePreviewBar_ = nullptr;
@@ -27375,7 +27467,6 @@ private:
     Label* createViewEnvironmentSummaryLabel_ = nullptr;
     Widget* createViewMaterialsPanel_ = nullptr;
     Button* createViewMaterialsToggleButton_ = nullptr;
-    Button* createViewViewportToggleButton_ = nullptr;
     Widget* createViewMaterialCategoryButtonsHost_ = nullptr;
     VScrollPanel* createViewMaterialListScroll_ = nullptr;
     Widget* createViewMaterialListPanel_ = nullptr;
@@ -27392,7 +27483,6 @@ private:
     CheckBox* createViewRenderFastDirectCheck_ = nullptr;
     ProgressBar* createViewRenderProgressBar_ = nullptr;
     Label* createViewRenderStatusLabel_ = nullptr;
-    CreateViewSchematicWidget* createViewPreviewWidget_ = nullptr;
     CreateViewSchematicWidget* createViewCanvasPreview_ = nullptr;
     CreateViewRenderPreviewWidget* createViewCanvasRenderPreview_ = nullptr;
     CreateViewRoomInfo createViewRoomInfo_;
@@ -27401,7 +27491,9 @@ private:
     CreateViewWindowFovInfo createViewWindowFovInfo_;
     CreateViewWindowMaskFovInfo createViewWindowMaskFovInfo_;
     bool createViewMaterialsExpanded_ = true;
-    bool createViewViewportVisible_ = true;
+    int createViewCanvasTab_ = 0;              // see refreshCreateViewViewportVisibility
+    bool createViewPreviewRequested_ = false;  // a quick render ran for the current scene
+    static constexpr const char* kCreateViewPreviewHint = "Render a 1000 px preview from the inspector to see it here";
     std::string createViewSelectedMaterialCategory_ = "All";
     std::vector<std::string> createViewMaterialNames_;
     int createViewSelectedMaterialIndex_ = 0;

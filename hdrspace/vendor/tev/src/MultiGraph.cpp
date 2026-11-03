@@ -25,7 +25,9 @@
 #include <nanogui/opengl.h>
 #include <nanogui/theme.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 
 using namespace nanogui;
 using namespace std;
@@ -43,10 +45,82 @@ MultiGraph::MultiGraph(Widget* parent, string_view caption) : Widget{parent}, mC
     mTextColor = Color(240, 192);
 }
 
-Vector2i MultiGraph::preferred_size_impl(NVGcontext*) const { return Vector2i(180, 80); }
+Vector2i MultiGraph::preferred_size_impl(NVGcontext*) const { return mQuiet ? Vector2i(180, 72) : Vector2i(180, 80); }
+
+// hdrspace: the docked Viewer draws the histogram as quiet lines. Channel hues match the
+// region statistics table; anything that is not clearly R, G or B is drawn in grey.
+static Color quietChannelColor(const Color& c) {
+    const float r = c.r(), g = c.g(), b = c.b();
+    if (r > g + 0.2f && r > b + 0.2f) {
+        return Color(226, 119, 109, 204);
+    }
+    if (g > r + 0.2f && g > b + 0.2f) {
+        return Color(134, 194, 127, 204);
+    }
+    if (b > r + 0.2f && b > g + 0.2f) {
+        return Color(127, 159, 224, 204);
+    }
+    return Color(170, 174, 179, 204);
+}
 
 void MultiGraph::draw(NVGcontext* ctx) {
     Widget::draw(ctx);
+
+    if (mQuiet) {
+        constexpr float kAxisHeight = 16.0f;
+        const float px = (float)m_pos.x(), py = (float)m_pos.y(), pw = (float)m_size.x();
+        const float ph = std::max(12.0f, (float)m_size.y() - kAxisHeight);
+        nvgSave(ctx);
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, px, py, pw, ph, 4.0f);
+        nvgFillColor(ctx, Color(20, 22, 24, 255));
+        nvgFill(ctx);
+
+        const size_t nBins = mNChannels > 0 ? mValues.size() / (size_t)mNChannels : 0;
+        if (mValues.size() >= 2 && nBins >= 2) {
+            const float ix = px + 8.0f, iy = py + 6.0f, iw = pw - 16.0f, ih = ph - 12.0f;
+            if (mZeroBin > 0) {
+                const float zx = std::round(ix + mZeroBin * iw / (float)(nBins - 1)) + 0.5f;
+                nvgBeginPath(ctx);
+                nvgMoveTo(ctx, zx, iy);
+                nvgLineTo(ctx, zx, iy + ih);
+                nvgStrokeColor(ctx, Color(170, 174, 179, 90));
+                nvgStrokeWidth(ctx, 1.0f);
+                nvgStroke(ctx);
+            }
+            for (size_t i = 0; i < (size_t)mNChannels; i++) {
+                nvgBeginPath(ctx);
+                for (size_t j = 0; j < nBins; j++) {
+                    const float value = std::clamp(mValues[j + i * nBins], 0.0f, 1.0f);
+                    const float vx = ix + j * iw / (float)(nBins - 1);
+                    const float vy = iy + (1.0f - value) * ih;
+                    if (j == 0) {
+                        nvgMoveTo(ctx, vx, vy);
+                    } else {
+                        nvgLineTo(ctx, vx, vy);
+                    }
+                }
+                nvgStrokeColor(ctx, quietChannelColor(i < mColors.size() ? mColors[i] : mForegroundColor));
+                nvgStrokeWidth(ctx, 1.0f);
+                nvgLineJoin(ctx, NVG_ROUND);
+                nvgStroke(ctx);
+            }
+
+            nvgFontFace(ctx, "sans");
+            nvgFontSize(ctx, 11.0f);
+            nvgFillColor(ctx, Color(170, 174, 179, 168));
+            const float ty = py + ph + 4.0f;
+            const string minimum = formatNumber(mMinimum), mean = formatNumber(mMean), maximum = formatNumber(mMaximum);
+            nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+            nvgText(ctx, px + 8.0f, ty, minimum.c_str(), nullptr);
+            nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+            nvgText(ctx, px + pw * 0.5f, ty, mean.c_str(), nullptr);
+            nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_TOP);
+            nvgText(ctx, px + pw - 8.0f, ty, maximum.c_str(), nullptr);
+        }
+        nvgRestore(ctx);
+        return;
+    }
 
     NVGpaint bg = nvgBoxGradient(ctx, m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2, 3, 4, Color(120, 32), Color(32, 32));
 
