@@ -244,9 +244,9 @@ jobs:
           }
           Shot "screenshot"
           # Positions on the 1024 x 768 runner screen
-          Click 61 389 4;   Click 810 689 25; Shot "glare"        # Glare -> Analyze
+          Click 61 389 4;   Click 810 670 25; Shot "glare"        # Glare -> Analyze
           Click 760 595 3;  Shot "glare-source7"                  # select glare source 7
-          Click 89 517 4;   Click 815 687 40; Shot "perceptual"   # Perceptual maps -> Compute map
+          Click 89 517 4;   Click 815 670 40; Shot "perceptual"   # Perceptual maps -> Compute map
           Click 80 131 6;   Shot "tonemapping"
           Click 78 637 6;   Shot "createview"
           "still running after 30 s: $(-not $app.HasExited)" | Tee-Object smoke-result/status.txt
@@ -451,9 +451,9 @@ jobs:
             }
             # the Size boxes only show 6000 as a placeholder: type a small size for the CI machine;
             # Fast direct mode (no overture) keeps the render short; the overture is timed in the next step
-            Click 858 456 1; Keys "300{ENTER}"
-            Click 946 456 1; Keys "300{ENTER}"
-            Click 741 558 1
+            Click 883 420 1; Keys "300{ENTER}"
+            Click 971 420 1; Keys "300{ENTER}"
+            Click 746 521 1
             Shot "c5-size"
             Click 806 674 5; Shot "c6-render-started"; Dismiss "c6"
             $r = WaitFile "C:\scene\create_view_render_sm.hdr" 900

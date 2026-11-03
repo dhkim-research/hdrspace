@@ -1602,7 +1602,8 @@ ImageViewer::ImageViewer(
             auto button = new Button{mTonemapButtonContainer, name};
             button->set_flags(Button::RadioButton);
             if (mSidebarOnRight) {
-                styleViewerToolbarButton(button, tonemapIcon(tonemapValue), false);
+                // hdrspace: text buttons carry no icon in the docked Viewer, like False and Legend
+                styleViewerToolbarButton(button, 0, false);
             } else {
                 styleViewerSidebarButton(button, tonemapIcon(tonemapValue), true);
             }

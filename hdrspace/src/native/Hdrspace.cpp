@@ -6585,28 +6585,28 @@ private:
             button->set_icon(icon > 0 ? icon : 0);
         };
 
-        styleActionButton(runMergeButton_, "Merge", FA_BOLT, true, true);
+        styleActionButton(runMergeButton_, "Merge", 0, true, true);
         styleActionButton(glareRunButton_, "Analyze", 0, true, true);
         styleActionButton(glareAiGenerateButton_, "Generate", 0, true, true);
-        styleActionButton(imageStatsRefreshButton_, "Compute", FA_CHART_LINE, true);
-        styleActionButton(graphPreviewSaveButton_, "Save", FA_SAVE, true, true);
+        styleActionButton(imageStatsRefreshButton_, "Compute", 0, true, true);
+        styleActionButton(graphPreviewSaveButton_, "Save", 0, true, true);
 
         styleActionButton(glareSaveButton_, "Save", 0, false, true);
         styleActionButton(aiSegSavePreviewButton_, "Export HDR", 0, false, true);
-        styleActionButton(imageVosChooseExteriorButton_, "Choose exterior HDR", 0, false, true);
-        styleActionButton(imageVosClearExteriorButton_, "Clear exterior", 0, false, true);
         styleActionButton(imageVosInstallButton_, "Install DA3 Metric", 0, false, true);
-        styleActionButton(imageVosAnalyzeButton_, "Calculate Image VOS", FA_CHART_LINE, true, true);
-        styleActionButton(imageStatsSaveCsvButton_, "CSV", FA_SAVE, false, true);
-        styleActionButton(imageStatsSaveGraphButton_, "Graph CSV", FA_CHART_LINE, false, true);
-        styleActionButton(imageStatsSaveRegionButton_, "Region HDR", FA_FILE_EXPORT, false, true);
+        styleActionButton(imageVosAnalyzeButton_, "Calculate Image VOS", 0, true, true);
+        styleActionButton(imageStatsSaveCsvButton_, "CSV", 0, false, true);
+        styleActionButton(imageStatsSaveGraphButton_, "Graph CSV", 0, false, true);
+        styleActionButton(imageStatsSaveRegionButton_, "Region HDR", 0, false, true);
         styleActionButton(glareAiReplaceButton_, "Replace", 0, true, true);
         styleActionButton(glareAiAddButton_, "Add", 0, false, true);
         styleActionButton(glareAiSubtractButton_, "Subtract", 0, false, true);
-        styleUtilityAction(imageStatsReloadButton_, "Refresh", FA_RECYCLE);
+        styleUtilityAction(imageStatsReloadButton_, "", FA_SYNC);
+        styleUtilityAction(imageVosChooseExteriorButton_, "", FA_FOLDER_OPEN);
+        styleUtilityAction(imageVosClearExteriorButton_, "", FA_TIMES);
         styleUtilityAction(aiSegSelectAllButton_, "All", 0);
         styleUtilityAction(aiSegSelectNoneButton_, "None", 0);
-        styleUtilityAction(graphPreviewCloseButton_, "Close", FA_TIMES);
+        styleUtilityAction(graphPreviewCloseButton_, "Close", 0);
 
         styleSecondaryButton(glareMaskRectSaveButton_, true);
         styleSecondaryButton(glareMaskCircleSaveButton_, true);
@@ -8627,83 +8627,67 @@ private:
         aiSegScroll_->set_fixed_size({256, 850});
         aiSegScroll_->set_size({256, 850});
         auto* content = new Widget(aiSegScroll_);
-        content->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 10});
+        content->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
 
-        constexpr int kGlareRowSpacing = 6;
-        constexpr int kGlareFullRowWidth = kInspectorContentWidth;
-        constexpr int kGlareHalfRowWidth = (kGlareFullRowWidth - kGlareRowSpacing) / 2;
-        constexpr int kAiInlineLabelWidth = 60;
-        auto makeSectionHeading = [&](const std::string& title, const std::string& note = {}) -> Widget* {
-            auto* section = new Widget(content);
-            section->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 2, 0});
-            section->set_fixed_width(kGlareFullRowWidth);
-            auto* label = new Label(section, title, "sans-bold", 14);
-            label->set_color(Color(238, 239, 240, 245));
-            if (!note.empty()) {
-                auto* noteLabel = new Label(section, note, "sans", 12);
-                noteLabel->set_color(Color(170, 174, 179, 188));
-                noteLabel->set_fixed_width(kGlareFullRowWidth);
-            }
-            return section;
+        // 2026-10 inspector parts, as in View Visibility and Statistics: a status line, section
+        // headings without numbers (the old notes are their tooltips), grey 13 labels with 28
+        // controls, and the run action in the bar: Generate, or Calculate Image VOS when the
+        // panel is opened as View Volume.
+        constexpr int kFullRowWidth = kInspectorContentWidth;
+        constexpr int kFieldWidth = kFullRowWidth - kInspectorRowLabelWidth - 8;
+        constexpr int kHalfButtonWidth = (kFullRowWidth - 8) / 2;
+        constexpr int kThirdWidth = (kFullRowWidth - 2 * 6) / 3;
+        constexpr int kQuarterWidth = (kFullRowWidth - 3 * 6) / 4;
+
+        auto heading = [&](const std::string& title, const std::string& tooltip) -> InspectorSectionHeader* {
+            auto* header = new InspectorSectionHeader(content, title);
+            header->set_fixed_width(kFullRowWidth);
+            header->set_tooltip(tooltip);
+            return header;
         };
-
-        makeSectionHeading("1. Generate", "Use a prompt, click points, or both. Generate first, then trim the result in Review.");
-
-        auto makeHalfComboField = [&](Widget* host,
-                                      const std::string& title,
-                                      const std::vector<std::string>& items,
-                                      ComboBox*& outCombo) {
-            auto* column = new Widget(host);
-            column->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 1, 0});
-            column->set_fixed_width(kGlareHalfRowWidth);
-            column->set_fixed_height(45);
-
-            auto* label = new Label(column, title, "sans", 14);
-            label->set_color(Color(210, 255));
-
-            outCombo = new ComboBox(column, items, items);
-            outCombo->set_fixed_width(kGlareHalfRowWidth - 4);
-            outCombo->set_font_size(14);
-            outCombo->set_chevron_icon(0);
+        auto row = [&](const std::string& title, int spacing = 8) -> Widget* {
+            auto* line = new Widget(content);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, spacing});
+            line->set_fixed_width(kFullRowWidth);
+            auto* label = new Label(line, title, "sans", 13);
+            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            return line;
+        };
+        auto buttonRow = [&](int spacing) -> Widget* {
+            auto* line = new Widget(content);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, spacing});
+            line->set_fixed_width(kFullRowWidth);
+            return line;
+        };
+        auto makeCombo = [&](const std::string& title, const std::vector<std::string>& items, ComboBox*& outCombo) {
+            auto* combo = new InspectorComboBox(row(title), items);
+            combo->set_fixed_size({kFieldWidth, kInspectorRowHeight});
+            outCombo = combo;
+        };
+        auto statusLine = [&](Label*& outLabel, const std::string& caption) {
+            auto* line = new Widget(content);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
+            line->set_fixed_width(kFullRowWidth);
+            auto* dot = new InspectorStatusDot(line, nullptr);
+            outLabel = new Label(line, caption, "sans", 12);
+            outLabel->set_fixed_width(kFullRowWidth - 14);
+            outLabel->set_color(hdrspaceMutedInk(220));
+            dot->setSource(outLabel);
         };
 
 #if defined(_WIN32)
-        aiSegStatusLabel_ = new Label(content, "Not available in the Windows version (the AI models run on macOS only)", "sans", 12);
+        statusLine(aiSegStatusLabel_, "Not available in the Windows version (the AI models run on macOS only)");
 #else
-        aiSegStatusLabel_ = new Label(content, "Ready", "sans", 12);
+        statusLine(aiSegStatusLabel_, "Ready");
 #endif
-        aiSegStatusLabel_->set_color(Color{214, 217, 220, 220});
 
-        auto* aiHintLabel = new Label(content, "Comma-separated prompts work well. Click points are best for refinement after the first pass.", "sans", 12);
-        aiHintLabel->set_fixed_width(kGlareFullRowWidth);
-        aiHintLabel->set_color(Color(170, 174, 179, 210));
-
-        auto* aiSummaryRow = new Widget(content);
-        aiSummaryRow->set_layout(new GridLayout{Orientation::Horizontal, 3, Alignment::Fill, 4, 0});
-        aiSummaryRow->set_fixed_width(kGlareFullRowWidth);
-        const int aiSummaryWidth = (kGlareFullRowWidth - 2 * 4) / 3;
-        auto makeAiSummaryCard = [&](Widget* host, const std::string& title, Label*& outValue) {
-            auto* card = new Widget(host);
-            card->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 1, 0});
-            card->set_fixed_width(aiSummaryWidth);
-            auto* titleLabel = new Label(card, title, "sans", 12);
-            titleLabel->set_color(Color(170, 174, 179, 200));
-            outValue = new Label(card, "--", "sans-bold", 14);
-            outValue->set_color(Color(238, 241, 247, 255));
-        };
-        makeAiSummaryCard(aiSummaryRow, "Points", aiSegPointsValueLabel_);
-        makeAiSummaryCard(aiSummaryRow, "Candidates", aiSegCandidatesValueLabel_);
-        makeAiSummaryCard(aiSummaryRow, "Selected", aiSegSelectedValueLabel_);
-
-        auto* aiPromptRow = new Widget(content);
-        aiPromptRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 4, 0});
-        aiPromptRow->set_fixed_width(kGlareFullRowWidth);
-        auto* aiPromptLabel = new Label(aiPromptRow, "Prompt", "sans", 14);
-        aiPromptLabel->set_color(Color(210, 255));
-        aiPromptLabel->set_fixed_width(kAiInlineLabelWidth);
-        glareAiPromptBox_ = smallTextBox(aiPromptRow, "window, bright window");
-        glareAiPromptBox_->set_fixed_width(kGlareFullRowWidth - kAiInlineLabelWidth - 4);
+        heading("Generate", "Use a prompt, click points, or both. Generate first, then trim the result in Review.");
+        glareAiPromptBox_ = smallTextBox(row("Prompt"), "window, bright window");
+        glareAiPromptBox_->set_fixed_size({kFieldWidth, kInspectorRowHeight});
+        glareAiPromptBox_->set_font_size(13);
         glareAiPromptBox_->set_alignment(TextBox::Alignment::Left);
+        glareAiPromptBox_->set_tooltip("Comma-separated prompts work well. Click points are best for refinement after the first pass.");
         glareAiPromptBox_->set_callback([this](const std::string&) {
             clearAiCandidateMasks();
             rebuildAiCandidateList();
@@ -8713,44 +8697,24 @@ private:
             return true;
         });
 
-        auto* aiTuneSection = new Widget(content);
-        aiTuneSection->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 4, 0});
-        aiTuneSection->set_fixed_width(kGlareFullRowWidth);
-        aiTuneSection->set_fixed_height(45);
-        makeHalfComboField(aiTuneSection, "Mask fit", {"Tight", "Normal", "Loose"}, glareAiFitCombo_);
-        makeHalfComboField(aiTuneSection, "AI detail", {"Fast", "Detail", "HQ"}, glareAiQualityCombo_);
+        makeCombo("Mask fit", {"Tight", "Normal", "Loose"}, glareAiFitCombo_);
+        makeCombo("AI detail", {"Fast", "Detail", "HQ"}, glareAiQualityCombo_);
         glareAiFitCombo_->set_selected_index(0);
         glareAiQualityCombo_->set_selected_index(1);
-        glareAiFitCombo_->set_side(Popup::Side::Left);
-        glareAiQualityCombo_->set_side(Popup::Side::Left);
         glareAiFitCombo_->set_callback([this](int) {
             updateAiMaskPointUi();
             updateAiCandidatePreviewOverlay();
         });
         glareAiQualityCombo_->set_callback([this](int) { updateAiMaskPointUi(); });
 
-        auto* aiModeRow = new Widget(content);
-        aiModeRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 4, 0});
-        aiModeRow->set_fixed_width(kGlareFullRowWidth);
-        auto* aiModeLabel = new Label(aiModeRow, "Preview", "sans", 14);
-        aiModeLabel->set_color(Color(210, 255));
-        aiModeLabel->set_fixed_width(kAiInlineLabelWidth);
-        aiSegOverlayModeCombo_ = new ComboBox(aiModeRow, {"Mask (white)", "Segments (color)"}, {"Mask (white)", "Segments (color)"});
-        aiSegOverlayModeCombo_->set_fixed_width(kGlareFullRowWidth - kAiInlineLabelWidth - 4);
-        aiSegOverlayModeCombo_->set_font_size(14);
-        aiSegOverlayModeCombo_->set_chevron_icon(0);
+        makeCombo("Preview", {"Mask (white)", "Segments (color)"}, aiSegOverlayModeCombo_);
         aiSegOverlayModeCombo_->set_selected_index(1);
-        aiSegOverlayModeCombo_->set_side(Popup::Side::Left);
         aiSegOverlayModeCombo_->set_callback([this](int) { updateAiCandidatePreviewOverlay(); });
 
-        auto* aiClickRow = new Widget(content);
-        aiClickRow->set_layout(new GridLayout{Orientation::Horizontal, 4, Alignment::Fill, 4, 0});
-        aiClickRow->set_fixed_width(kGlareFullRowWidth);
-        constexpr int kAiClickButtonWidth = (kGlareFullRowWidth - 3 * 4) / 4;
-
+        auto* aiClickRow = buttonRow(6);
         glareAiPickPositiveButton_ = new Button(aiClickRow, "Pick +");
         glareAiPickPositiveButton_->set_font_size(13);
-        glareAiPickPositiveButton_->set_fixed_width(kAiClickButtonWidth);
+        glareAiPickPositiveButton_->set_fixed_width(kQuarterWidth);
         glareAiPickPositiveButton_->set_flags(Button::ToggleButton);
         glareAiPickPositiveButton_->set_change_callback([this](bool pushed) {
             if (!viewer_) {
@@ -8774,7 +8738,7 @@ private:
 
         glareAiPickNegativeButton_ = new Button(aiClickRow, "Pick -");
         glareAiPickNegativeButton_->set_font_size(13);
-        glareAiPickNegativeButton_->set_fixed_width(kAiClickButtonWidth);
+        glareAiPickNegativeButton_->set_fixed_width(kQuarterWidth);
         glareAiPickNegativeButton_->set_flags(Button::ToggleButton);
         glareAiPickNegativeButton_->set_change_callback([this](bool pushed) {
             if (!viewer_) {
@@ -8798,27 +8762,33 @@ private:
 
         glareAiPointUndoButton_ = new Button(aiClickRow, "Undo");
         glareAiPointUndoButton_->set_font_size(13);
-        glareAiPointUndoButton_->set_fixed_width(kAiClickButtonWidth);
+        glareAiPointUndoButton_->set_fixed_width(kQuarterWidth);
         glareAiPointUndoButton_->set_callback([this] { undoLastAiMaskPoint(); });
 
         glareAiPointClearButton_ = new Button(aiClickRow, "Clear");
         glareAiPointClearButton_->set_font_size(13);
-        glareAiPointClearButton_->set_fixed_width(kAiClickButtonWidth);
+        glareAiPointClearButton_->set_fixed_width(kQuarterWidth);
         glareAiPointClearButton_->set_callback([this] { clearAiMaskPoints(); });
 
-        glareAiGenerateButton_ = new Button(content, "Generate");
-        glareAiGenerateButton_->set_fixed_width(kGlareFullRowWidth);
-        glareAiGenerateButton_->set_tooltip("Generate SAM3 semantic and instance candidates from the current prompt variants and/or point prompts.");
-        glareAiGenerateButton_->set_callback([this] { requestAiMaskPreviewUpdate(); });
+        heading("Review", "Keep only the candidates you want to carry forward into the final mask.");
+        auto* aiSummaryRow = buttonRow(6);
+        auto makeAiSummaryCard = [&](const std::string& title, Label*& outValue) {
+            auto* card = new Widget(aiSummaryRow);
+            card->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 2});
+            card->set_fixed_width(kThirdWidth);
+            auto* titleLabel = new Label(card, title, "sans", 12);
+            titleLabel->set_color(hdrspaceMutedInk(200));
+            outValue = new Label(card, "--", "sans-bold", 14);
+            outValue->set_color(hdrspaceInk(240));
+        };
+        makeAiSummaryCard("Points", aiSegPointsValueLabel_);
+        makeAiSummaryCard("Candidates", aiSegCandidatesValueLabel_);
+        makeAiSummaryCard("Selected", aiSegSelectedValueLabel_);
 
-        makeSectionHeading("2. Review", "Keep only the candidates you want to carry forward into the final mask.");
-        auto* aiSelectionRow = new Widget(content);
-        aiSelectionRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 4, 0});
-        aiSelectionRow->set_fixed_width(kGlareFullRowWidth);
-        const int halfButtonWidth = (kGlareFullRowWidth - 4) / 2;
+        auto* aiSelectionRow = buttonRow(8);
         aiSegSelectAllButton_ = new Button(aiSelectionRow, "Select all");
         aiSegSelectAllButton_->set_font_size(13);
-        aiSegSelectAllButton_->set_fixed_width(halfButtonWidth);
+        aiSegSelectAllButton_->set_fixed_width(kHalfButtonWidth);
         aiSegSelectAllButton_->set_callback([this] {
             for (auto& candidate : glareAiCandidates_) {
                 candidate.selected = true;
@@ -8829,7 +8799,7 @@ private:
         });
         aiSegSelectNoneButton_ = new Button(aiSelectionRow, "Clear selection");
         aiSegSelectNoneButton_->set_font_size(13);
-        aiSegSelectNoneButton_->set_fixed_width(halfButtonWidth);
+        aiSegSelectNoneButton_->set_fixed_width(kHalfButtonWidth);
         aiSegSelectNoneButton_->set_callback([this] {
             for (auto& candidate : glareAiCandidates_) {
                 candidate.selected = false;
@@ -8839,60 +8809,58 @@ private:
             updateAiMaskPointUi();
         });
 
-        auto* aiCandidatesLabel = new Label(content, "Candidates", "sans", 14);
-        aiCandidatesLabel->set_color(Color(210, 255));
         glareAiCandidatesHintLabel_ = new Label(content, "", "sans", 12);
-        glareAiCandidatesHintLabel_->set_color(Color(170, 174, 179, 210));
+        glareAiCandidatesHintLabel_->set_fixed_width(kFullRowWidth);
+        glareAiCandidatesHintLabel_->set_color(hdrspaceMutedInk(200));
         glareAiCandidatesHintLabel_->set_visible(false);  // the list itself says "No candidates yet"
 
         glareAiCandidatesScroll_ = new DesktopScrollPanel(content);
-        glareAiCandidatesScroll_->set_fixed_width(kGlareFullRowWidth);
+        glareAiCandidatesScroll_->set_fixed_width(kFullRowWidth);
         glareAiCandidatesScroll_->set_fixed_height(292);
         glareAiCandidatesPanel_ = new Widget(glareAiCandidatesScroll_);
         glareAiCandidatesPanel_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 4, 0});
 
-        makeSectionHeading("3. Apply", "Apply the chosen masks back to glare. Export HDR + CSV when you want a reusable standalone result.");
-        auto* aiButtonsRow = new Widget(content);
-        aiButtonsRow->set_layout(new GridLayout{Orientation::Horizontal, 3, Alignment::Fill, 4, 0});
-        aiButtonsRow->set_fixed_width(kGlareFullRowWidth);
-        constexpr int kAiButtonWidth = (kGlareFullRowWidth - 2 * 4) / 3;
-
+        heading("Apply", "Apply the chosen masks back to glare. Export HDR + CSV when you want a reusable standalone result.");
+        auto* aiButtonsRow = buttonRow(6);
         glareAiReplaceButton_ = new Button(aiButtonsRow, "Replace");
-        glareAiReplaceButton_->set_fixed_width(kAiButtonWidth);
+        glareAiReplaceButton_->set_fixed_width(kThirdWidth);
         glareAiReplaceButton_->set_tooltip("Replace the current HDR mask with the selected AI candidates.");
         glareAiReplaceButton_->set_callback([this] { startAiMaskAssist(AiMaskApplyMode::Replace); });
 
         glareAiAddButton_ = new Button(aiButtonsRow, "Add");
-        glareAiAddButton_->set_fixed_width(kAiButtonWidth);
+        glareAiAddButton_->set_fixed_width(kThirdWidth);
         glareAiAddButton_->set_tooltip("Add the selected AI candidates to the existing HDR mask.");
         glareAiAddButton_->set_callback([this] { startAiMaskAssist(AiMaskApplyMode::Add); });
 
         glareAiSubtractButton_ = new Button(aiButtonsRow, "Subtract");
-        glareAiSubtractButton_->set_fixed_width(kAiButtonWidth);
+        glareAiSubtractButton_->set_fixed_width(kThirdWidth);
         glareAiSubtractButton_->set_tooltip("Subtract the selected AI candidates from the existing HDR mask.");
         glareAiSubtractButton_->set_callback([this] { startAiMaskAssist(AiMaskApplyMode::Subtract); });
 
         aiSegSavePreviewButton_ = new Button(content, "Export HDR");
-        aiSegSavePreviewButton_->set_fixed_width(kGlareFullRowWidth);
+        aiSegSavePreviewButton_->set_fixed_width(kFullRowWidth);
         aiSegSavePreviewButton_->set_callback([this] { saveSelectedAiSegmentationPreview(); });
 
-        imageVosSectionAnchor_ = makeSectionHeading(
-            "4. Image VOS (experimental)",
+        auto* vosHeader = heading(
+            "Image VOS",
             "SAM3 separates buildings and greenery; HDR VIEW metadata selects equidistant tiling or direct perspective DA3Metric."
         );
+        vosHeader->setDetail("Experimental");
+        imageVosSectionAnchor_ = vosHeader;
 #if defined(_WIN32)
-        imageVosStatusLabel_ = new Label(content, "Not available in the Windows version (Depth Anything 3 runs on macOS only)", "sans", 12);
+        statusLine(imageVosStatusLabel_, "Not available in the Windows version (Depth Anything 3 runs on macOS only)");
 #else
-        imageVosStatusLabel_ = new Label(content, "DA3 Metric runtime not checked", "sans", 12);
+        statusLine(imageVosStatusLabel_, "DA3 Metric runtime not checked");
 #endif
-        imageVosStatusLabel_->set_fixed_width(kGlareFullRowWidth);
-        imageVosStatusLabel_->set_color(Color(214, 217, 220, 220));
 
-        auto* imageVosPairRow = new Widget(content);
-        imageVosPairRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 4, 0});
-        imageVosPairRow->set_fixed_width(kGlareFullRowWidth);
-        imageVosChooseExteriorButton_ = new Button(imageVosPairRow, "Choose exterior HDR");
-        imageVosChooseExteriorButton_->set_tooltip("Optional unobstructed exterior reference. When selected, hdrspace analyzes both views and reports paired error.");
+        auto* exteriorRow = row("Exterior HDR", 6);
+        imageVosExteriorReferenceBox_ = smallTextBox(exteriorRow, "optional");
+        imageVosExteriorReferenceBox_->set_fixed_size({kFullRowWidth - kInspectorRowLabelWidth - 3 * 6 - 2 * 28, kInspectorRowHeight});
+        imageVosExteriorReferenceBox_->set_font_size(13);
+        imageVosExteriorReferenceBox_->set_tooltip("Optional unobstructed exterior reference. When selected, hdrspace analyzes both views and reports paired error.");
+        imageVosChooseExteriorButton_ = new Button(exteriorRow, "", FA_FOLDER_OPEN);
+        imageVosChooseExteriorButton_->set_fixed_size({28, kInspectorRowHeight});
+        imageVosChooseExteriorButton_->set_tooltip("Choose exterior HDR");
         imageVosChooseExteriorButton_->set_callback([this] {
             auto paths = file_dialog(viewer_, FileDialogType::Open);
             if (!paths.empty() && imageVosExteriorReferenceBox_) {
@@ -8900,27 +8868,26 @@ private:
                 setImageVosStatusCaption("Exterior reference ready for paired Image VOS");
             }
         });
-        imageVosClearExteriorButton_ = new Button(imageVosPairRow, "Clear exterior");
+        imageVosClearExteriorButton_ = new Button(exteriorRow, "", FA_TIMES);
+        imageVosClearExteriorButton_->set_fixed_size({28, kInspectorRowHeight});
+        imageVosClearExteriorButton_->set_tooltip("Clear exterior");
         imageVosClearExteriorButton_->set_callback([this] {
             if (imageVosExteriorReferenceBox_) {
                 imageVosExteriorReferenceBox_->set_value("");
             }
             setImageVosStatusCaption("Single-view Image VOS selected");
         });
-        imageVosExteriorReferenceBox_ = smallTextBox(content, "Optional exterior reference HDR");
-        imageVosExteriorReferenceBox_->set_fixed_width(kGlareFullRowWidth);
-        imageVosWindowDistanceBox_ = smallTextBox(content, "Observer-to-window distance (m; optional)");
-        imageVosWindowDistanceBox_->set_fixed_width(kGlareFullRowWidth);
+
+        imageVosWindowDistanceBox_ = smallTextBox(row("Window distance"), "optional");
+        imageVosWindowDistanceBox_->set_fixed_size({kFieldWidth, kInspectorRowHeight});
+        imageVosWindowDistanceBox_->set_font_size(13);
+        imageVosWindowDistanceBox_->set_units("m");
+        imageVosWindowDistanceBox_->set_tooltip("Observer-to-window distance in metres (optional)");
 
         imageVosInstallButton_ = new Button(content, "Install DA3 Metric");
-        imageVosInstallButton_->set_fixed_width(kGlareFullRowWidth);
+        imageVosInstallButton_->set_fixed_width(kFullRowWidth);
         imageVosInstallButton_->set_tooltip("Install the isolated Apple-Silicon MPS runtime and official DA3Metric-Large weights.");
         imageVosInstallButton_->set_callback([this] { startDa3MpsInstall(); });
-
-        imageVosAnalyzeButton_ = new Button(content, "Calculate Image VOS");
-        imageVosAnalyzeButton_->set_fixed_width(kGlareFullRowWidth);
-        imageVosAnalyzeButton_->set_tooltip("Generate exterior building/greenery masks, infer metric depth, and subtract indoor VOS to the glazing plane.");
-        imageVosAnalyzeButton_->set_callback([this] { startImageVosAnalysis(); });
 
         imageVosSummaryLabel_ = new Label(
             content,
@@ -8928,9 +8895,24 @@ private:
             "sans",
             12
         );
-        imageVosSummaryLabel_->set_fixed_width(kGlareFullRowWidth);
-        imageVosSummaryLabel_->set_color(Color(170, 174, 179, 210));
+        imageVosSummaryLabel_->set_fixed_width(kFullRowWidth);
+        imageVosSummaryLabel_->set_color(hdrspaceMutedInk(200));
 
+        // The run action sits in the bar under the scroll, as in the other inspectors. The panel
+        // serves two tools, so the bar shows the action of the tool that opened it.
+        aiSegActionBar_ = new InspectorActionBar(aiSegWindow_);
+        aiSegActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
+        glareAiGenerateButton_ = new Button(aiSegActionBar_, "Generate");
+        glareAiGenerateButton_->set_fixed_width(kFullRowWidth);
+        glareAiGenerateButton_->set_tooltip("Generate SAM3 semantic and instance candidates from the current prompt variants and/or point prompts.");
+        glareAiGenerateButton_->set_callback([this] { requestAiMaskPreviewUpdate(); });
+        imageVosAnalyzeButton_ = new Button(aiSegActionBar_, "Calculate Image VOS");
+        imageVosAnalyzeButton_->set_fixed_width(kFullRowWidth);
+        imageVosAnalyzeButton_->set_tooltip("Generate exterior building/greenery masks, infer metric depth, and subtract indoor VOS to the glazing plane.");
+        imageVosAnalyzeButton_->set_callback([this] { startImageVosAnalysis(); });
+        imageVosAnalyzeButton_->set_visible(false);
+
+        applyInspectorTypography(content);
         refreshGlareUi();
     }
 
@@ -8954,99 +8936,78 @@ private:
         imageStatsScroll_->set_fixed_size({256, 850});
         imageStatsScroll_->set_size({256, 850});
         auto* content = new Widget(imageStatsScroll_);
-        content->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 10});
+        content->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
 
+        // 2026-10 inspector parts, as in View Visibility: status line, section headings, grey
+        // 13 labels with 28 controls, exports under the result, the run action in the bar.
         constexpr int kFullRowWidth = kInspectorContentWidth;
-        constexpr int kHalfButtonWidth = (kFullRowWidth - 4) / 2;
-        constexpr int kThirdWidth = (kFullRowWidth - 2 * 4) / 3;
-        constexpr int kImageStatsLabelWidth = 64;
+        constexpr int kHalfButtonWidth = (kFullRowWidth - 8) / 2;
+        constexpr int kThirdWidth = (kFullRowWidth - 2 * 6) / 3;
+        constexpr int kFieldWidth = kFullRowWidth - kInspectorRowLabelWidth - 8;
 
-        imageStatsStatusLabel_ = new Label(content, "Ready", "sans", 12);
-        imageStatsStatusLabel_->set_color(Color(214, 217, 220, 220));
-
-        auto* hintLabel = new Label(
-            content,
-            "Rectangle uses the current ROI or crop. Circle uses a picked center and opening angle.",
-            "sans",
-            12
-        );
-        hintLabel->set_fixed_width(kFullRowWidth);
-        hintLabel->set_color(Color(170, 174, 179, 210));
-
-        auto makeRow = [&](const std::string& title, const std::vector<std::string>& items, ComboBox*& outCombo) {
-            auto* row = new Widget(content);
-            row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 4, 0});
-            row->set_fixed_width(kFullRowWidth);
-            auto* label = new Label(row, title, "sans", 14);
-            label->set_color(Color(210, 255));
-            label->set_fixed_width(kImageStatsLabelWidth);
-            outCombo = new ComboBox(row, items, items);
-            outCombo->set_fixed_width(kFullRowWidth - kImageStatsLabelWidth - 4);
-            outCombo->set_font_size(14);
-            outCombo->set_chevron_icon(0);
-            outCombo->set_side(Popup::Side::Left);
+        auto heading = [&](const std::string& title) {
+            auto* header = new InspectorSectionHeader(content, title);
+            header->set_fixed_width(kFullRowWidth);
+        };
+        auto row = [&](Widget* host, const std::string& title) -> Widget* {
+            auto* line = new Widget(host);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+            line->set_fixed_width(kFullRowWidth);
+            auto* label = new Label(line, title, "sans", 13);
+            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            return line;
+        };
+        auto makeCombo = [&](const std::string& title, const std::vector<std::string>& items, ComboBox*& outCombo) {
+            auto* combo = new InspectorComboBox(row(content, title), items);
+            combo->set_fixed_size({kFieldWidth, kInspectorRowHeight});
+            outCombo = combo;
         };
 
-        makeRow("Region", {"Rectangle ROI", "Circle"}, imageStatsRegionTypeCombo_);
+        auto* statusRow = new Widget(content);
+        statusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
+        statusRow->set_fixed_width(kFullRowWidth);
+        auto* statusDot = new InspectorStatusDot(statusRow, nullptr);
+        imageStatsStatusLabel_ = new Label(statusRow, "Ready", "sans", 12);
+        imageStatsStatusLabel_->set_fixed_width(kFullRowWidth - 14);
+        imageStatsStatusLabel_->set_color(hdrspaceMutedInk(220));
+        statusDot->setSource(imageStatsStatusLabel_);
+
+        heading("Region");
+        makeCombo("Region", {"Rectangle ROI", "Circle"}, imageStatsRegionTypeCombo_);
+        imageStatsRegionTypeCombo_->set_tooltip("Rectangle uses the current ROI or crop. Circle uses a picked center and opening angle.");
         imageStatsRegionTypeCombo_->set_selected_index(0);
         imageStatsRegionTypeCombo_->set_callback([this](int) {
             refreshImageStatisticsUi();
             updateGlareOverlay();
         });
 
-        makeRow("Mode", {"Rows + Columns", "Average of Rows", "Average of Columns", "Ranked"}, imageStatsModeCombo_);
-        imageStatsModeCombo_->set_selected_index(0);
-        imageStatsModeCombo_->set_callback([this](int) { refreshImageStatisticsUi(); });
-
-        makeRow("Values", {"Luminance", "RGB"}, imageStatsValueModeCombo_);
-        imageStatsValueModeCombo_->set_selected_index(0);
-        imageStatsValueModeCombo_->set_callback([this](int) {
-            if (imageStatsResult_.has_value()) {
-                runImageStatistics();
-            } else {
-                refreshImageStatisticsUi();
-            }
-        });
-
-        makeRow("Axis", {"Pixels", "Angle (deg)"}, imageStatsAxisModeCombo_);
-        imageStatsAxisModeCombo_->set_selected_index(0);
-        imageStatsAxisModeCombo_->set_callback([this](int) {
-            if (imageStatsResult_.has_value()) {
-                runImageStatistics();
-            } else {
-                refreshImageStatisticsUi();
-            }
-        });
-
-        makeRow("Graph", {"Line + Scatter", "Line", "Scatter"}, imageStatsGraphModeCombo_);
-        imageStatsGraphModeCombo_->set_selected_index(0);
-        imageStatsGraphModeCombo_->set_callback([this](int) { refreshImageStatisticsUi(); });
-
         imageStatsCircleControlsPanel_ = new Widget(content);
-        imageStatsCircleControlsPanel_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 4, 0});
+        imageStatsCircleControlsPanel_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         imageStatsCircleControlsPanel_->set_fixed_width(kFullRowWidth);
-
-        auto* circleLabel = new Label(imageStatsCircleControlsPanel_, "Circle region", "sans", 14);
-        circleLabel->set_color(Color(210, 255));
-
-        auto* circleRow = new Widget(imageStatsCircleControlsPanel_);
-        circleRow->set_layout(new GridLayout{Orientation::Horizontal, 3, Alignment::Fill, 4, 0});
-        circleRow->set_fixed_width(kFullRowWidth);
-        imageStatsCircleXBox_ = smallTextBox(circleRow, "X");
-        imageStatsCircleXBox_->set_fixed_width(kThirdWidth);
-        imageStatsCircleYBox_ = smallTextBox(circleRow, "Y");
-        imageStatsCircleYBox_->set_fixed_width(kThirdWidth);
-        imageStatsCircleRadiusBox_ = smallTextBox(circleRow, "R°");
-        imageStatsCircleRadiusBox_->set_fixed_width(kThirdWidth);
-        imageStatsCircleRadiusBox_->set_value("15");
+        {
+            auto* centerRow = row(imageStatsCircleControlsPanel_, "Center X / Y");
+            imageStatsCircleXBox_ = smallTextBox(centerRow, "X");
+            imageStatsCircleXBox_->set_fixed_size({(kFieldWidth - 8) / 2, kInspectorRowHeight});
+            imageStatsCircleXBox_->set_font_size(13);
+            imageStatsCircleYBox_ = smallTextBox(centerRow, "Y");
+            imageStatsCircleYBox_->set_fixed_size({(kFieldWidth - 8) / 2, kInspectorRowHeight});
+            imageStatsCircleYBox_->set_font_size(13);
+            auto* radiusRow = row(imageStatsCircleControlsPanel_, "Radius");
+            imageStatsCircleRadiusBox_ = smallTextBox(radiusRow, "R°");
+            imageStatsCircleRadiusBox_->set_fixed_size({kFieldWidth, kInspectorRowHeight});
+            imageStatsCircleRadiusBox_->set_font_size(13);
+            imageStatsCircleRadiusBox_->set_units("°");
+            imageStatsCircleRadiusBox_->set_value("15");
+        }
 
         auto* circleButtonsRow = new Widget(imageStatsCircleControlsPanel_);
-        circleButtonsRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 4, 0});
+        circleButtonsRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
         circleButtonsRow->set_fixed_width(kFullRowWidth);
         imageStatsPickCenterButton_ = new Button(circleButtonsRow, "Pick center");
         imageStatsPickCenterButton_->set_flags(Button::ToggleButton);
-        imageStatsPickCenterButton_->set_font_size(14);
         imageStatsPickCenterButton_->set_fixed_width(kHalfButtonWidth);
+        styleSecondaryButton(imageStatsPickCenterButton_, true);
         imageStatsPickCenterButton_->set_change_callback([this](bool pushed) {
             if (!viewer_) {
                 return;
@@ -9057,8 +9018,8 @@ private:
         });
 
         imageStatsUseCurrentCenterButton_ = new Button(circleButtonsRow, "Use image center");
-        imageStatsUseCurrentCenterButton_->set_font_size(14);
         imageStatsUseCurrentCenterButton_->set_fixed_width(kHalfButtonWidth);
+        styleSecondaryButton(imageStatsUseCurrentCenterButton_, true);
         imageStatsUseCurrentCenterButton_->set_callback([this] {
             if (!viewer_ || !viewer_->currentImage()) {
                 return;
@@ -9070,48 +9031,51 @@ private:
             updateGlareOverlay();
         });
 
-        imageStatsRegionSummaryLabel_ = new Label(content, "Region: --", "sans", 12);
-        imageStatsRegionSummaryLabel_->set_color(Color(214, 217, 220, 220));
-        imageStatsAngularLabel_ = new Label(content, "Angular axis: --", "sans", 12);
-        imageStatsAngularLabel_->set_color(Color(170, 174, 179, 210));
-
-        auto* actionRow = new Widget(content);
-        actionRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 4, 0});
-        actionRow->set_fixed_width(kFullRowWidth);
-        imageStatsRefreshButton_ = new Button(actionRow, "Compute");
-        imageStatsRefreshButton_->set_font_size(14);
-        imageStatsRefreshButton_->set_fixed_width(kHalfButtonWidth);
-        stylePrimaryButton(imageStatsRefreshButton_, true);
-        imageStatsRefreshButton_->set_callback([this] { runImageStatistics(); });
-        imageStatsSaveCsvButton_ = new Button(actionRow, "Save CSV");
-        imageStatsSaveCsvButton_->set_font_size(14);
-        imageStatsSaveCsvButton_->set_fixed_width(kHalfButtonWidth);
-        styleSecondaryButton(imageStatsSaveCsvButton_, true);
-        imageStatsSaveCsvButton_->set_callback([this] { saveImageStatisticsCsv(); });
-
-        auto* saveRow = new Widget(content);
-        saveRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 4, 0});
-        saveRow->set_fixed_width(kFullRowWidth);
-        imageStatsSaveGraphButton_ = new Button(saveRow, "Save Graph CSV");
-        imageStatsSaveGraphButton_->set_font_size(14);
-        imageStatsSaveGraphButton_->set_fixed_width(kHalfButtonWidth);
-        styleSecondaryButton(imageStatsSaveGraphButton_, true);
-        imageStatsSaveGraphButton_->set_callback([this] { saveImageStatisticsGraphCsv(); });
-        imageStatsReloadButton_ = new Button(saveRow, "Refresh ROI");
-        imageStatsReloadButton_->set_font_size(14);
-        imageStatsReloadButton_->set_fixed_width(kHalfButtonWidth);
-        styleSecondaryButton(imageStatsReloadButton_, true);
+        // The region's size and place, with the ROI refresh beside it.
+        auto* areaRow = row(content, "Area");
+        imageStatsRegionSummaryLabel_ = new Label(areaRow, "--", "sans", 13);
+        imageStatsRegionSummaryLabel_->set_fixed_width(kFieldWidth - 28 - 8);
+        imageStatsRegionSummaryLabel_->set_color(hdrspaceInk(230));
+        imageStatsReloadButton_ = new Button(areaRow, "", FA_SYNC);
+        imageStatsReloadButton_->set_fixed_size({28, kInspectorRowHeight});
+        imageStatsReloadButton_->set_tooltip("Refresh ROI");
+        styleUtilityButton(imageStatsReloadButton_);
         imageStatsReloadButton_->set_callback([this] { refreshImageStatisticsUi(); });
 
-        auto* exportRow = new Widget(content);
-        exportRow->set_layout(new GridLayout{Orientation::Horizontal, 1, Alignment::Fill, 4, 0});
-        exportRow->set_fixed_width(kFullRowWidth);
-        imageStatsSaveRegionButton_ = new Button(exportRow, "Save Region HDR");
-        imageStatsSaveRegionButton_->set_font_size(14);
-        imageStatsSaveRegionButton_->set_fixed_width(kFullRowWidth);
-        styleSecondaryButton(imageStatsSaveRegionButton_, true);
-        imageStatsSaveRegionButton_->set_callback([this] { saveImageStatisticsRegionHdr(); });
+        heading("Profile");
+        makeCombo("Mode", {"Rows + Columns", "Average of Rows", "Average of Columns", "Ranked"}, imageStatsModeCombo_);
+        imageStatsModeCombo_->set_selected_index(0);
+        imageStatsModeCombo_->set_callback([this](int) { refreshImageStatisticsUi(); });
 
+        makeCombo("Values", {"Luminance", "RGB"}, imageStatsValueModeCombo_);
+        imageStatsValueModeCombo_->set_selected_index(0);
+        imageStatsValueModeCombo_->set_callback([this](int) {
+            if (imageStatsResult_.has_value()) {
+                runImageStatistics();
+            } else {
+                refreshImageStatisticsUi();
+            }
+        });
+
+        makeCombo("Axis", {"Pixels", "Angle (deg)"}, imageStatsAxisModeCombo_);
+        imageStatsAxisModeCombo_->set_selected_index(0);
+        imageStatsAxisModeCombo_->set_callback([this](int) {
+            if (imageStatsResult_.has_value()) {
+                runImageStatistics();
+            } else {
+                refreshImageStatisticsUi();
+            }
+        });
+
+        imageStatsAngularLabel_ = new Label(content, "Angular axis: --", "sans", 12);
+        imageStatsAngularLabel_->set_fixed_width(kFullRowWidth);
+        imageStatsAngularLabel_->set_color(hdrspaceMutedInk(190));
+
+        makeCombo("Graph", {"Line + Scatter", "Line", "Scatter"}, imageStatsGraphModeCombo_);
+        imageStatsGraphModeCombo_->set_selected_index(0);
+        imageStatsGraphModeCombo_->set_callback([this](int) { refreshImageStatisticsUi(); });
+
+        heading("Result");
         imageStatsGraphA_ = new tev::ProfileGraph(content, "Average of Rows");
         imageStatsGraphA_->set_fixed_height(176);
         imageStatsGraphA_->setExpandOnMouseDown(true);
@@ -9127,6 +9091,29 @@ private:
         imageStatsGraphB_->set_cursor(Cursor::Hand);
         imageStatsGraphB_->setClickCallback([this] { openGraphPreviewWindow(GraphPreviewSource::ImageStatistics); });
         imageStatsGraphB_->set_tooltip("Click to expand. Scroll to zoom, drag to pan, right-click to reset.");
+
+        auto* exportRow = new Widget(content);
+        exportRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+        exportRow->set_fixed_width(kFullRowWidth);
+        imageStatsSaveCsvButton_ = new Button(exportRow, "CSV");
+        imageStatsSaveCsvButton_->set_fixed_width(kThirdWidth);
+        styleSecondaryButton(imageStatsSaveCsvButton_, true);
+        imageStatsSaveCsvButton_->set_callback([this] { saveImageStatisticsCsv(); });
+        imageStatsSaveGraphButton_ = new Button(exportRow, "Graph CSV");
+        imageStatsSaveGraphButton_->set_fixed_width(kThirdWidth);
+        styleSecondaryButton(imageStatsSaveGraphButton_, true);
+        imageStatsSaveGraphButton_->set_callback([this] { saveImageStatisticsGraphCsv(); });
+        imageStatsSaveRegionButton_ = new Button(exportRow, "Region HDR");
+        imageStatsSaveRegionButton_->set_fixed_width(kThirdWidth);
+        styleSecondaryButton(imageStatsSaveRegionButton_, true);
+        imageStatsSaveRegionButton_->set_callback([this] { saveImageStatisticsRegionHdr(); });
+
+        imageStatsActionBar_ = new InspectorActionBar(imageStatsWindow_);
+        imageStatsActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
+        imageStatsRefreshButton_ = new Button(imageStatsActionBar_, "Compute");
+        imageStatsRefreshButton_->set_fixed_width(kFullRowWidth);
+        stylePrimaryButton(imageStatsRefreshButton_, true);
+        imageStatsRefreshButton_->set_callback([this] { runImageStatistics(); });
 
         refreshImageStatisticsUi();
     }
@@ -13008,7 +12995,20 @@ private:
                 mergeActionBar_->set_fixed_size({scrollSize.x(), kInspectorActionBarHeight});
                 mergeActionBar_->set_size({scrollSize.x(), kInspectorActionBarHeight});
             }
-            const Vector2i mergeScrollSize{scrollSize.x(), scrollSize.y() - (mergeBar ? kInspectorActionBarHeight : 0)};
+            const bool calibrateBar = calibrateActionBar_ && (activeLeftSection_ == LeftSection::Color ||
+                                                              activeLeftSection_ == LeftSection::Shutter ||
+                                                              activeLeftSection_ == LeftSection::Aperture);
+            if (calibrateActionBar_) {
+                calibrateActionBar_->set_visible(calibrateBar);
+                calibrateActionBar_->set_fixed_size({scrollSize.x(), kInspectorActionBarHeight});
+                calibrateActionBar_->set_size({scrollSize.x(), kInspectorActionBarHeight});
+                if (calibrateBar && calibrateRunButton_) {
+                    const std::string caption = activeLeftSection_ == LeftSection::Color ? "Run color calibration"
+                        : activeLeftSection_ == LeftSection::Shutter ? "Run shutter calibration" : "Run aperture calibration";
+                    if (calibrateRunButton_->caption() != caption) calibrateRunButton_->set_caption(caption);
+                }
+            }
+            const Vector2i mergeScrollSize{scrollSize.x(), scrollSize.y() - ((mergeBar || calibrateBar) ? kInspectorActionBarHeight : 0)};
             if (controlsScroll_) {
                 controlsScroll_->set_fixed_size(mergeScrollSize);
                 controlsScroll_->set_size(mergeScrollSize);
@@ -13116,10 +13116,21 @@ private:
             aiSegWindow_->set_size(panelSize);
             aiSegWindow_->set_position(panelPos);
             aiSegWindow_->set_visible(activeRightPlane_ == RightPlane::AiSegmentation);
+            if (aiSegActionBar_) {
+                aiSegActionBar_->set_fixed_size({panelSize.x() - kInspectorScrollWidthInset, kInspectorActionBarHeight});
+                aiSegActionBar_->set_size({panelSize.x() - kInspectorScrollWidthInset, kInspectorActionBarHeight});
+                // The panel title says which tool opened it; the bar runs that tool.
+                const bool volume = aiSegPanelHeader_ && aiSegPanelHeader_->caption() == "View Volume";
+                if (glareAiGenerateButton_ && imageVosAnalyzeButton_ && glareAiGenerateButton_->visible() == volume) {
+                    glareAiGenerateButton_->set_visible(!volume);
+                    imageVosAnalyzeButton_->set_visible(volume);
+                    aiSegActionBar_->perform_layout(viewer_->nvg_context());
+                }
+            }
             if (aiSegScroll_) {
                 const Vector2i scrollSize{
                     std::max(120, panelSize.x() - kInspectorScrollWidthInset),
-                    std::max(120, panelSize.y() - kInspectorChromeHeight),
+                    std::max(120, panelSize.y() - kInspectorChromeHeight - (aiSegActionBar_ ? kInspectorActionBarHeight : 0)),
                 };
                 aiSegScroll_->set_fixed_size(scrollSize);
                 aiSegScroll_->set_size(scrollSize);
@@ -13207,10 +13218,14 @@ private:
             imageStatsWindow_->set_size(panelSize);
             imageStatsWindow_->set_position(panelPos);
             imageStatsWindow_->set_visible(activeRightPlane_ == RightPlane::ImageStatistics);
+            if (imageStatsActionBar_) {
+                imageStatsActionBar_->set_fixed_size({panelSize.x() - kInspectorScrollWidthInset, kInspectorActionBarHeight});
+                imageStatsActionBar_->set_size({panelSize.x() - kInspectorScrollWidthInset, kInspectorActionBarHeight});
+            }
             if (imageStatsScroll_) {
                 const Vector2i statsScrollSize{
                     std::max(120, panelSize.x() - kInspectorScrollWidthInset),
-                    std::max(120, panelSize.y() - kInspectorChromeHeight),
+                    std::max(120, panelSize.y() - kInspectorChromeHeight - (imageStatsActionBar_ ? kInspectorActionBarHeight : 0)),
                 };
                 imageStatsScroll_->set_fixed_size(statsScrollSize);
                 imageStatsScroll_->set_size(statsScrollSize);
@@ -21231,6 +21246,21 @@ private:
 
         makeStepHeading("Status");
 
+        calibrateActionBar_ = new InspectorActionBar(controlsWindow_);
+        calibrateActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
+        calibrateRunButton_ = new Button(calibrateActionBar_, "Run color calibration");
+        calibrateRunButton_->set_fixed_width(kInspectorContentWidth);
+        stylePrimaryButton(calibrateRunButton_, true);
+        calibrateRunButton_->set_callback([this] {
+            switch (activeLeftSection_) {
+            case LeftSection::Color: startColorCalibration(); break;
+            case LeftSection::Shutter: startShutterCalibration(); break;
+            case LeftSection::Aperture: startApertureCalibration(); break;
+            default: break;
+            }
+        });
+        calibrateActionBar_->set_visible(false);
+
         mergeActionBar_ = new InspectorActionBar(controlsWindow_);
         mergeActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         runMergeButton_ = new Button(mergeActionBar_, "Merge");
@@ -21294,123 +21324,116 @@ private:
         constexpr int kTabFieldFont = 14;
         constexpr int kTabActionFont = 14;
 
-        auto* refRow = new Widget(parent);
-        refRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
-        refRow->set_fixed_width(kTabContentWidth);
-        auto* chooseRef = new Button(refRow, "Reference HDR");
-        chooseRef->set_font_size(kTabFieldFont);
-        chooseRef->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(chooseRef, true);
-        chooseRef->set_callback([this] {
-            auto paths = file_dialog(viewer_, FileDialogType::Open);
-            if (!paths.empty()) {
-                refFileBox_->set_value(paths.front());
-                loadImageIntoViewer(paths.front());
-            }
-        });
-        auto* viewRef = new Button(refRow, "View");
-        viewRef->set_font_size(kTabFieldFont);
-        viewRef->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(viewRef, true);
-        viewRef->set_callback([this] {
-            if (!trim(refFileBox_->value()).empty()) {
-                loadImageIntoViewer(refFileBox_->value());
-            }
-        });
-        refFileBox_ = smallTextBox(parent, "Reference HDR");
-        refFileBox_->set_font_size(kTabFieldFont);
-        refFileBox_->set_fixed_width(kTabContentWidth);
+        // 2026-10 inspector parts: one row per file (label, path, choose, view), dropdowns
+        // with the chevron on the right, the run action in the Calibrate bar.
+        constexpr int kRowField = kTabContentWidth - kInspectorRowLabelWidth - 8;
+        auto heading = [&](const std::string& title, bool divider = true) {
+            auto* header = new InspectorSectionHeader(parent, title, divider);
+            header->set_fixed_width(kTabContentWidth);
+        };
+        auto row = [&](const std::string& title) -> Widget* {
+            auto* line = new Widget(parent);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+            line->set_fixed_width(kTabContentWidth);
+            auto* label = new Label(line, title, "sans", kTabLabelFont);
+            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            return line;
+        };
+        auto pathBox = [&](Widget* line, const std::string& placeholder, int width) {
+            auto* box = smallTextBox(line, placeholder);
+            box->set_font_size(kTabLabelFont);
+            box->set_fixed_size({width, kInspectorRowHeight});
+            return box;
+        };
+        auto iconButton = [&](Widget* line, int icon, const std::string& tooltip) {
+            auto* button = new Button(line, "", icon);
+            button->set_fixed_size({28, kInspectorRowHeight});
+            button->set_tooltip(tooltip);
+            styleUtilityButton(button);
+            return button;
+        };
+        constexpr int kFileField = kRowField - 2 * (28 + 8);
+        (void)kTabHalfWidth;
+        (void)kTabFieldFont;
+        (void)kTabActionFont;
 
-        auto* testRow = new Widget(parent);
-        testRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
-        testRow->set_fixed_width(kTabContentWidth);
-        auto* chooseTest = new Button(testRow, "Camera HDR");
-        chooseTest->set_font_size(kTabFieldFont);
-        chooseTest->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(chooseTest, true);
-        chooseTest->set_callback([this] {
-            auto paths = file_dialog(viewer_, FileDialogType::Open);
-            if (!paths.empty()) {
-                testFileBox_->set_value(paths.front());
-                loadImageIntoViewer(paths.front());
-            }
-        });
-        auto* viewTest = new Button(testRow, "View");
-        viewTest->set_font_size(kTabFieldFont);
-        viewTest->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(viewTest, true);
-        viewTest->set_callback([this] {
-            if (!trim(testFileBox_->value()).empty()) {
-                loadImageIntoViewer(testFileBox_->value());
-            }
-        });
-        testFileBox_ = smallTextBox(parent, "Test HDR");
-        testFileBox_->set_font_size(kTabFieldFont);
-        testFileBox_->set_fixed_width(kTabContentWidth);
+        heading("Images", false);
+        {
+            auto* line = row("Reference");
+            refFileBox_ = pathBox(line, "Reference HDR", kFileField);
+            iconButton(line, FA_FOLDER_OPEN, "Choose the reference HDR")->set_callback([this] {
+                auto paths = file_dialog(viewer_, FileDialogType::Open);
+                if (!paths.empty()) {
+                    refFileBox_->set_value(paths.front());
+                    loadImageIntoViewer(paths.front());
+                }
+            });
+            iconButton(line, FA_EYE, "Show the reference HDR")->set_callback([this] {
+                if (!trim(refFileBox_->value()).empty()) {
+                    loadImageIntoViewer(refFileBox_->value());
+                }
+            });
+        }
+        {
+            auto* line = row("Camera");
+            testFileBox_ = pathBox(line, "Camera HDR", kFileField);
+            iconButton(line, FA_FOLDER_OPEN, "Choose the camera HDR")->set_callback([this] {
+                auto paths = file_dialog(viewer_, FileDialogType::Open);
+                if (!paths.empty()) {
+                    testFileBox_->set_value(paths.front());
+                    loadImageIntoViewer(paths.front());
+                }
+            });
+            iconButton(line, FA_EYE, "Show the camera HDR")->set_callback([this] {
+                if (!trim(testFileBox_->value()).empty()) {
+                    loadImageIntoViewer(testFileBox_->value());
+                }
+            });
+        }
 
-        auto* cellsRow = new Widget(parent);
-        cellsRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
-        cellsRow->set_fixed_width(kTabContentWidth);
-        auto* refCellsAuto = new Button(cellsRow, "Auto cells ref");
-        refCellsAuto->set_font_size(kTabFieldFont);
-        refCellsAuto->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(refCellsAuto, true);
-        refCellsAuto->set_callback([this] { runChartCells(true); });
-        auto* testCellsAuto = new Button(cellsRow, "Auto cells cam");
-        testCellsAuto->set_font_size(kTabFieldFont);
-        testCellsAuto->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(testCellsAuto, true);
-        testCellsAuto->set_callback([this] { runChartCells(false); });
-        refCellsBox_ = smallTextBox(parent, "ref_cells.txt");
-        refCellsBox_->set_font_size(kTabFieldFont);
-        refCellsBox_->set_fixed_width(kTabContentWidth);
-        testCellsBox_ = smallTextBox(parent, "test_cells.txt");
-        testCellsBox_->set_font_size(kTabFieldFont);
-        testCellsBox_->set_fixed_width(kTabContentWidth);
-
-        auto* showReferenceXyz = new Button(parent, "Show ref XYZ (A1-D6)");
-        showReferenceXyz->set_font_size(kTabFieldFont);
+        heading("Chart cells");
+        constexpr int kAutoWidth = 64;
+        {
+            auto* line = row("Reference");
+            refCellsBox_ = pathBox(line, "ref_cells.txt", kRowField - kAutoWidth - 8);
+            auto* autoRef = new Button(line, "Auto");
+            autoRef->set_fixed_width(kAutoWidth);
+            styleSecondaryButton(autoRef, true);
+            autoRef->set_tooltip("Find the chart cells in the reference HDR");
+            autoRef->set_callback([this] { runChartCells(true); });
+        }
+        {
+            auto* line = row("Camera");
+            testCellsBox_ = pathBox(line, "test_cells.txt", kRowField - kAutoWidth - 8);
+            auto* autoCam = new Button(line, "Auto");
+            autoCam->set_fixed_width(kAutoWidth);
+            styleSecondaryButton(autoCam, true);
+            autoCam->set_tooltip("Find the chart cells in the camera HDR");
+            autoCam->set_callback([this] { runChartCells(false); });
+        }
+        auto* showReferenceXyz = new Button(parent, "Show reference XYZ (A1–D6)");
         showReferenceXyz->set_fixed_width(kTabContentWidth);
         styleSecondaryButton(showReferenceXyz, true);
         showReferenceXyz->set_callback([this] { showReferenceChartXyz(); });
 
-        auto* options = new Widget(parent);
-        options->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 6, 4});
-        options->set_fixed_width(kTabContentWidth);
-        auto* refSpaceLabel = new Label(options, "Reference space", "sans", kTabLabelFont);
-        refSpaceLabel->set_fixed_width(104);
-        refColorCombo_ = new ComboBox(options, {"rad", "srgb", "xyz", "raw"});
-        refColorCombo_->set_selected_index(0);
-        refColorCombo_->set_side(Popup::Side::Left);
-        refColorCombo_->set_font_size(kTabFieldFont);
-        refColorCombo_->set_fixed_width(kTabFieldWidth);
-        auto* minimizerLabel = new Label(options, "Minimizer", "sans", kTabLabelFont);
-        minimizerLabel->set_fixed_width(104);
-        minimizerCombo_ = new ComboBox(options, {"luv", "lab"});
-        minimizerCombo_->set_selected_index(0);
-        minimizerCombo_->set_side(Popup::Side::Left);
-        minimizerCombo_->set_font_size(kTabFieldFont);
-        minimizerCombo_->set_fixed_width(kTabFieldWidth);
-        auto* xyzcamLabel = new Label(options, "XYZCAM override", "sans", kTabLabelFont);
-        xyzcamLabel->set_fixed_width(104);
-        colorXyzcamBox_ = smallTextBox(options, "optional");
-        colorXyzcamBox_->set_font_size(kTabFieldFont);
-        colorXyzcamBox_->set_fixed_width(kTabFieldWidth);
+        heading("Options");
+        {
+            auto* combo = new InspectorComboBox(row("Reference space"), {"rad", "srgb", "xyz", "raw"});
+            combo->set_fixed_size({kRowField, kInspectorRowHeight});
+            combo->set_selected_index(0);
+            refColorCombo_ = combo;
+        }
+        {
+            auto* combo = new InspectorComboBox(row("Minimizer"), {"luv", "lab"});
+            combo->set_fixed_size({kRowField, kInspectorRowHeight});
+            combo->set_selected_index(0);
+            minimizerCombo_ = combo;
+        }
+        colorXyzcamBox_ = pathBox(row("XYZCAM override"), "optional", kRowField);
+        (void)kTabFieldWidth;
 
-        auto* actionRow = new Widget(parent);
-        actionRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
-        actionRow->set_fixed_width(kTabContentWidth);
-        auto* runButton = new Button(actionRow, "Run color calibration");
-        runButton->set_font_size(kTabActionFont);
-        runButton->set_fixed_width(kTabHalfWidth);
-        stylePrimaryButton(runButton);
-        runButton->set_callback([this] { startColorCalibration(); });
-        copyRecommendedMatrixButton_ = new Button(actionRow, "Copy xyzcam");
-        copyRecommendedMatrixButton_->set_font_size(kTabFieldFont);
-        copyRecommendedMatrixButton_->set_fixed_width(kTabHalfWidth);
-        styleSecondaryButton(copyRecommendedMatrixButton_);
-        copyRecommendedMatrixButton_->set_callback([this] { copyRecommendedMatrix(); });
-
+        heading("Result");
         auto* resultHost = new Widget(parent);
         resultHost->set_fixed_width(kTabContentWidth);
         resultHost->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 3, 0});
@@ -21465,6 +21488,11 @@ private:
         });
 
         colorResultHorizontalSlider_->set_enabled(false);
+
+        copyRecommendedMatrixButton_ = new Button(parent, "Copy xyzcam");
+        copyRecommendedMatrixButton_->set_fixed_width(kTabContentWidth);
+        styleSecondaryButton(copyRecommendedMatrixButton_, true);
+        copyRecommendedMatrixButton_->set_callback([this] { copyRecommendedMatrix(); });
     }
 
     void buildShutterTab(Widget* parent) {
@@ -21475,8 +21503,10 @@ private:
         constexpr int kTabFieldFont = 14;
         constexpr int kTabActionFont = 14;
 
+        auto* inputsHeader = new InspectorSectionHeader(parent, "Inputs", false);
+        inputsHeader->set_fixed_width(kTabContentWidth);
         auto* actions = new Widget(parent);
-        actions->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
+        actions->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
         actions->set_fixed_width(kTabContentWidth);
         auto* useMergeInputs = new Button(actions, "Use merge inputs");
         useMergeInputs->set_font_size(kTabFieldFont);
@@ -21500,7 +21530,7 @@ private:
             }
         });
 
-        panelFieldLabel(parent, "Sequences: one per line (RAW files or a pattern)");
+        panelFieldLabel(parent, "Sequences, one per line (RAW files or a pattern)");
         shutterSequencesArea_ = new PlainTextArea(parent);
         shutterSequencesArea_->set_fixed_width(kTabContentWidth);
         shutterSequencesArea_->set_fixed_height(110);
@@ -21508,7 +21538,7 @@ private:
         shutterSequencesArea_->set_selectable(true);
         shutterSequencesArea_->set_background_color(Color{14, 180});
 
-        panelFieldLabel(parent, "Crops: L T W H, one per sequence");
+        panelFieldLabel(parent, "Crops, L T W H, one per sequence");
         shutterCropsArea_ = new PlainTextArea(parent);
         shutterCropsArea_->set_fixed_width(kTabContentWidth);
         shutterCropsArea_->set_fixed_height(80);
@@ -21516,23 +21546,23 @@ private:
         shutterCropsArea_->set_selectable(true);
         shutterCropsArea_->set_background_color(Color{14, 180});
 
+        auto* optionsHeader = new InspectorSectionHeader(parent, "Options");
+        optionsHeader->set_fixed_width(kTabContentWidth);
         auto* row = new Widget(parent);
-        row->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 6, 4});
+        row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
         row->set_fixed_width(kTabContentWidth);
         auto* channelLabel = new Label(row, "Channel", "sans", kTabLabelFont);
-        channelLabel->set_fixed_width(104);
-        shutterChannelCombo_ = new ComboBox(row, {"g", "r", "b"});
-        shutterChannelCombo_->set_selected_index(0);
-        shutterChannelCombo_->set_side(Popup::Side::Left);
-        shutterChannelCombo_->set_font_size(kTabFieldFont);
-        shutterChannelCombo_->set_fixed_width(kTabFieldWidth);
+        channelLabel->set_fixed_width(kInspectorRowLabelWidth);
+        channelLabel->set_color(hdrspaceMutedInk(215));
+        auto* channelCombo = new InspectorComboBox(row, {"g", "r", "b"});
+        channelCombo->set_selected_index(0);
+        channelCombo->set_fixed_size({kTabContentWidth - kInspectorRowLabelWidth - 8, kInspectorRowHeight});
+        shutterChannelCombo_ = channelCombo;
+        (void)kTabFieldWidth;
+        (void)kTabActionFont;
 
-        auto* run = new Button(parent, "Run shutter calibration");
-        run->set_font_size(kTabActionFont);
-        run->set_fixed_width(kTabContentWidth);
-        stylePrimaryButton(run);
-        run->set_callback([this] { startShutterCalibration(); });
-
+        auto* resultHeader = new InspectorSectionHeader(parent, "Result");
+        resultHeader->set_fixed_width(kTabContentWidth);
         shutterResultArea_ = new PlainTextArea(parent);
         shutterResultArea_->set_fixed_width(kTabContentWidth);
         shutterResultArea_->set_fixed_height(220);
@@ -21546,23 +21576,29 @@ private:
         constexpr int kTabFieldFont = 14;
         constexpr int kTabActionFont = 14;
 
-        auto* actions = new Widget(parent);
-        actions->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
-        actions->set_fixed_width(kTabContentWidth);
-        auto* useCrop = new Button(actions, "Use viewer crop");
-        useCrop->set_font_size(kTabFieldFont);
+        auto* inputsHeader = new InspectorSectionHeader(parent, "Inputs", false);
+        inputsHeader->set_fixed_width(kTabContentWidth);
+        auto labelledBox = [&](const std::string& title, const std::string& placeholder) {
+            auto* line = new Widget(parent);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+            line->set_fixed_width(kTabContentWidth);
+            auto* label = new Label(line, title, "sans", 13);
+            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            auto* box = smallTextBox(line, placeholder);
+            box->set_font_size(13);
+            box->set_fixed_size({kTabContentWidth - kInspectorRowLabelWidth - 8, kInspectorRowHeight});
+            return box;
+        };
+        apertureCropBox_ = labelledBox("Crop", "x y w h");
+        auto* useCrop = new Button(parent, "Use viewer crop");
         useCrop->set_fixed_width(kTabContentWidth);
         styleSecondaryButton(useCrop, true);
         useCrop->set_callback([this] { apertureCropBox_->set_value(currentViewerCropString()); });
+        apertureShuttercBox_ = labelledBox("shutterc", "shutterc");
+        (void)kTabFieldFont;
 
-        apertureCropBox_ = smallTextBox(parent, "x y w h");
-        apertureCropBox_->set_font_size(kTabFieldFont);
-        apertureCropBox_->set_fixed_width(kTabContentWidth);
-        apertureShuttercBox_ = smallTextBox(parent, "shutterc");
-        apertureShuttercBox_->set_font_size(kTabFieldFont);
-        apertureShuttercBox_->set_fixed_width(kTabContentWidth);
-
-        panelFieldLabel(parent, "Sequences: one per line, one per aperture");
+        panelFieldLabel(parent, "Sequences, one per line, one per aperture");
         apertureSequencesArea_ = new PlainTextArea(parent);
         apertureSequencesArea_->set_fixed_width(kTabContentWidth);
         apertureSequencesArea_->set_fixed_height(130);
@@ -21570,12 +21606,9 @@ private:
         apertureSequencesArea_->set_selectable(true);
         apertureSequencesArea_->set_background_color(Color{14, 180});
 
-        auto* run = new Button(parent, "Run aperture calibration");
-        run->set_font_size(kTabActionFont);
-        run->set_fixed_width(kTabContentWidth);
-        stylePrimaryButton(run);
-        run->set_callback([this] { startApertureCalibration(); });
-
+        (void)kTabActionFont;
+        auto* resultHeader = new InspectorSectionHeader(parent, "Result");
+        resultHeader->set_fixed_width(kTabContentWidth);
         apertureResultArea_ = new PlainTextArea(parent);
         apertureResultArea_->set_fixed_width(kTabContentWidth);
         apertureResultArea_->set_fixed_height(220);
@@ -21589,15 +21622,24 @@ private:
         constexpr int kTabFieldFont = 14;
         constexpr int kTabActionFont = 14;
 
-        panelFieldLabel(parent, "oiiotool path (optional)");
-        oiiotoolPathBox_ = smallTextBox(parent, "oiiotool");
-        oiiotoolPathBox_->set_font_size(kTabFieldFont);
-        oiiotoolPathBox_->set_fixed_width(kTabContentWidth);
+        auto* toolsHeader = new InspectorSectionHeader(parent, "Tools", false);
+        toolsHeader->set_fixed_width(kTabContentWidth);
+        auto* line = new Widget(parent);
+        line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+        line->set_fixed_width(kTabContentWidth);
+        auto* label = new Label(line, "oiiotool", "sans", 13);
+        label->set_fixed_width(kInspectorRowLabelWidth);
+        label->set_color(hdrspaceMutedInk(215));
+        oiiotoolPathBox_ = smallTextBox(line, "optional");
+        oiiotoolPathBox_->set_font_size(13);
+        oiiotoolPathBox_->set_fixed_size({kTabContentWidth - kInspectorRowLabelWidth - 8, kInspectorRowHeight});
+        oiiotoolPathBox_->set_tooltip("oiiotool path (optional)");
+        (void)kTabFieldFont;
+        (void)kTabActionFont;
 
         auto* save = new Button(parent, "Save settings");
-        save->set_font_size(kTabActionFont);
         save->set_fixed_width(kTabContentWidth);
-        stylePrimaryButton(save);
+        styleSecondaryButton(save, true);
         save->set_callback([this] { saveSettings(); });
     }
 
@@ -24259,7 +24301,7 @@ private:
 
         if (!hasImage) {
             if (imageStatsRegionSummaryLabel_) {
-                imageStatsRegionSummaryLabel_->set_caption("Region: open an image first");
+                imageStatsRegionSummaryLabel_->set_caption("Open an image first");
             }
             if (imageStatsAngularLabel_) {
                 imageStatsAngularLabel_->set_caption("Angular axis: unavailable");
@@ -24281,14 +24323,14 @@ private:
             const auto region = viewer_->imageCanvas()->statisticsRegionInImageCoords();
             if (region.isValid()) {
                 imageStatsRegionSummaryLabel_->set_caption(std::format(
-                    "Region: {} × {} px at {}, {}",
+                    "{} × {} px at {}, {}",
                     region.size().x(),
                     region.size().y(),
                     region.min.x(),
                     region.min.y()
                 ));
             } else {
-                imageStatsRegionSummaryLabel_->set_caption("Region: current ROI/crop is empty");
+                imageStatsRegionSummaryLabel_->set_caption("The ROI or crop is empty");
             }
         } else {
             const std::string xText = normalizedTextBoxValue(imageStatsCircleXBox_ ? imageStatsCircleXBox_->value() : "");
@@ -24296,8 +24338,8 @@ private:
             const std::string rText = normalizedTextBoxValue(imageStatsCircleRadiusBox_ ? imageStatsCircleRadiusBox_->value() : "");
             imageStatsRegionSummaryLabel_->set_caption(
                 xText.empty() || yText.empty() || rText.empty()
-                    ? "Region: set circle X, Y and R°"
-                    : std::format("Region: center {},{} | radius {}°", xText, yText, rText)
+                    ? "Set the circle X, Y and R°"
+                    : std::format("Center {}, {} · radius {}°", xText, yText, rText)
             );
         }
 
@@ -27250,6 +27292,10 @@ private:
     InspectorActionBar* viewVisibilityActionBar_ = nullptr;
     InspectorActionBar* blurActionBar_ = nullptr;
     InspectorActionBar* createViewActionBar_ = nullptr;
+    InspectorActionBar* imageStatsActionBar_ = nullptr;
+    InspectorActionBar* aiSegActionBar_ = nullptr;   // Generate, or Calculate Image VOS as View Volume
+    InspectorActionBar* calibrateActionBar_ = nullptr;
+    Button* calibrateRunButton_ = nullptr;
     std::array<Widget*, kMaxPfsToneMappingParameters> toneMappingPfsBasicRowSlots_{};
     std::array<Label*, kMaxPfsToneMappingParameters> toneMappingPfsBasicLabelSlots_{};
     std::array<TextBox*, kMaxPfsToneMappingParameters> toneMappingPfsBasicBoxSlots_{};
