@@ -36,6 +36,10 @@ namespace {
 // Width kept free at the right end of a caption for the close mark (drawn 7..15 px
 // from the right edge, clickable 4..18 px from it).
 constexpr int kCloseReserve = 18;
+// hdrspace: a selected list row is a surface step with an amber edge, like the tool rail
+// (DESIGN.md), not tev's violet-blue IMAGE_COLOR fill.
+const Color kHdrspaceAccent{244, 191, 79, 255};
+const Color kHdrspaceSelectedRow{255, 255, 255, 18};
 } // namespace
 
 ImageButton::ImageButton(Widget* parent, string_view caption, bool canBeReference) :
@@ -51,7 +55,7 @@ ImageButton::ImageButton(Widget* parent, string_view caption, bool canBeReferenc
         return true;
     });
     mCaptionTextBox->set_corner_radius(0.0f);
-    mCaptionTextBox->set_solid_color(IMAGE_COLOR);
+    mCaptionTextBox->set_solid_color(Color(49, 52, 56, 255));
 }
 
 ImageButton::~ImageButton() {
@@ -163,8 +167,16 @@ void ImageButton::draw(NVGcontext* ctx) {
             nvgRect(ctx, m_pos.x(), m_pos.y(), m_size.x(), m_size.y());
         }
 
-        nvgFillColor(ctx, mIsSelected ? IMAGE_COLOR : Color(1.0f, 0.1f));
+        nvgFillColor(ctx, mIsSelected ? kHdrspaceSelectedRow : Color(1.0f, 0.1f));
         nvgFill(ctx);
+
+        if (mIsSelected && mThumbnailRgba.empty()) {
+            const int inset = mIsReference ? 2 : 0;
+            nvgBeginPath(ctx);
+            nvgRect(ctx, m_pos.x() + inset, m_pos.y() + inset, 2, m_size.y() - 2 * inset);
+            nvgFillColor(ctx, kHdrspaceAccent);
+            nvgFill(ctx);
+        }
     }
 
     if (!mThumbnailRgba.empty() && mThumbnailSize.x() > 0 && mThumbnailSize.y() > 0) {
@@ -385,7 +397,9 @@ void ImageButton::draw(NVGcontext* ctx) {
 
     const Vector2f center = Vector2f{m_pos} + Vector2f{m_size} * 0.5f;
     const Vector2f bottomRight = Vector2f{m_pos} + Vector2f{m_size};
-    Vector2f textPos = mCaptionLeftAligned ? Vector2f{m_pos.x() + 19.0f + nvgTextBounds(ctx, 0, 0, idString.data(), idString.data() + idString.size(), nullptr), center.y() + 0.5f * (m_font_size + 1)}
+    // hdrspace: an id of 0 draws no number (a single row such as the glare report).
+    const bool showId = mId > 0;
+    Vector2f textPos = mCaptionLeftAligned ? Vector2f{m_pos.x() + (showId ? 19.0f + nvgTextBounds(ctx, 0, 0, idString.data(), idString.data() + idString.size(), nullptr) : 8.0f), center.y() + 0.5f * (m_font_size + 1)}
                                            : Vector2f{bottomRight.x() - 5 - closeReserve, center.y() + 0.5f * (m_font_size + 1)};
     NVGcolor regularTextColor = mCanBeReference ? Color(150, 255) : Color(190, 255);
     NVGcolor hightlightedTextColor = Color(190, 255);
@@ -424,12 +438,17 @@ void ImageButton::draw(NVGcontext* ctx) {
     if (mIsSelected || mIsReference || m_mouse_focus) {
         idColor = Color(255, 255);
     }
+    if (mIsSelected) {
+        idColor = kHdrspaceAccent;
+    }
 
     nvgFontSize(ctx, m_font_size + 2);
     nvgFontFace(ctx, "sans-bold");
     nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM);
     nvgFillColor(ctx, idColor);
-    nvgText(ctx, m_pos.x() + 5, textPos.y(), idString.data(), idString.data() + idString.size());
+    if (showId) {
+        nvgText(ctx, m_pos.x() + 5, textPos.y(), idString.data(), idString.data() + idString.size());
+    }
 
     if (mCloseCallback) {
         const float crossRight = static_cast<float>(m_pos.x() + m_size.x() - 7);

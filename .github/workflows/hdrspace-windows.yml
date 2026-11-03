@@ -407,7 +407,7 @@ jobs:
           Step "tonemapping" {
             Click 80 131 5; Shot "t1-tonemapping"            # the only operator tile on Windows: Ward '97
             Click 790 199 30; Shot "t2-ward-preview"; Dismiss "t2"
-            Click 806 689 30; Shot "t3-ward-full"; Dismiss "t3"
+            Click 806 674 30; Shot "t3-ward-full"; Dismiss "t3"
             $p = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter "*-ward97-*.bmp" -ErrorAction SilentlyContinue | Select-Object -First 3
             "ward previews: $($p.FullName)" | Tee-Object -Append gui-flow/status.txt
             $p | Copy-Item -Destination gui-flow/ -ErrorAction SilentlyContinue
@@ -419,7 +419,7 @@ jobs:
             Click 900 274 1; Keys "^a"; Keys "C:\vv\white.hdr{ENTER}"
             Shot "v2-paths"
             Click 790 312 15; Shot "v3-loaded"
-            Click 868 689 120; Shot "v4-computed"; Dismiss "v4"
+            Click 868 674 120; Shot "v4-computed"; Dismiss "v4"
           }
           Step "merge-hdr" {
             Dismiss "m0"; Click 75 191 5; Shot "m1-panel"
@@ -427,7 +427,7 @@ jobs:
             Keys "^a"; Keys "C:\raw{ENTER}"; Start-Sleep -Seconds 2
             Keys ("^a" + (($raws | ForEach-Object { "`"$_`"" }) -join " ") + "{ENTER}"); Start-Sleep -Seconds 4
             Shot "m3-files"
-            Click 868 689 5; Shot "m4-running"
+            Click 868 674 5; Shot "m4-running"
             $out = WaitFile "C:\raw\*.hdr" 420
             Shot "m5-done"; Dismiss "m5"
             "merge output: $out" | Tee-Object -Append gui-flow/status.txt
@@ -451,11 +451,11 @@ jobs:
             }
             # the Size boxes only show 6000 as a placeholder: type a small size for the CI machine;
             # Fast direct mode (no overture) keeps the render short; the overture is timed in the next step
-            Click 850 474 1; Keys "300{ENTER}"
-            Click 938 474 1; Keys "300{ENTER}"
-            Click 733 576 1
+            Click 858 456 1; Keys "300{ENTER}"
+            Click 946 456 1; Keys "300{ENTER}"
+            Click 741 558 1
             Shot "c5-size"
-            Click 806 687 5; Shot "c6-render-started"; Dismiss "c6"
+            Click 806 674 5; Shot "c6-render-started"; Dismiss "c6"
             $r = WaitFile "C:\scene\create_view_render_sm.hdr" 900
             Shot "c7-render-done"; Dismiss "c7"
             Get-ChildItem "$env:LOCALAPPDATA\hdrspace\cache\create_view_render" -Filter *.log -ErrorAction SilentlyContinue | Copy-Item -Destination gui-flow/

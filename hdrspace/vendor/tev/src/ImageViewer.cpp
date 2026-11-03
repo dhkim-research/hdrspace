@@ -4677,15 +4677,16 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
     }
 
     if (!statistics) {
-        mRoiStatsLabel->set_caption("Right-drag in the viewer to inspect a region.");
+        mRoiStatsLabel->set_font("sans");
+        mRoiStatsLabel->set_caption("Right-drag in the viewer to inspect a region");
         return;
     }
 
     const auto& region = statistics->region;
     const bool hasRoi = mImageCanvas && mImageCanvas->roi().has_value();
     const string regionLabel = hasRoi
-        ? format("ROI {},{} {}x{}", region.min.x(), region.min.y(), region.size().x(), region.size().y())
-        : format("Image {},{} {}x{}", region.min.x(), region.min.y(), region.size().x(), region.size().y());
+        ? format("ROI {}, {} · {} × {}", region.min.x(), region.min.y(), region.size().x(), region.size().y())
+        : format("Image {}, {} · {} × {}", region.min.x(), region.min.y(), region.size().x(), region.size().y());
 
     ostringstream stream;
     stream << regionLabel << '\n';
@@ -4720,6 +4721,36 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
             statistics->channelMaximum[0],
             statistics->channelStdDev[0]
         );
+    } else if (mSidebarOnRight) {
+        // hdrspace: one row per channel under named columns, in the mono face so the columns
+        // line up. The header starts with the channel letters (nanovg drops a row's leading
+        // spaces, so it cannot start blank).
+        string letters;
+        size_t labelWidth = 1;
+        for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
+            const auto label = inspectionChannelLabel(i);
+            letters += label;
+            labelWidth = std::max(labelWidth, label.size());
+        }
+        if (letters.size() > 4) {
+            letters = "Ch";
+        }
+        labelWidth = std::max(labelWidth, letters.size());
+        stream << format("{:<{}}{:>9}{:>9}{:>9}{:>9}", letters, labelWidth, "Mean", "Min", "Max", "Std");
+        for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
+            stream << '\n' << format(
+                "{:<{}}{:>9.5g}{:>9.5g}{:>9.5g}{:>9.5g}",
+                inspectionChannelLabel(i),
+                labelWidth,
+                statistics->channelMean[i],
+                statistics->channelMinimum[i],
+                statistics->channelMaximum[i],
+                statistics->channelStdDev[i]
+            );
+        }
+        mRoiStatsLabel->set_font("mono");
+        mRoiStatsLabel->set_caption(stream.str());
+        return;
     } else {
         for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
             const auto label = inspectionChannelLabel(i);
@@ -4733,11 +4764,12 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
             );
 
             if (i + 1 < statistics->channelMean.size()) {
-                stream << (mSidebarOnRight ? "\n" : "  |  ");
+                stream << "  |  ";
             }
         }
     }
 
+    mRoiStatsLabel->set_font("sans");
     mRoiStatsLabel->set_caption(stream.str());
 }
 

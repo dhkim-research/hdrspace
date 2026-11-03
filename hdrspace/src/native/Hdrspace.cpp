@@ -962,7 +962,7 @@ std::string quoteInputFiles(const std::vector<std::string>& files) {
 
 std::string summarizeSelectedFiles(const std::vector<std::string>& files) {
     if (files.empty()) {
-        return "No files selected.";
+        return "No files selected";
     }
 
     std::ostringstream oss;
@@ -1180,7 +1180,7 @@ std::string summarizeRangeFromLog(const std::string& text) {
         }
     }
 
-    return "No luminance summary yet.";
+    return "No luminance summary yet";
 }
 
 std::string collectWarnings(const std::string& text) {
@@ -1630,6 +1630,12 @@ private:
 constexpr int kInspectorRowHeight = 28;
 constexpr int kInspectorRowLabelWidth = 104;
 constexpr int kInspectorActionBarHeight = 48;
+// The inspector's scroll area sits 4 inside the panel (window margin) and draws its content
+// 8 further in, so content (280) starts 12 from the panel edge; the scroll bar uses the
+// right gutter. Above the scroll area are the window header, the panel title and margins.
+constexpr int kInspectorScrollInset = 8;
+constexpr int kInspectorScrollWidthInset = 8;
+constexpr int kInspectorChromeHeight = 72;
 
 inline Color inspectorFieldFill(bool hot = false) { return Color(255, 255, 255, hot ? 22 : 13); }
 inline Color inspectorFieldBorder() { return Color(255, 255, 255, 28); }
@@ -2557,6 +2563,10 @@ class DesktopScrollPanel final : public nanogui::VScrollPanel {
 public:
     using nanogui::VScrollPanel::VScrollPanel;
 
+    // An inspector's main scroll area: no box of its own (DESIGN.md: no card layers), content
+    // inset by kInspectorScrollInset. Lists nested in a panel keep the box.
+    void setInspectorStyle(bool inspector) { inspector_ = inspector; }
+
     void perform_layout(NVGcontext* ctx) override {
         Widget::perform_layout(ctx);
 
@@ -2570,12 +2580,13 @@ public:
         Widget* child = m_children[0];
         m_child_preferred_height = child->preferred_size(ctx).y();
 
+        const int inset = inspector_ ? kInspectorScrollInset : 0;
         if (m_child_preferred_height > m_size.y()) {
-            child->set_position(Vector2i(0, -m_scroll * (m_child_preferred_height - m_size.y())));
-            child->set_size(Vector2i(m_size.x(), m_child_preferred_height));
+            child->set_position(Vector2i(inset, -m_scroll * (m_child_preferred_height - m_size.y())));
+            child->set_size(Vector2i(m_size.x() - 2 * inset, m_child_preferred_height));
         } else {
-            child->set_position(Vector2i(0));
-            child->set_size(m_size);
+            child->set_position(Vector2i(inset, 0));
+            child->set_size(Vector2i(m_size.x() - 2 * inset, m_size.y()));
             m_scroll = 0;
         }
         child->perform_layout(ctx);
@@ -2588,18 +2599,20 @@ public:
         const float h = static_cast<float>(m_size.y());
         constexpr float radius = 13.0f;
 
-        nvgSave(ctx);
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x, y, w, h, radius);
-        nvgFillColor(ctx, Color(255, 255, 255, 3));
-        nvgFill(ctx);
+        if (!inspector_) {
+            nvgSave(ctx);
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, x, y, w, h, radius);
+            nvgFillColor(ctx, Color(255, 255, 255, 3));
+            nvgFill(ctx);
 
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, radius);
-        nvgStrokeColor(ctx, Color(255, 255, 255, 8));
-        nvgStrokeWidth(ctx, 1.0f);
-        nvgStroke(ctx);
-        nvgRestore(ctx);
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, radius);
+            nvgStrokeColor(ctx, Color(255, 255, 255, 8));
+            nvgStrokeWidth(ctx, 1.0f);
+            nvgStroke(ctx);
+            nvgRestore(ctx);
+        }
 
         if (m_children.empty()) {
             return;
@@ -2610,7 +2623,7 @@ public:
         if (m_child_preferred_height > m_size.y()) {
             yoffset = -m_scroll * (m_child_preferred_height - m_size.y());
         }
-        child->set_position(Vector2i(0, yoffset));
+        child->set_position(Vector2i(inspector_ ? kInspectorScrollInset : 0, yoffset));
         m_child_preferred_height = child->preferred_size(ctx).y();
         const float scrollh = height() * std::min(1.f, height() / (float)m_child_preferred_height);
 
@@ -2646,6 +2659,9 @@ public:
         nvgFillColor(ctx, Color(255, 255, 255, 28));
         nvgFill(ctx);
     }
+
+private:
+    bool inspector_ = false;
 };
 
 class GraphPreviewInteractiveHost final : public nanogui::Widget {
@@ -4716,7 +4732,7 @@ public:
         }
     }
 
-    void clearPreview(const std::string& statusText = "Click Preview to render a fast 1000 x 1000 request.") {
+    void clearPreview(const std::string& statusText = "Click Preview to render a fast 1000 × 1000 request.") {
         statusText_ = statusText;
         imageLabel_.clear();
         imagePath_.clear();
@@ -4737,7 +4753,7 @@ public:
             static_cast<int>(std::clamp<size_t>(image.height, 0, static_cast<size_t>(std::numeric_limits<int>::max())))
         };
         imagePath_ = path;
-        imageLabel_ = std::format("{} x {}", image.width, image.height);
+        imageLabel_ = std::format("{} × {}", image.width, image.height);
         zoom_ = 1.0f;
         panPixels_ = {0.0f, 0.0f};
         imageDirty_ = true;
@@ -4959,7 +4975,7 @@ private:
     }
 
     RenderRequestCallback renderRequestCallback_;
-    std::string statusText_ = "Click Preview to render a fast 1000 x 1000 request.";
+    std::string statusText_ = "Click Preview to render a fast 1000 × 1000 request.";
     std::string imageLabel_;
     fs::path imagePath_;
     std::vector<uint8_t> rgba_;
@@ -5834,15 +5850,15 @@ public:
 
     std::string rightPlaneTitle(RightPlane plane) const {
         switch (plane) {
-        case RightPlane::ImageViewer: return "Image Viewer";
+        case RightPlane::ImageViewer: return "Viewer";
         case RightPlane::ToneMapping: return "Tonemapping";
         case RightPlane::ViewVisibility: return "View Visibility";
         case RightPlane::MergeHdr: return "Merge HDR";
-        case RightPlane::EvaluateGlare: return "Evaluate Glare";
+        case RightPlane::EvaluateGlare: return "Glare";
         case RightPlane::Blur: return "Blur";
         case RightPlane::AiSegmentation: return "AI Segmentation";
         case RightPlane::CreateView: return "Create View";
-        case RightPlane::ImageStatistics: return "Image Statistics";
+        case RightPlane::ImageStatistics: return "Statistics";
         case RightPlane::PerceptualMaps: return "Perceptual maps";
         }
         return "Workspace";
@@ -6490,7 +6506,7 @@ private:
 
     Widget* createPanelHeader(Widget* toolbar, std::string_view sectionTitle) {
         auto* titlePanel = new Widget(toolbar);
-        titlePanel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 1, 0});
+        titlePanel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 2, 0});
         auto* title = new Label(titlePanel, std::string(sectionTitle), "sans-bold", 18);
         title->set_color(hdrspaceInk());
         if (sectionTitle == "Merge HDR") mergePanelHeader_ = title;
@@ -7238,6 +7254,7 @@ private:
         createPanelHeader(toolbar, "Merge HDR");
 
         controlsScroll_ = new DesktopScrollPanel(controlsWindow_);
+        static_cast<DesktopScrollPanel*>(controlsScroll_)->setInspectorStyle(true);
         controlsScroll_->set_fixed_size({256, 850});
         controlsScroll_->set_size({256, 850});
         auto* content = new Widget(controlsScroll_);
@@ -7609,7 +7626,7 @@ private:
             canvas->setChannelMask(selectedViewVisibilityChannelMask());
         }
         if (updateStatus) {
-            setViewVisibilityStatusCaption("View visibility result loaded on the canvas.");
+            setViewVisibilityStatusCaption("View visibility result loaded on the canvas");
         }
         viewer_->redraw();
         updateContextStripUi();
@@ -7702,10 +7719,10 @@ private:
                 (sanitizeStem(referencePath) + "_" + sanitizeStem(testPath) + "_view_visibility_steps");
             setViewVisibilityStatusCaption("Exporting native visibility step maps...");
             writeViewVisibilityDebugDump(opts, outputDir.string());
-            setViewVisibilityStatusCaption("Native visibility step maps exported.");
+            setViewVisibilityStatusCaption("Native visibility step maps exported");
             showMessage("View visibility step maps saved:\n" + outputDir.string());
         } catch (const std::exception& e) {
-            setViewVisibilityStatusCaption("Step map export failed.");
+            setViewVisibilityStatusCaption("Step map export failed");
             showMessage(std::string("Failed to export view visibility step maps: ") + e.what());
         }
     }
@@ -7813,7 +7830,7 @@ private:
             updateContextStripUi();
         } catch (const std::exception& e) {
             resetViewVisibilityResult();
-            setViewVisibilityStatusCaption("View visibility summary failed.");
+            setViewVisibilityStatusCaption("View visibility summary failed");
             setViewVisibilitySummaryCaption(
                 std::string{"View size: --\nReference baseline: --\nVisibility ratio: --\nQuality: --\nInput color: --\n\nError: "} + e.what()
             );
@@ -7837,6 +7854,7 @@ private:
         createPanelHeader(toolbar, "View Visibility");
 
         viewVisibilityScroll_ = new DesktopScrollPanel(viewVisibilityWindow_);
+        static_cast<DesktopScrollPanel*>(viewVisibilityScroll_)->setInspectorStyle(true);
         viewVisibilityScroll_->set_fixed_size({256, 850});
         viewVisibilityScroll_->set_size({256, 850});
         auto* content = new Widget(viewVisibilityScroll_);
@@ -7851,7 +7869,7 @@ private:
         vvStatusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
         vvStatusRow->set_fixed_width(kInspectorContentWidth);
         auto* vvStatusDot = new InspectorStatusDot(vvStatusRow, nullptr);
-        viewVisibilityStatusLabel_ = new Label(vvStatusRow, "Choose a reference and test image, then load the pair.", "sans", 12);
+        viewVisibilityStatusLabel_ = new Label(vvStatusRow, "Choose a reference and test image, then load the pair", "sans", 12);
         viewVisibilityStatusLabel_->set_fixed_width(kInspectorContentWidth - 14);
         viewVisibilityStatusLabel_->set_color(hdrspaceMutedInk(220));
         vvStatusDot->setSource(viewVisibilityStatusLabel_);
@@ -7925,7 +7943,7 @@ private:
             "choose CIE XYZ (cd/m²) for XYZ files that already hold cd/m². EXPOSURE= header lines are undone in every case.");
         viewVisibilityInputColorCombo_->set_callback([this](int) {
             resetViewVisibilityResult();
-            setViewVisibilityStatusCaption("Input color space changed.");
+            setViewVisibilityStatusCaption("Input color space changed");
         });
         viewVisibilityPpdBox_ = smallTextBox(row("PPD"), "30");
         viewVisibilityPpdBox_->set_value("30");
@@ -7937,7 +7955,7 @@ private:
         viewVisibilityDetailCombo_ = combo("Output detail", {"HDR-VDP3", "Contrast proxy"}, 0);
         viewVisibilityDetailCombo_->set_callback([this](int) {
             resetViewVisibilityResult();
-            setViewVisibilityStatusCaption("Output detail changed.");
+            setViewVisibilityStatusCaption("Output detail changed");
         });
         viewVisibilityResultMapCombo_ = combo("Show map", {"RGB", "Visibility", "Test contrast", "Reference contrast"}, 1);
         viewVisibilityResultMapCombo_->set_callback([this](int) {
@@ -7960,7 +7978,7 @@ private:
         viewVisibilityActionBar_ = new InspectorActionBar(viewVisibilityWindow_);
         viewVisibilityActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         viewVisibilityComputeButton_ = new Button(viewVisibilityActionBar_, "Compute visibility");
-        viewVisibilityComputeButton_->set_fixed_width(kInspectorContentWidth - 4);
+        viewVisibilityComputeButton_->set_fixed_width(kInspectorContentWidth);
         stylePrimaryButton(viewVisibilityComputeButton_, true);
         viewVisibilityComputeButton_->set_callback([this] { computeViewVisibilitySummary(); });
         viewVisibilitySummaryLabel_ = new InspectorKeyValueSummary(content,
@@ -7993,9 +8011,10 @@ private:
 
         auto* toolbar = new Widget(glareWindow_);
         toolbar->set_layout(new GridLayout{Orientation::Horizontal, 1, Alignment::Fill, 6, 0});
-        createPanelHeader(toolbar, "Evaluate Glare");
+        createPanelHeader(toolbar, "Glare");
 
         glareScroll_ = new DesktopScrollPanel(glareWindow_);
+        static_cast<DesktopScrollPanel*>(glareScroll_)->setInspectorStyle(true);
         glareScroll_->set_fixed_size({256, 850});
         glareScroll_->set_size({256, 850});
         auto* content = new Widget(glareScroll_);
@@ -8082,7 +8101,7 @@ private:
         thresholdHelpButton->set_tooltip("Threshold help");
         thresholdHelpButton->set_padding({3, 0});
 
-        auto* thresholdNote = new Label(thresholdSection, "Blank: 2000, or task luminance \u00d7 5.", "sans", 12);
+        auto* thresholdNote = new Label(thresholdSection, "Blank: 2000, or task luminance \u00d7 5", "sans", 12);
         thresholdNote->set_color(hdrspaceMutedInk(185));
         thresholdNote->set_fixed_width(kGlareFullRowWidth);
 
@@ -8402,7 +8421,7 @@ private:
         glareActionBar_ = new InspectorActionBar(glareWindow_);
         glareActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         glareRunButton_ = new Button(glareActionBar_, "Analyze");
-        glareRunButton_->set_fixed_width(160);
+        glareRunButton_->set_fixed_width(164);
         stylePrimaryButton(glareRunButton_, true);
         glareRunButton_->set_callback([this] { startGlareEvaluation(); });
 
@@ -8508,7 +8527,7 @@ private:
         glareReportButton_ = new tev::ImageButton(reportRow, "No report yet", false);
         glareReportButton_->set_fixed_size({kGlareFullRowWidth, 22});
         glareReportButton_->set_font_size(14);
-        glareReportButton_->setId(1);
+        glareReportButton_->setId(0);
         glareReportButton_->setCaptionLeftAligned(true);
         glareReportButton_->setSelectedCallback([this] {
             if (!glareResult_.has_value()) {
@@ -8564,7 +8583,7 @@ private:
 
         glareProfileSummaryLabel_ = new Label(profilesCard, "Profile: all glare sources", "sans", 12);
         glareProfileSummaryLabel_->set_color(Color(214, 217, 220, 220));
-        glareProfileStatusLabel_ = new Label(profilesCard, "Run Evaluate Glare or select a source.", "sans", 12);
+        glareProfileStatusLabel_ = new Label(profilesCard, "Run Evaluate Glare or select a source", "sans", 12);
         glareProfileStatusLabel_->set_color(Color(170, 174, 179, 210));
 
         glareProfileGraphA_ = new tev::ProfileGraph(profilesCard, "Average of Rows");
@@ -8604,6 +8623,7 @@ private:
         createPanelHeader(toolbar, "AI Segmentation");
 
         aiSegScroll_ = new DesktopScrollPanel(aiSegWindow_);
+        static_cast<DesktopScrollPanel*>(aiSegScroll_)->setInspectorStyle(true);
         aiSegScroll_->set_fixed_size({256, 850});
         aiSegScroll_->set_size({256, 850});
         auto* content = new Widget(aiSegScroll_);
@@ -8648,7 +8668,7 @@ private:
         };
 
 #if defined(_WIN32)
-        aiSegStatusLabel_ = new Label(content, "Not available in the Windows version (the AI models run on macOS only).", "sans", 12);
+        aiSegStatusLabel_ = new Label(content, "Not available in the Windows version (the AI models run on macOS only)", "sans", 12);
 #else
         aiSegStatusLabel_ = new Label(content, "Ready", "sans", 12);
 #endif
@@ -8821,8 +8841,9 @@ private:
 
         auto* aiCandidatesLabel = new Label(content, "Candidates", "sans", 14);
         aiCandidatesLabel->set_color(Color(210, 255));
-        glareAiCandidatesHintLabel_ = new Label(content, "No candidates yet.", "sans", 12);
+        glareAiCandidatesHintLabel_ = new Label(content, "", "sans", 12);
         glareAiCandidatesHintLabel_->set_color(Color(170, 174, 179, 210));
+        glareAiCandidatesHintLabel_->set_visible(false);  // the list itself says "No candidates yet"
 
         glareAiCandidatesScroll_ = new DesktopScrollPanel(content);
         glareAiCandidatesScroll_->set_fixed_width(kGlareFullRowWidth);
@@ -8860,9 +8881,9 @@ private:
             "SAM3 separates buildings and greenery; HDR VIEW metadata selects equidistant tiling or direct perspective DA3Metric."
         );
 #if defined(_WIN32)
-        imageVosStatusLabel_ = new Label(content, "Not available in the Windows version (Depth Anything 3 runs on macOS only).", "sans", 12);
+        imageVosStatusLabel_ = new Label(content, "Not available in the Windows version (Depth Anything 3 runs on macOS only)", "sans", 12);
 #else
-        imageVosStatusLabel_ = new Label(content, "DA3 Metric runtime not checked.", "sans", 12);
+        imageVosStatusLabel_ = new Label(content, "DA3 Metric runtime not checked", "sans", 12);
 #endif
         imageVosStatusLabel_->set_fixed_width(kGlareFullRowWidth);
         imageVosStatusLabel_->set_color(Color(214, 217, 220, 220));
@@ -8876,7 +8897,7 @@ private:
             auto paths = file_dialog(viewer_, FileDialogType::Open);
             if (!paths.empty() && imageVosExteriorReferenceBox_) {
                 imageVosExteriorReferenceBox_->set_value(paths.front());
-                setImageVosStatusCaption("Exterior reference ready for paired Image VOS.");
+                setImageVosStatusCaption("Exterior reference ready for paired Image VOS");
             }
         });
         imageVosClearExteriorButton_ = new Button(imageVosPairRow, "Clear exterior");
@@ -8884,7 +8905,7 @@ private:
             if (imageVosExteriorReferenceBox_) {
                 imageVosExteriorReferenceBox_->set_value("");
             }
-            setImageVosStatusCaption("Single-view Image VOS selected.");
+            setImageVosStatusCaption("Single-view Image VOS selected");
         });
         imageVosExteriorReferenceBox_ = smallTextBox(content, "Optional exterior reference HDR");
         imageVosExteriorReferenceBox_->set_fixed_width(kGlareFullRowWidth);
@@ -8926,9 +8947,10 @@ private:
 
         auto* toolbar = new Widget(imageStatsWindow_);
         toolbar->set_layout(new GridLayout{Orientation::Horizontal, 1, Alignment::Fill, 6, 0});
-        createPanelHeader(toolbar, "Image Statistics");
+        createPanelHeader(toolbar, "Statistics");
 
         imageStatsScroll_ = new DesktopScrollPanel(imageStatsWindow_);
+        static_cast<DesktopScrollPanel*>(imageStatsScroll_)->setInspectorStyle(true);
         imageStatsScroll_->set_fixed_size({256, 850});
         imageStatsScroll_->set_size({256, 850});
         auto* content = new Widget(imageStatsScroll_);
@@ -9031,7 +9053,7 @@ private:
             }
             viewer_->setAiMaskPickMode(pushed ? tev::ImageViewer::EAiMaskPickMode::StatsCenter : tev::ImageViewer::EAiMaskPickMode::None);
             refreshImageStatisticsUi();
-            setImageStatisticsStatusCaption(pushed ? "Click the image to set circle center." : "Circle center pick off.");
+            setImageStatisticsStatusCaption(pushed ? "Click the image to set circle center" : "Circle center pick off");
         });
 
         imageStatsUseCurrentCenterButton_ = new Button(circleButtonsRow, "Use image center");
@@ -9336,7 +9358,7 @@ private:
             if (kind == ToneMappingPresetKind::Example) {
                 note = "Man page: " + spec.exampleCommand;
             } else if (kind == ToneMappingPresetKind::Default) {
-                note = hasExample ? "Source-code defaults." : "Source-code defaults. The man page has no other example.";
+                note = hasExample ? "Source-code defaults" : "Source-code defaults. The man page has no other example.";
             } else {
                 note = "Custom values.";
             }
@@ -9641,7 +9663,7 @@ private:
                     if (toneMappingPfsProgressBar_) {
                         toneMappingPfsProgressBar_->set_value(0.0f);
                     }
-                    setToneMappingStatusCaption("pfstools preview failed.");
+                    setToneMappingStatusCaption("pfstools preview failed");
                     refreshToneMappingUi();
                     showMessage("pfstools tone mapping failed:\n" + errorText);
                     return;
@@ -9688,7 +9710,7 @@ private:
             return;
         }
         glfwSetClipboardString(viewer_->glfw_window(), toneMappingPfsLastCommand_.c_str());
-        setToneMappingStatusCaption("Copied the exact pfstools pipeline to the clipboard.");
+        setToneMappingStatusCaption("Copied the exact pfstools pipeline to the clipboard");
     }
 
     void setToneMappingStatusCaption(const std::string& caption) {
@@ -9830,7 +9852,7 @@ private:
         const double targetMid = referenceWhite *
             toneMappingTextValue(toneMappingTargetGreyBox_, 0.18, 0.01, 0.9);
         toneMappingDisplayProfileInfoLabel_->set_caption(std::format(
-            "{} x {} px | {:.0f} ppi | {:.0f} cm\n"
+            "{} × {} px | {:.0f} ppi | {:.0f} cm\n"
             "Reference white {:.0f} nit | peak {:.0f} nit ({:.1f}x)\n"
             "Target grey on display: {:.1f} nit",
             geometry.pixelWidth,
@@ -10070,7 +10092,7 @@ private:
                     hasImage
                         ? "Compute uses the original linear HDR. A 2:1 dual fisheye is "
                           "automatically cropped to its left 180° eye."
-                        : "Open a linear HDR image first."
+                        : "Open a linear HDR image first"
                 );
             }
             return;
@@ -10449,7 +10471,7 @@ private:
         }
         if (!viewer_ || !viewer_->currentImage()) {
             toneMappingResult_.reset();
-            setToneMappingStatusCaption("Open a linear HDR image first.");
+            setToneMappingStatusCaption("Open a linear HDR image first");
             refreshToneMappingUi();
             return;
         }
@@ -10667,7 +10689,7 @@ private:
             recomputeToneMapping();
         } else {
             toneMappingGazePoint_.reset();
-            setToneMappingStatusCaption("Open a linear HDR image first.");
+            setToneMappingStatusCaption("Open a linear HDR image first");
         }
         updateToneMappingMarker();
         refreshToneMappingUi();
@@ -10690,6 +10712,7 @@ private:
         createPanelHeader(toolbar, "Tonemapping");
 
         toneMappingScroll_ = new DesktopScrollPanel(toneMappingWindow_);
+        static_cast<DesktopScrollPanel*>(toneMappingScroll_)->setInspectorStyle(true);
         toneMappingScroll_->set_fixed_size({256, 850});
         toneMappingScroll_->set_size({256, 850});
         auto* scrollContent = new Widget(toneMappingScroll_);
@@ -10700,7 +10723,7 @@ private:
         toneStatusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
         toneStatusRow->set_fixed_width(kInspectorContentWidth);
         auto* toneStatusDot = new InspectorStatusDot(toneStatusRow, nullptr);
-        toneMappingStatusLabel_ = new Label(toneStatusRow, "Open a linear HDR image first.", "sans", 12);
+        toneMappingStatusLabel_ = new Label(toneStatusRow, "Open a linear HDR image first", "sans", 12);
         toneMappingStatusLabel_->set_fixed_width(kInspectorContentWidth - 14);
         toneMappingStatusLabel_->set_color(hdrspaceMutedInk(220));
         toneStatusDot->setSource(toneMappingStatusLabel_);
@@ -10989,7 +11012,7 @@ private:
         toneMappingActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         toneMappingPfsRenderButton_ = new Button(toneMappingActionBar_, "Render full size");
         stylePrimaryButton(toneMappingPfsRenderButton_, true);
-        toneMappingPfsRenderButton_->set_fixed_width(152);
+        toneMappingPfsRenderButton_->set_fixed_width(156);
         toneMappingPfsRenderButton_->set_callback([this] { startToneMappingPfsRender(true); });
         toneMappingPfsRestoreButton_ = new Button(toneMappingActionBar_, "Restore HDR");
         styleSecondaryButton(toneMappingPfsRestoreButton_, true);
@@ -11181,7 +11204,7 @@ private:
                     toneMappingModeCombo_->set_selected_index(2);
                 }
                 viewer_->setAiMaskPickMode(tev::ImageViewer::EAiMaskPickMode::ToneMappingGaze);
-                setToneMappingStatusCaption("Click anywhere in the HDR view to move the adaptation point.");
+                setToneMappingStatusCaption("Click anywhere in the HDR view to move the adaptation point");
             } else if (viewer_->aiMaskPickMode() == tev::ImageViewer::EAiMaskPickMode::ToneMappingGaze) {
                 viewer_->setAiMaskPickMode(tev::ImageViewer::EAiMaskPickMode::None);
             }
@@ -12186,7 +12209,7 @@ private:
         graphPreviewControlsContent_ = new Widget(graphPreviewControlsScroll_);
         graphPreviewControlsContent_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 6, 0});
 
-        graphPreviewStatusLabel_ = new Label(graphPreviewControlsContent_, "Click a graph to preview it here.", "sans", 12);
+        graphPreviewStatusLabel_ = new Label(graphPreviewControlsContent_, "Click a graph to preview it here", "sans", 12);
         graphPreviewStatusLabel_->set_color(hdrspaceMutedInk(220));
         auto* graphPreviewHint = new Label(graphPreviewControlsContent_, "Scroll to zoom, drag to pan, and right-click to reset. Leave min/max/tick empty for automatic axes.", "sans", 12);
         graphPreviewHint->set_color(hdrspaceAccent(182));
@@ -12577,7 +12600,7 @@ private:
 
         const auto graphs = currentGraphPreviewSourceGraphs(graphPreviewSource_);
         if (graphs.empty()) {
-            auto* empty = new Label(graphPreviewSeriesColorsPanel_, "No graph data loaded.", "sans", 12);
+            auto* empty = new Label(graphPreviewSeriesColorsPanel_, "No graph data loaded", "sans", 12);
             empty->set_color(Color(214, 217, 220, 180));
             return;
         }
@@ -12726,7 +12749,7 @@ private:
         }
         if (graphPreviewStatusLabel_) {
             graphPreviewStatusLabel_->set_caption(graphs.empty()
-                ? "No graph data available yet."
+                ? "No graph data available yet"
                 : std::format("{} graph{} | save CSV to export the current data",
                     graphs.size(),
                     graphs.size() == 1 ? "" : "s"));
@@ -12888,7 +12911,7 @@ private:
         for (auto& [item, tab] : calibrationTabs_) {
             tab->set_pushed(item == section);
         }
-        if (mergePanelHeader_) mergePanelHeader_->set_caption(section == LeftSection::Merge ? "Merge HDR" : (section == LeftSection::Settings ? "Settings" : mergeSectionLabel(section) + " calibration"));
+        if (mergePanelHeader_) mergePanelHeader_->set_caption(section == LeftSection::Merge ? "Merge HDR" : (section == LeftSection::Settings ? "Settings" : "Calibrate"));
         refreshHdrspaceNavigation();
         for (auto& [item, button] : leftSectionButtons_) {
             button->set_pushed(item == section);
@@ -12915,8 +12938,8 @@ private:
         }
         if (mergeModeHintLabel_) {
             mergeModeHintLabel_->set_caption(expert
-                ? "Expert mode adds profiles, sensor controls, and reusable command details."
-                : "Basic mode keeps only the essential merge steps visible.");
+                ? "Expert mode adds profiles, sensor controls, and reusable command details"
+                : "Basic mode keeps only the essential merge steps visible");
         }
         for (Widget* widget : mergeExpertWidgets_) {
             if (widget) {
@@ -12969,7 +12992,7 @@ private:
         if (viewer_->isUiVisible() && sidebarSize.x() > 0) cachedSidebarSize_ = sidebarSize;
         const int contextStripY = viewer_->size().y() - bottomReserve;
         const Vector2i panelSize{kInspectorWidth, std::max(240, viewer_->size().y() - kHdrspaceHeaderHeight - kHdrspaceStatusHeight)};
-        const Vector2i scrollSize{panelSize.x() - 16, panelSize.y() - 50};
+        const Vector2i scrollSize{panelSize.x() - kInspectorScrollWidthInset, panelSize.y() - kInspectorChromeHeight};
         const int animatedPanelX = viewer_->size().x() - static_cast<int>(std::lround(kInspectorWidth * rightInspectorReveal_));
         const Vector2i panelPos{animatedPanelX, kHdrspaceHeaderHeight};
         if (activeRightPlane_ == RightPlane::ImageViewer) viewer_->setSidebarOverlayReveal(rightInspectorReveal_);
@@ -13042,7 +13065,7 @@ private:
                 glareActionBar_->set_fixed_size({scrollSize.x(), kInspectorActionBarHeight});
                 glareActionBar_->set_size({scrollSize.x(), kInspectorActionBarHeight});
             }
-            const int graphWidth = std::max(160, scrollSize.x() - 12);
+            const int graphWidth = kInspectorContentWidth;
             if (glareProfileGraphA_) {
                 glareProfileGraphA_->set_fixed_width(graphWidth);
                 glareProfileGraphA_->set_size({graphWidth, glareProfileGraphA_->fixed_height()});
@@ -13064,8 +13087,8 @@ private:
             blurWindow_->set_position(panelPos);
             blurWindow_->set_visible(activeRightPlane_ == RightPlane::Blur);
             Vector2i blurScrollSize{
-                std::max(120, panelSize.x() - 16),
-                std::max(120, panelSize.y() - 52),
+                std::max(120, panelSize.x() - kInspectorScrollWidthInset),
+                std::max(120, panelSize.y() - kInspectorChromeHeight),
             };
             if (blurActionBar_) {
                 blurScrollSize.y() -= kInspectorActionBarHeight;
@@ -13077,7 +13100,7 @@ private:
                 blurScroll_->set_size(blurScrollSize);
                 blurScroll_->set_visible(activeRightPlane_ == RightPlane::Blur);
             }
-            const int graphWidth = std::max(160, blurScrollSize.x() - 12);
+            const int graphWidth = kInspectorContentWidth;
             if (blurProfileGraphRows_) {
                 blurProfileGraphRows_->set_fixed_width(graphWidth);
                 blurProfileGraphRows_->set_size({graphWidth, blurProfileGraphRows_->fixed_height()});
@@ -13095,8 +13118,8 @@ private:
             aiSegWindow_->set_visible(activeRightPlane_ == RightPlane::AiSegmentation);
             if (aiSegScroll_) {
                 const Vector2i scrollSize{
-                    std::max(120, panelSize.x() - 16),
-                    std::max(120, panelSize.y() - 52),
+                    std::max(120, panelSize.x() - kInspectorScrollWidthInset),
+                    std::max(120, panelSize.y() - kInspectorChromeHeight),
                 };
                 aiSegScroll_->set_fixed_size(scrollSize);
                 aiSegScroll_->set_size(scrollSize);
@@ -13111,8 +13134,8 @@ private:
             createViewWindow_->set_visible(activeRightPlane_ == RightPlane::CreateView);
             if (createViewScroll_) {
                 const Vector2i createViewScrollSize{
-                    std::max(120, panelSize.x() - 16),
-                    std::max(120, panelSize.y() - 52 - (createViewActionBar_ ? kInspectorActionBarHeight : 0)),
+                    std::max(120, panelSize.x() - kInspectorScrollWidthInset),
+                    std::max(120, panelSize.y() - kInspectorChromeHeight - (createViewActionBar_ ? kInspectorActionBarHeight : 0)),
                 };
                 if (createViewActionBar_) {
                     createViewActionBar_->set_fixed_size({createViewScrollSize.x(), kInspectorActionBarHeight});
@@ -13164,8 +13187,8 @@ private:
             perceptualWindow_->set_position(panelPos);
             perceptualWindow_->set_visible(activeRightPlane_ == RightPlane::PerceptualMaps);
             Vector2i perceptualScrollSize{
-                std::max(120, panelSize.x() - 16),
-                std::max(120, panelSize.y() - 52),
+                std::max(120, panelSize.x() - kInspectorScrollWidthInset),
+                std::max(120, panelSize.y() - kInspectorChromeHeight),
             };
             if (perceptualActionBar_) {
                 perceptualScrollSize.y() -= kInspectorActionBarHeight;
@@ -13186,14 +13209,14 @@ private:
             imageStatsWindow_->set_visible(activeRightPlane_ == RightPlane::ImageStatistics);
             if (imageStatsScroll_) {
                 const Vector2i statsScrollSize{
-                    std::max(120, panelSize.x() - 16),
-                    std::max(120, panelSize.y() - 52),
+                    std::max(120, panelSize.x() - kInspectorScrollWidthInset),
+                    std::max(120, panelSize.y() - kInspectorChromeHeight),
                 };
                 imageStatsScroll_->set_fixed_size(statsScrollSize);
                 imageStatsScroll_->set_size(statsScrollSize);
                 imageStatsScroll_->set_visible(activeRightPlane_ == RightPlane::ImageStatistics);
             }
-            const int graphWidth = std::max(160, scrollSize.x() - 12);
+            const int graphWidth = kInspectorContentWidth;
             if (imageStatsGraphA_) {
                 imageStatsGraphA_->set_fixed_width(graphWidth);
                 imageStatsGraphA_->set_size({graphWidth, imageStatsGraphA_->fixed_height()});
@@ -15798,7 +15821,7 @@ private:
             info.ppdY = manualPpdY;
             info.fullViewSolidAngleSteradians = computePerspectiveFullViewSolidAngle(parsedView);
             info.note = std::format(
-                "{} · {} x {} · Manual PPD {:.2f} x {:.2f} · FoV {:.1f} x {:.1f}°",
+                "{} · {} × {} · Manual PPD {:.2f} × {:.2f} · FoV {:.1f} × {:.1f}°",
                 info.sourceLabel,
                 image.width,
                 image.height,
@@ -15849,7 +15872,7 @@ private:
         info.ppdY = parsedView.vv > 1e-9 ? static_cast<double>(image.height) / parsedView.vv : 0.0;
         info.fullViewSolidAngleSteradians = computePerspectiveFullViewSolidAngle(parsedView);
         info.note = std::format(
-            "{} · {} x {} · FoV {:.1f} x {:.1f}° · PPD {:.2f} x {:.2f}",
+            "{} · {} × {} · FoV {:.1f} × {:.1f}° · PPD {:.2f} × {:.2f}",
             info.sourceLabel,
             image.width,
             image.height,
@@ -15870,11 +15893,11 @@ private:
         metrics.threshold = threshold;
 
         if (!imageInfo.valid) {
-            metrics.note = imageInfo.note.empty() ? "Perspective image info is unavailable." : imageInfo.note;
+            metrics.note = imageInfo.note.empty() ? "Perspective image info is unavailable" : imageInfo.note;
             return metrics;
         }
         if (!imageInfo.metricsAvailable) {
-            metrics.note = imageInfo.note.empty() ? "FoV / solid-angle metrics are unavailable for this image." : imageInfo.note;
+            metrics.note = imageInfo.note.empty() ? "FoV / solid-angle metrics are unavailable for this image" : imageInfo.note;
             return metrics;
         }
         if (!(threshold > 0.0)) {
@@ -16029,7 +16052,7 @@ private:
             return data;
         }
         if (!evaluator.valid) {
-            data.note = evaluator.description.empty() ? "Luminance is unavailable." : evaluator.description;
+            data.note = evaluator.description.empty() ? "Luminance is unavailable" : evaluator.description;
             return data;
         }
         if (!(threshold > 0.0)) {
@@ -16156,6 +16179,7 @@ private:
         createPanelHeader(toolbar, "Perceptual maps");
 
         perceptualScroll_ = new DesktopScrollPanel(perceptualWindow_);
+        static_cast<DesktopScrollPanel*>(perceptualScroll_)->setInspectorStyle(true);
         perceptualScroll_->set_fixed_size({256, 850});
         perceptualScroll_->set_size({256, 850});
         auto* content = new Widget(perceptualScroll_);
@@ -16188,7 +16212,7 @@ private:
         statusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
         statusRow->set_fixed_width(kInspectorContentWidth);
         auto* statusDot = new InspectorStatusDot(statusRow, nullptr);
-        perceptualStatusLabel_ = new Label(statusRow, "Open a Radiance HDR image.", "sans", 12);
+        perceptualStatusLabel_ = new Label(statusRow, "Open a Radiance HDR image", "sans", 12);
         perceptualStatusLabel_->set_fixed_width(kInspectorContentWidth - 14);
         perceptualStatusLabel_->set_color(hdrspaceMutedInk(220));
         statusDot->setSource(perceptualStatusLabel_);
@@ -16339,7 +16363,7 @@ private:
         perceptualActionBar_ = new InspectorActionBar(perceptualWindow_);
         perceptualActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         perceptualComputeButton_ = new Button(perceptualActionBar_, "Compute map");
-        perceptualComputeButton_->set_fixed_width(kInspectorContentWidth - 4 - 96 - 8);
+        perceptualComputeButton_->set_fixed_width(kInspectorContentWidth - 96 - 8);
         stylePrimaryButton(perceptualComputeButton_, true);
         perceptualComputeButton_->set_callback([this] { computePerceptualMap(); });
         perceptualSaveButton_ = new Button(perceptualActionBar_, "Save HDR");
@@ -16465,7 +16489,7 @@ private:
             perceptualPpdBox_->set_value(autoPpd ? std::format("{:.2f}", *autoPpd) : std::string("30"));
         }
         if (!info.usesPpd) {
-            perceptualPpdNoteLabel_->set_caption("Not used by this map.");
+            perceptualPpdNoteLabel_->set_caption("Not used by this map");
             perceptualPpdNoteLabel_->set_color(hdrspaceMutedInk(160));
         } else if (perceptualPpdEdited_) {
             perceptualPpdNoteLabel_->set_caption(autoPpd ? std::format("Edited (VIEW gives {:.2f}).", *autoPpd) : std::string("Entered by you."));
@@ -16481,14 +16505,14 @@ private:
 
         const int inputColor = perceptualInputColor();
         std::string status;
-        if (!image) status = "Open a Radiance HDR image.";
-        else if (!usable) status = "Perceptual maps need a saved Radiance .hdr file.";
+        if (!image) status = "Open a Radiance HDR image";
+        else if (!usable) status = "Perceptual maps need a saved Radiance .hdr file";
         else if (inputColor < 0) status = viewer_->sourceColorKind() < 0
             ? "Colour space unknown. Assign it above first."
-            : "This colour space can't be used (raw or custom primaries).";
+            : "This colour space can't be used (raw or custom primaries)";
         else if (perceptualKind_ == 6 && viewer_->sourceColorKind() == 4) status = "Eqv. luminance needs a colour picture.";
         else if (perceptualStats_ && perceptualComputedKey_ == perceptualSettingsKey()) status = std::string("Ready: ") + info.name + " shown.";
-        else status = "Ready to compute.";
+        else status = "Ready to compute";
         if (!perceptualErrorText_.empty()) status = perceptualErrorText_;
         perceptualStatusLabel_->set_caption(status);
         const bool computable = usable && inputColor >= 0 && !(perceptualKind_ == 6 && viewer_->sourceColorKind() == 4);
@@ -16746,6 +16770,7 @@ private:
         createPanelHeader(toolbar, "Blur");
 
         blurScroll_ = new DesktopScrollPanel(blurWindow_);
+        static_cast<DesktopScrollPanel*>(blurScroll_)->setInspectorStyle(true);
         blurScroll_->set_fixed_size({256, 850});
         blurScroll_->set_size({256, 850});
         auto* content = new Widget(blurScroll_);
@@ -16781,7 +16806,7 @@ private:
         imageCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         imageCard->set_fixed_width(kInspectorContentWidth);
 
-        blurStatusLabel_ = new Label(blurStatusRow, "Open a saved HDR image first.", "sans", 12);
+        blurStatusLabel_ = new Label(blurStatusRow, "Open a saved HDR image first", "sans", 12);
         blurStatusLabel_->set_fixed_width(kInspectorContentWidth - 14);
         blurStatusLabel_->set_color(hdrspaceMutedInk(220));
         blurStatusDot->setSource(blurStatusLabel_);
@@ -16893,7 +16918,7 @@ private:
         blurActionBar_ = new InspectorActionBar(blurWindow_);
         blurActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         auto* blurRunButton = new Button(blurActionBar_, "Run blur");
-        blurRunButton->set_fixed_width(kInspectorContentWidth - 4);
+        blurRunButton->set_fixed_width(kInspectorContentWidth);
         stylePrimaryButton(blurRunButton, true);
         blurRunButton->set_callback([this] { startBlurRun(); });
 
@@ -16962,7 +16987,7 @@ private:
         const std::string ppd = info.metricsAvailable ? std::format("{:.2f} x {:.2f}", info.ppdX, info.ppdY) : "--";
         const std::string solidAngle = info.metricsAvailable ? std::format("{:.5f} sr", info.fullViewSolidAngleSteradians) : "--";
         return std::format(
-            "Image: {}\nSize: {} x {}\nProjection: {}\nFoV: {}\nPPD: {}\nFull view Ω: {}\nLuminance: {}\n{}",
+            "Image: {}\nSize: {} × {}\nProjection: {}\nFoV: {}\nPPD: {}\nFull view Ω: {}\nLuminance: {}\n{}",
             info.sourceLabel,
             info.width,
             info.height,
@@ -16979,10 +17004,10 @@ private:
 
     static std::string formatBlurKernelSummary(double mmPerPixel, double fwhmMm, double sigmaPixels, int kernelSize) {
         if (!(mmPerPixel > 0.0) || !(fwhmMm > 0.0)) {
-            return "Kernel: enter positive mm/pixel and FWHM(mm) values.";
+            return "Kernel: enter positive mm/pixel and FWHM(mm) values";
         }
         return std::format(
-            "Kernel: mm/pixel {:.6g} · FWHM {:.6g} mm · sigma {:.4f} px · size {} x {}",
+            "Kernel: mm/pixel {:.6g} · FWHM {:.6g} mm · sigma {:.4f} px · size {} × {}",
             mmPerPixel,
             fwhmMm,
             sigmaPixels,
@@ -17237,7 +17262,7 @@ private:
             blurLivePreview_.metrics.note = "Enter a positive threshold to preview the highlighted source and source metrics.";
         } else if (!blurImageInfo_.luminanceEvaluator.valid) {
             blurLivePreview_.metrics.note = blurImageInfo_.luminanceEvaluator.description.empty()
-                ? "Luminance is unavailable for this image."
+                ? "Luminance is unavailable for this image"
                 : blurImageInfo_.luminanceEvaluator.description;
         }
 
@@ -17326,7 +17351,7 @@ private:
             if (!blurStatusText_.empty()) {
                 blurStatusLabel_->set_caption(blurStatusText_);
             } else if (!blurImageInfo_.valid) {
-                blurStatusLabel_->set_caption(blurImageInfo_.note.empty() ? "Open a saved HDR image first." : blurImageInfo_.note);
+                blurStatusLabel_->set_caption(blurImageInfo_.note.empty() ? "Open a saved HDR image first" : blurImageInfo_.note);
             } else if (!blurResultPath_.empty()) {
                 blurStatusLabel_->set_caption(std::format("Blur ready: {}", blurResultPath_.filename().string()));
             } else {
@@ -17511,14 +17536,14 @@ private:
                 if ((mode == BlurRunMode::HumanVisionAchromaticExperimental || mode == BlurRunMode::HumanVisionDklColorExperimental) &&
                     !result.imageInfo.metricsAvailable) {
                     throw std::runtime_error(result.imageInfo.note.empty()
-                        ? "Experimental human-vision blur requires perspective FoV information."
+                        ? "Experimental human-vision blur requires perspective FoV information"
                         : result.imageInfo.note);
                 }
                 if (mode == BlurRunMode::HumanVisionDklColorExperimental) {
                     const auto colorInfo = resolveBlurSourceColorInfo(inputImage);
                     if (!colorInfo.valid) {
                         throw std::runtime_error(colorInfo.description.empty()
-                            ? "DKL-like color blur could not derive a usable source color space."
+                            ? "DKL-like color blur could not derive a usable source color space"
                             : colorInfo.description);
                     }
                 }
@@ -17598,7 +17623,7 @@ private:
                 blurLastKernelSize_ = result.kernelSize;
                 if (mode == BlurRunMode::PhysicalSizeGaussian) {
                     blurStatusText_ = std::format(
-                        "{} finished: {} (sigma {:.4f} px, kernel {} x {})",
+                        "{} finished: {} (sigma {:.4f} px, kernel {} × {})",
                         result.modeLabel,
                         result.outputPath.filename().string(),
                         result.sigmaPixels,
@@ -17948,7 +17973,7 @@ private:
         info.solidAngleSteradians = solidAngle;
         info.solidAnglePercentOfView = fullViewSolidAngle > 1e-9 ? (solidAngle / fullViewSolidAngle * 100.0) : 0.0;
         info.note = std::format(
-            "Mask-based result from a temporary {}x{} render (actual {}x{}), threshold {:.2f}, {} active pixel(s), {} white window polygon(s).",
+            "Mask-based result from a temporary {} × {} render (actual {} × {}), threshold {:.2f}, {} active pixel(s), {} white window polygon(s).",
             requestedWidth,
             requestedHeight,
             image.width,
@@ -18417,8 +18442,8 @@ private:
                 }
                 info.valid = info.hasSkySource || info.hasSun;
                 info.note = info.valid
-                    ? "Radiance environment source parsed for the preview hemisphere."
-                    : "Could not parse Radiance environment source file.";
+                    ? "Radiance environment source parsed for the preview hemisphere"
+                    : "Could not parse Radiance environment source file";
                 return info;
             } else {
                 const HdrImage image = readRadianceHDR(path.string());
@@ -18785,7 +18810,7 @@ private:
 
                 if (!errorText.empty()) {
                     if (createViewWindowMaskStatusLabel_) {
-                        createViewWindowMaskStatusLabel_->set_caption("Window FoV calculation failed.");
+                        createViewWindowMaskStatusLabel_->set_caption("Window FoV calculation failed");
                     }
                     showMessage(errorText);
                     return;
@@ -18797,13 +18822,13 @@ private:
                         createViewWindowMaskStatusLabel_->set_caption(
                             !createViewWindowMaskFovInfo_.debugMaskPath.empty()
                                 ? std::format("Refined Window FoV ready. Debug white.hdr saved to {}.", createViewWindowMaskFovInfo_.debugMaskPath.string())
-                                : "Refined Window FoV ready from a temporary mask render."
+                                : "Refined Window FoV ready from a temporary mask render"
                         );
                     } else {
                         createViewWindowMaskStatusLabel_->set_caption(
                             !createViewWindowMaskFovInfo_.debugMaskPath.empty()
                                 ? std::format("Window FoV calculation finished, but no window mask was detected. Debug white.hdr saved to {}.", createViewWindowMaskFovInfo_.debugMaskPath.string())
-                                : "Window FoV calculation finished, but no window mask was detected."
+                                : "Window FoV calculation finished, but no window mask was detected"
                         );
                     }
                 }
@@ -18958,7 +18983,7 @@ private:
 
         if (createViewCanvasRenderPreview_) {
             createViewCanvasRenderPreview_->setBusy(true);
-            createViewCanvasRenderPreview_->setStatusText("Rendering a fast preview at a 1000 x 1000 request...");
+            createViewCanvasRenderPreview_->setStatusText("Rendering a fast preview at a 1000 × 1000 request...");
         }
 
         std::thread([this, commandText = command.str(), logPath, outputPath]() {
@@ -18983,7 +19008,7 @@ private:
                 if (cancelled) {
                     if (createViewCanvasRenderPreview_) {
                         createViewCanvasRenderPreview_->setBusy(false);
-                        createViewCanvasRenderPreview_->setStatusText("Preview cancelled.");
+                        createViewCanvasRenderPreview_->setStatusText("Preview cancelled");
                     }
                     return;
                 }
@@ -18994,13 +19019,13 @@ private:
                         if (createViewCanvasRenderPreview_) {
                             createViewCanvasRenderPreview_->setPreviewImage(previewImage, outputPath);
                             createViewCanvasRenderPreview_->setStatusText(
-                                std::format("Preview ready: {} x {}", previewImage.width, previewImage.height)
+                                std::format("Preview ready: {} × {}", previewImage.width, previewImage.height)
                             );
                         }
                     } catch (const std::exception& e) {
                         if (createViewCanvasRenderPreview_) {
                             createViewCanvasRenderPreview_->setBusy(false);
-                            createViewCanvasRenderPreview_->setStatusText("Preview finished, but could not be loaded.");
+                            createViewCanvasRenderPreview_->setStatusText("Preview finished, but could not be loaded");
                         }
                         showMessage(std::string("Preview render succeeded, but the image could not be loaded: ") + e.what());
                     }
@@ -19329,7 +19354,7 @@ private:
                             createViewRenderProgressBar_->set_value(0.0f);
                         }
                         if (createViewRenderStatusLabel_) {
-                            createViewRenderStatusLabel_->set_caption("Create View render cancelled.");
+                            createViewRenderStatusLabel_->set_caption("Create View render cancelled");
                         }
                         return;
                     }
@@ -19759,7 +19784,7 @@ private:
                 createViewMaterialListPanel_->remove_child_at(createViewMaterialListPanel_->children().size() - 1);
             }
             if (createViewMaterialNames_.empty()) {
-                auto* empty = new Label(createViewMaterialListPanel_, "No materials in this category.", "sans", 12);
+                auto* empty = new Label(createViewMaterialListPanel_, "No materials in this category", "sans", 12);
                 empty->set_color(hdrspaceMutedInk(210));
             } else {
                 for (size_t i = 0; i < createViewMaterialNames_.size(); ++i) {
@@ -20282,15 +20307,15 @@ private:
     void refreshCreateViewSummaryLabels() {
         if (createViewStatusLabel_) {
             if (createViewRoomInfo_.hasBounds && createViewViewInfo_.valid && createViewEnvironmentInfo_.valid) {
-                createViewStatusLabel_->set_caption("Room, camera view, and environment map parsed.");
+                createViewStatusLabel_->set_caption("Room, camera view, and environment map parsed");
             } else if (createViewRoomInfo_.hasBounds && createViewViewInfo_.valid) {
-                createViewStatusLabel_->set_caption("Room bounds and camera view parsed.");
+                createViewStatusLabel_->set_caption("Room bounds and camera view parsed");
             } else if (createViewRoomInfo_.hasBounds) {
                 createViewStatusLabel_->set_caption("Room parsed. Add a .vf file or rvu command.");
             } else if (createViewViewInfo_.valid) {
                 createViewStatusLabel_->set_caption("View parsed. Add a room .rad file for extents.");
             } else {
-                createViewStatusLabel_->set_caption("Choose a room .rad file and a .vf view file.");
+                createViewStatusLabel_->set_caption("Choose a room .rad file and a .vf view file");
             }
         }
 
@@ -20394,12 +20419,12 @@ private:
                     envParts.push_back(createViewEnvironmentInfo_.skyDescription);
                 }
                 createViewEnvironmentSummaryLabel_->set_caption(std::format(
-                    "Environment: {}\nHDR: {} x {}\nProjection: {}\n{}\n{}",
+                    "Environment: {}\nHDR: {} × {}\nProjection: {}\n{}\n{}",
                     createViewEnvironmentInfo_.sourceLabel.empty() ? "--" : createViewEnvironmentInfo_.sourceLabel,
                     createViewEnvironmentInfo_.width,
                     createViewEnvironmentInfo_.height,
                     createViewEnvironmentInfo_.projectionLabel.empty() ? "Angular fisheye" : createViewEnvironmentInfo_.projectionLabel,
-                    envParts.empty() ? "No directional header metadata." : joinSemanticParts(envParts),
+                    envParts.empty() ? "No directional header metadata" : joinSemanticParts(envParts),
                     createViewEnvironmentInfo_.note
                 ));
             } else {
@@ -20515,7 +20540,7 @@ private:
         refreshCreateViewMaterialEditorUi();
         refreshCreateViewSummaryLabels();
         if (createViewCanvasRenderPreview_) {
-            createViewCanvasRenderPreview_->clearPreview("Click Preview to render a fast 1000 x 1000 request for the current room, view, and HDR.");
+            createViewCanvasRenderPreview_->clearPreview("Click Preview to render a fast 1000 × 1000 request for the current room, view, and HDR");
         }
         if (createViewRenderProgressBar_) {
             createViewRenderProgressBar_->set_value(0.0f);
@@ -20540,6 +20565,7 @@ private:
         createPanelHeader(toolbar, "Create View");
 
         createViewScroll_ = new DesktopScrollPanel(createViewWindow_);
+        static_cast<DesktopScrollPanel*>(createViewScroll_)->setInspectorStyle(true);
         createViewScroll_->set_fixed_size({256, 850});
         createViewScroll_->set_size({256, 850});
         auto* content = new Widget(createViewScroll_);
@@ -20568,7 +20594,7 @@ private:
         createViewStatusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
         createViewStatusRow->set_fixed_width(kInspectorContentWidth);
         auto* createViewStatusDot = new InspectorStatusDot(createViewStatusRow, nullptr);
-        createViewStatusLabel_ = new Label(createViewStatusRow, "Choose a room .rad file and a .vf view file.", "sans", 12);
+        createViewStatusLabel_ = new Label(createViewStatusRow, "Choose a room .rad file and a .vf view file", "sans", 12);
         createViewStatusLabel_->set_fixed_width(kInspectorContentWidth - 14);
         createViewStatusLabel_->set_color(hdrspaceMutedInk(220));
         createViewStatusDot->setSource(createViewStatusLabel_);
@@ -20727,7 +20753,7 @@ private:
             createViewMaterialsExpanded_ = !createViewMaterialsExpanded_;
             refreshCreateViewMaterialsVisibility();
         });
-        auto* materialsCaption = new Label(materialsCard, "Inspect the current definition, preview an edit, then write it back to the source file.", "sans", 12);
+        auto* materialsCaption = new Label(materialsCard, "Inspect the current definition, preview an edit, then write it back to the source file", "sans", 12);
         materialsCaption->set_color(hdrspaceMutedInk(214));
         materialsCaption->set_fixed_width(kInspectorContentWidth);
 
@@ -20763,7 +20789,7 @@ private:
         auto* currentDefLabel = new Label(currentDefSection, "Current definition", "sans", 14);
         currentDefLabel->set_fixed_width(kInspectorContentWidth);
         currentDefLabel->set_color(hdrspaceInk(240));
-        auto* currentDefCaption = new Label(currentDefSection, "Source primitive read from the loaded material file.", "sans", 12);
+        auto* currentDefCaption = new Label(currentDefSection, "Source primitive read from the loaded material file", "sans", 12);
         currentDefCaption->set_fixed_width(kInspectorContentWidth);
         currentDefCaption->set_color(hdrspaceMutedInk(198));
 
@@ -20786,7 +20812,7 @@ private:
         auto* editDefLabel = new Label(editDefSection, "Edited definition", "sans", 14);
         editDefLabel->set_fixed_width(kInspectorContentWidth);
         editDefLabel->set_color(hdrspaceInk(240));
-        auto* editDefCaption = new Label(editDefSection, "Paste a replacement primitive, preview it, then write it back.", "sans", 12);
+        auto* editDefCaption = new Label(editDefSection, "Paste a replacement primitive, preview it, then write it back", "sans", 12);
         editDefCaption->set_fixed_width(kInspectorContentWidth);
         editDefCaption->set_color(hdrspaceMutedInk(198));
 
@@ -20815,7 +20841,7 @@ private:
         styleSecondaryButton(clearPreviewButton, true);
         clearPreviewButton->set_callback([this] { clearCreateViewMaterialPreview(); });
 
-        createViewMaterialStatusLabel_ = new Label(editDefSection, "Choose a material or click a surface, then preview a new definition here.", "sans", 12);
+        createViewMaterialStatusLabel_ = new Label(editDefSection, "Choose a material or click a surface, then preview a new definition here", "sans", 12);
         createViewMaterialStatusLabel_->set_fixed_width(kInspectorContentWidth);
         createViewMaterialStatusLabel_->set_color(hdrspaceMutedInk(214));
 
@@ -20886,7 +20912,7 @@ private:
         createViewActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         auto* renderActionRow = createViewActionBar_;
         auto* renderButton = new Button(renderActionRow, "Run render");
-        renderButton->set_fixed_width(152);
+        renderButton->set_fixed_width(156);
         stylePrimaryButton(renderButton, true);
         renderButton->set_callback([this] { startCreateViewRender(); });
         auto* terminateRenderButton = new Button(renderActionRow, "Stop render");
@@ -20919,7 +20945,7 @@ private:
         createViewCanvasRenderPreview_->set_fixed_size({300, 220});
         createViewCanvasRenderPreview_->set_size({300, 220});
         createViewCanvasRenderPreview_->set_visible(false);
-        createViewCanvasRenderPreview_->setStatusText("Click Preview to render a fast 1000 x 1000 request for the current room, view, and HDR.");
+        createViewCanvasRenderPreview_->setStatusText("Click Preview to render a fast 1000 × 1000 request for the current room, view, and HDR");
         createViewCanvasRenderPreview_->setRenderRequestCallback([this] { startCreateViewQuickPreview(); });
     }
 
@@ -20993,7 +21019,7 @@ private:
         styleSecondaryButton(chooseInputs);
         chooseInputs->set_callback([this] { chooseInputFiles(); });
 
-        inputSummaryLabel_ = new Label(parent, "No files selected.", "sans", 12);
+        inputSummaryLabel_ = new Label(parent, "No files selected", "sans", 12);
         inputSummaryLabel_->set_fixed_width(kMergeContentWidth);
         inputSummaryLabel_->set_color(Color{214, 217, 220, 220});
 
@@ -21081,7 +21107,7 @@ private:
         }
 
         auto mergeOptions = makeAccordion("Merge behavior", false);
-        auto* mergeHelp = new Label(mergeOptions.body, "Defaults use LibRaw XYZCAM, header-derived parameters, and fast weight/interpolation choices.", "sans", 12);
+        auto* mergeHelp = new Label(mergeOptions.body, "Defaults use LibRaw XYZCAM, header-derived parameters, and fast weight/interpolation choices", "sans", 12);
         mergeHelp->set_fixed_width(kMergeContentWidth);
         mergeHelp->set_font_size(kMergeNoteFont);
         mergeHelp->set_color(Color{214, 217, 220, 200});
@@ -21134,7 +21160,7 @@ private:
         rawgridSpacer->set_fixed_width(kMergeHalfWidth);
 
         auto colorExposure = makeAccordion("Clipping & scale", false);
-        auto* colorExposureHint = new Label(colorExposure.body, "Expert mode lets you enter these parameters directly.", "sans", 12);
+        auto* colorExposureHint = new Label(colorExposure.body, "Expert mode lets you enter these parameters directly", "sans", 12);
         colorExposureHint->set_color(Color{214, 217, 220, 188});
         colorExposureHint->set_fixed_width(kMergeContentWidth);
         auto* bwRow = new Widget(colorExposure.body);
@@ -21188,7 +21214,7 @@ private:
         }
 
         auto advancedSensor = makeAccordion("ColorOpt & advanced", false);
-        auto* sensorHint = new Label(advancedSensor.body, "For matrix overrides, raw multipliers, and command-line level control.", "sans", 12);
+        auto* sensorHint = new Label(advancedSensor.body, "For matrix overrides, raw multipliers, and command-line level control", "sans", 12);
         sensorHint->set_color(Color{214, 217, 220, 188});
         sensorHint->set_fixed_width(kMergeContentWidth);
         auto* xyzColumn = makeFieldColumn(advancedSensor.body, "XYZCAM");
@@ -21208,7 +21234,7 @@ private:
         mergeActionBar_ = new InspectorActionBar(controlsWindow_);
         mergeActionBar_->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
         runMergeButton_ = new Button(mergeActionBar_, "Merge");
-        runMergeButton_->set_fixed_width(kMergeContentWidth - 4);
+        runMergeButton_->set_fixed_width(kMergeContentWidth);
         runMergeButton_->set_font_size(13);
         stylePrimaryButton(runMergeButton_, true);
         runMergeButton_->set_callback([this] { startMerge(); });
@@ -21223,7 +21249,7 @@ private:
         stageDot->setSource(stageLabel_);
         progressBar_ = new ProgressBar(statusRow);
         progressBar_->set_value(0.0f);
-        rangeLabel_ = new Label(statusRow, "No luminance summary yet.", "sans", 12);
+        rangeLabel_ = new Label(statusRow, "No luminance summary yet", "sans", 12);
         issuesLabel_ = new Label(statusRow, "", "sans", 12);
         issuesLabel_->set_color(Color(255, 110, 110, 255));
 
@@ -21615,7 +21641,7 @@ private:
             if (glareImageSize.x() != glareImageSize.y()) {
                 if (error) {
                     *error = std::format(
-                        "Evaluate Glare needs a square cropped equidistant HDR. Current image is {}x{}. Crop it first or enable Force (-f).",
+                        "Evaluate Glare needs a square cropped equidistant HDR. Current image is {} × {}. Crop it first or enable Force (-f).",
                         glareImageSize.x(),
                         glareImageSize.y()
                     );
@@ -22003,7 +22029,7 @@ private:
         }
 
         if (!glareResult_.has_value()) {
-            auto* empty = new Label(glareSourcesPanel_, "No glare result yet.", "sans", 12);
+            auto* empty = new Label(glareSourcesPanel_, "No glare result yet", "sans", 12);
             empty->set_color(Color{214, 217, 220, 180});
             return;
         }
@@ -22275,10 +22301,10 @@ private:
         }
 
         if (glareAiCandidates_.empty()) {
-            auto* empty = new Label(glareAiCandidatesPanel_, "No candidates yet.", "sans", 12);
+            auto* empty = new Label(glareAiCandidatesPanel_, "No candidates yet", "sans", 12);
             empty->set_color(Color(214, 217, 220, 180));
             if (glareAiCandidatesHintLabel_) {
-                glareAiCandidatesHintLabel_->set_caption("No candidates yet.");
+                glareAiCandidatesHintLabel_->set_visible(false);
             }
             refreshAiReviewSummaryUi();
             return;
@@ -22322,6 +22348,7 @@ private:
         }
 
         if (glareAiCandidatesHintLabel_) {
+            glareAiCandidatesHintLabel_->set_visible(true);
             glareAiCandidatesHintLabel_->set_caption(std::to_string(selectedCount) + "/" +
                                                     std::to_string(glareAiCandidates_.size()) + " selected");
         }
@@ -23458,10 +23485,10 @@ private:
                 finishImageVosTask();
                 updateAiMaskPointUi();
                 if (result.exitCode == 0) {
-                    setImageVosStatusCaption("DA3Metric-Large ready on MPS (Apple Silicon).");
+                    setImageVosStatusCaption("DA3Metric-Large ready on MPS (Apple Silicon)");
                     showMessage("DA3 Metric MPS runtime and model are ready.");
                 } else {
-                    setImageVosStatusCaption("DA3 Metric installation failed.");
+                    setImageVosStatusCaption("DA3 Metric installation failed");
                     const std::string detail = trim(result.stderrText.empty() ? result.stdoutText : result.stderrText);
                     showMessage("DA3 Metric installation failed:\n" + detail);
                 }
@@ -23539,8 +23566,8 @@ private:
         if (imageVosSummaryLabel_) {
             imageVosSummaryLabel_->set_caption(
                 pairedAnalysis
-                    ? "Both DA3 outputs will be preserved; paired depth and category VOS will also be saved."
-                    : "Running perspective DA3 inference; this can take several minutes on first use."
+                    ? "Both DA3 outputs will be preserved; paired depth and category VOS will also be saved"
+                    : "Running perspective DA3 inference; this can take several minutes on first use"
             );
         }
         updateAiMaskPointUi();
@@ -23626,8 +23653,8 @@ private:
                 if (result.exitCode == 0 && fs::exists(packedHdr)) {
                     setImageVosStatusCaption(
                         pairedAnalysis
-                            ? "Paired Image VOS comparison ready (MPS / DA3Metric-Large)."
-                            : "Image VOS ready (MPS / DA3Metric-Large)."
+                            ? "Paired Image VOS comparison ready (MPS / DA3Metric-Large)"
+                            : "Image VOS ready (MPS / DA3Metric-Large)"
                     );
                     if (pairedAnalysis) {
                         if (const auto pair = imageVosPairSummaryFromJson(outputDir / "pair_comparison.json")) {
@@ -23650,7 +23677,7 @@ private:
                         + outputDir.string()
                     );
                 } else {
-                    setImageVosStatusCaption("Image VOS calculation failed.");
+                    setImageVosStatusCaption("Image VOS calculation failed");
                     const std::string detail = trim(result.stderrText.empty() ? result.stdoutText : result.stderrText);
                     showMessage("Image VOS calculation failed:\n" + detail);
                 }
@@ -24073,7 +24100,7 @@ private:
                 glareProfileSummaryLabel_->set_caption("Profile: open an image first");
             }
             if (glareProfileStatusLabel_) {
-                glareProfileStatusLabel_->set_caption("No current image.");
+                glareProfileStatusLabel_->set_caption("No current image");
             }
             return;
         }
@@ -24084,7 +24111,7 @@ private:
                 glareProfileSummaryLabel_->set_caption("Profile: run Evaluate Glare first");
             }
             if (glareProfileStatusLabel_) {
-                glareProfileStatusLabel_->set_caption("No glare result yet.");
+                glareProfileStatusLabel_->set_caption("No glare result yet");
             }
             return;
         }
@@ -24096,7 +24123,7 @@ private:
                 glareProfileSummaryLabel_->set_caption("Profile: current selection is empty");
             }
             if (glareProfileStatusLabel_) {
-                glareProfileStatusLabel_->set_caption("No valid glare pixels for this selection.");
+                glareProfileStatusLabel_->set_caption("No valid glare pixels for this selection");
             }
             return;
         }
@@ -24133,7 +24160,7 @@ private:
                 if (result.ok) {
                     glareProfileStatusLabel_->set_caption(result.statusMessage);
                 } else {
-                    glareProfileStatusLabel_->set_caption(result.statusMessage.empty() ? "Profile unavailable." : result.statusMessage);
+                    glareProfileStatusLabel_->set_caption(result.statusMessage.empty() ? "Profile unavailable" : result.statusMessage);
                 }
             }
             if (result.ok) {
@@ -24152,7 +24179,7 @@ private:
                     glareProfileSummaryLabel_->set_caption("Profile: " + selection->label);
                 }
                 if (glareProfileStatusLabel_) {
-                    glareProfileStatusLabel_->set_caption(result.statusMessage.empty() ? "Profile unavailable." : result.statusMessage);
+                    glareProfileStatusLabel_->set_caption(result.statusMessage.empty() ? "Profile unavailable" : result.statusMessage);
                 }
             }
         } catch (const std::exception& e) {
@@ -24194,8 +24221,8 @@ private:
             imageStatsValueModeCombo_->set_enabled(hasImage);
             imageStatsValueModeCombo_->set_tooltip(
                 rgbSupported
-                    ? "Switch between luminance statistics and raw RGB channel statistics."
-                    : "RGB can be selected, but this image may not expose three usable color channels."
+                    ? "Switch between luminance statistics and raw RGB channel statistics"
+                    : "RGB can be selected, but this image may not expose three usable color channels"
             );
         }
 
@@ -24254,7 +24281,7 @@ private:
             const auto region = viewer_->imageCanvas()->statisticsRegionInImageCoords();
             if (region.isValid()) {
                 imageStatsRegionSummaryLabel_->set_caption(std::format(
-                    "Region: {} x {} px at {},{}",
+                    "Region: {} × {} px at {}, {}",
                     region.size().x(),
                     region.size().y(),
                     region.min.x(),
@@ -24346,7 +24373,7 @@ private:
     void runImageStatistics() {
         if (!viewer_ || !viewer_->currentImage()) {
             clearImageStatisticsResult();
-            setImageStatisticsStatusCaption("Open an image first.");
+            setImageStatisticsStatusCaption("Open an image first");
             updateGlareOverlay();
             return;
         }
@@ -24359,7 +24386,7 @@ private:
             if (result.ok) {
                 setImageStatisticsStatusCaption(result.statusMessage);
             } else {
-                setImageStatisticsStatusCaption(result.statusMessage.empty() ? "Statistics failed." : result.statusMessage);
+                setImageStatisticsStatusCaption(result.statusMessage.empty() ? "Statistics failed" : result.statusMessage);
             }
             refreshImageStatisticsUi();
             updateGlareOverlay();
@@ -24661,7 +24688,7 @@ private:
             const auto chosenPath = promptGraphCsvBasePath(suggestedGraphPreviewCsvBasePath(), "Save graph CSV");
             if (!chosenPath.has_value()) {
                 if (graphPreviewStatusLabel_) {
-                    graphPreviewStatusLabel_->set_caption("CSV export canceled.");
+                    graphPreviewStatusLabel_->set_caption("CSV export canceled");
                 }
                 return;
             }
@@ -24722,7 +24749,7 @@ private:
         try {
             const auto chosenPath = promptGraphCsvBasePath(suggestedImageStatisticsGraphCsvBasePath(), "Save statistics graph CSV");
             if (!chosenPath.has_value()) {
-                setImageStatisticsStatusCaption("Graph CSV export canceled.");
+                setImageStatisticsStatusCaption("Graph CSV export canceled");
                 return;
             }
             fs::path basePath = *chosenPath;
@@ -25493,7 +25520,7 @@ private:
             const std::string stderrText = trim(readFile(glareAiProcess_.stderrPath));
             stopPersistentAiProcessLocked();
             if (error) {
-                *error = stderrText.empty() ? "AI helper did not become ready." : stderrText;
+                *error = stderrText.empty() ? "AI helper did not become ready" : stderrText;
             }
             return false;
         }
@@ -25563,7 +25590,7 @@ private:
                 const std::string stderrText = trim(readFile(glareAiProcess_.stderrPath));
                 stopPersistentAiProcessLocked();
                 result.exitCode = 1;
-                result.stderrText = stderrText.empty() ? "Failed to talk to MLX SAM3 helper." : stderrText;
+                result.stderrText = stderrText.empty() ? "Failed to talk to MLX SAM3 helper" : stderrText;
                 return result;
             }
 
@@ -25572,7 +25599,7 @@ private:
                 const std::string stderrText = trim(readFile(glareAiProcess_.stderrPath));
                 stopPersistentAiProcessLocked();
                 result.exitCode = 1;
-                result.stderrText = stderrText.empty() ? "MLX SAM3 helper timed out." : stderrText;
+                result.stderrText = stderrText.empty() ? "MLX SAM3 helper timed out" : stderrText;
                 return result;
             }
 
@@ -26500,8 +26527,8 @@ private:
                         stageLabel_->set_caption(dualFisheye ? "Dual-fisheye merge complete" : "Merge complete");
                         if (!outputUpdated || !secondaryOutputUpdated) {
                             issuesLabel_->set_caption(dualFisheye
-                                ? "One or both output paths already existed and were not updated during this run."
-                                : "Output path already existed and was not updated during this run.");
+                                ? "One or both output paths already existed and were not updated during this run"
+                                : "Output path already existed and was not updated during this run");
                         }
                         if (dualFisheye) {
                             // Load right first so the left (primary) view remains current.
@@ -26521,7 +26548,7 @@ private:
                             }
                             issuesLabel_->set_caption(missing);
                         } else if (issues.empty()) {
-                            issuesLabel_->set_caption("Check merge settings.");
+                            issuesLabel_->set_caption("Check merge settings");
                         }
                     }
                 });
