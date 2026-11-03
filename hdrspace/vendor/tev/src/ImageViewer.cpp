@@ -476,6 +476,17 @@ void styleViewerSidebarButton(Button* button, int icon = 0, bool compact = false
     button->set_text_color(viewerSidebarInk());
 }
 
+// hdrspace: text fields in the docked Viewer share the inspector field look.
+void flattenSidebarTextBoxes(Widget* root) {
+    for (Widget* child : root->children()) {
+        if (auto* box = dynamic_cast<TextBox*>(child)) {
+            box->set_flat_style(Color(255, 255, 255, 13), Color(255, 255, 255, 22), Color(255, 255, 255, 28));
+            box->set_corner_radius(4.0f);
+        }
+        flattenSidebarTextBoxes(child);
+    }
+}
+
 void styleViewerToolbarButton(Button* button, int icon = 0, bool strong = false) {
     if (!button) {
         return;
@@ -2228,6 +2239,10 @@ ImageViewer::ImageViewer(
         mGroupButtonContainer->set_fixed_height(25);
         mFooter->set_fixed_height(25);
         mFooter->set_visible(false);
+    }
+
+    if (mSidebarOnRight && mSidebarLayout) {
+        flattenSidebarTextBoxes(mSidebarLayout);
     }
 
     set_resize_callback([this](Vector2i) { requestLayoutUpdate(); });

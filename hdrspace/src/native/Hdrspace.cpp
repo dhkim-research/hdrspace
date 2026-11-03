@@ -1785,32 +1785,6 @@ private:
     bool bare_ = false;
 };
 
-// Text field drawn like InspectorComboBox: flat fill, 1 px light edge, 4 px corners, a
-// lighter fill on hover and while typing. nanogui's inset look is switched off with an almost
-// transparent solid colour; text, caret, selection and units stay nanogui's.
-class InspectorTextBox final : public nanogui::TextBox {
-public:
-    explicit InspectorTextBox(Widget* parent) : TextBox(parent, "") {
-        set_solid_color(Color(0, 0, 0, 1));
-        set_corner_radius(4.0f);
-    }
-    void draw(NVGcontext* ctx) override {
-        const float x = m_pos.x(), y = m_pos.y(), w = m_size.x(), h = m_size.y();
-        const bool hot = (m_editable && focused()) || m_mouse_focus;
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, 4.0f);
-        nvgFillColor(ctx, inspectorFieldFill(hot));
-        nvgFill(ctx);
-        TextBox::draw(ctx);
-        // Over nanogui's dark edge: the drop-down edge as it looks on the panel.
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, w - 1.0f, h - 1.0f, 3.5f);
-        nvgStrokeColor(ctx, (!m_valid_format && focused()) ? Color(232, 108, 96, 220) : Color(54, 56, 57, 255));
-        nvgStrokeWidth(ctx, 1.0f);
-        nvgStroke(ctx);
-    }
-};
-
 // Two-line choice tile (name + one grey detail line). Selection is owned by the panel.
 class InspectorTile final : public nanogui::Button {
 public:
@@ -3543,7 +3517,8 @@ public:
             nvgFontSize(ctx, 11.5f);
             nvgFillColor(ctx, hdrspaceMutedInk(210));
             nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_TOP);
-            nvgText(ctx, x + w - 14.0f, y + 13.0f, state_.projectionLabel.c_str(), nullptr);
+            // On the canvas it lines up with the surface counts under it.
+            nvgText(ctx, x + w - (canvas ? 30.0f : 14.0f), y + 13.0f, state_.projectionLabel.c_str(), nullptr);
         }
 
         const float pad = 16.0f;
@@ -3931,18 +3906,21 @@ public:
         accumulateFaces(state_.surfaces);
         std::sort(faces.begin(), faces.end(), [](const auto& a, const auto& b) { return a.depth > b.depth; });
 
-        nvgBeginPath(ctx);
-        nvgRoundedRect(ctx, mainX + 8.0f, mainY + 24.0f, mainW - 16.0f, mainH - 34.0f, 12.0f);
-        nvgFillPaint(ctx, nvgLinearGradient(
-            ctx,
-            mainX,
-            mainY,
-            mainX,
-            mainY + mainH,
-            Color(7, 10, 16, 205),
-            Color(14, 19, 28, 220)
-        ));
-        nvgFill(ctx);
+        if (!canvas) {
+            // In the inspector card the 3D view sits in its own well; on the canvas the canvas is the well.
+            nvgBeginPath(ctx);
+            nvgRoundedRect(ctx, mainX + 8.0f, mainY + 24.0f, mainW - 16.0f, mainH - 34.0f, 12.0f);
+            nvgFillPaint(ctx, nvgLinearGradient(
+                ctx,
+                mainX,
+                mainY,
+                mainX,
+                mainY + mainH,
+                Color(7, 10, 16, 205),
+                Color(14, 19, 28, 220)
+            ));
+            nvgFill(ctx);
+        }
 
         for (const auto& face : faces) {
             nvgBeginPath(ctx);
@@ -13433,7 +13411,10 @@ private:
     }
 
     TextBox* smallTextBox(Widget* parent, std::string_view placeholder = {}) {
-        auto* box = new InspectorTextBox(parent);
+        auto* box = new TextBox(parent, "");
+        // Same look as InspectorComboBox: flat fill, light edge, 4 px corners.
+        box->set_flat_style(inspectorFieldFill(false), inspectorFieldFill(true), inspectorFieldBorder());
+        box->set_corner_radius(4.0f);
         box->set_font_size(14);
         box->set_editable(true);
         box->set_value("");

@@ -128,6 +128,15 @@ public:
         m_solid_color = val;
     }
 
+    /// hdrspace: draw as a flat field (fill, a lighter fill on hover and while typing, a 1 px
+    /// edge) instead of the inset gradient.
+    void set_flat_style(const Color& fill, const Color& hot_fill, const Color& edge) {
+        m_flat_style = true;
+        m_flat_fill = fill;
+        m_flat_hot_fill = hot_fill;
+        m_flat_edge = edge;
+    }
+
     virtual bool mouse_enter_event(const Vector2i &p, bool enter) override;
     virtual bool mouse_button_event(const Vector2i &p, int button, bool down, int modifiers) override;
     virtual bool mouse_motion_event(const Vector2i &p, const Vector2i &rel, int button, int modifiers) override;
@@ -182,6 +191,8 @@ protected:
     float m_text_offset;
     double m_last_click;
     Color m_solid_color;
+    bool m_flat_style = false;
+    Color m_flat_fill, m_flat_hot_fill, m_flat_edge;
 };
 
 /**

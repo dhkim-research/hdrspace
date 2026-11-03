@@ -323,6 +323,10 @@ jobs:
                      @("21-aisegmentation",89,577), @("22-createview",78,637))
           foreach ($t in $tools) { Click $t[1] $t[2] 5; Shot $t[0] }
           Click 65 99 3
+          # the lower part of the Viewer inspector: histogram, region statistics, image list
+          [Win.Mouse]::SetCursorPos(860, 450) | Out-Null
+          for ($k = 0; $k -lt 15; $k++) { [Win.Mouse]::mouse_event(0x0800, 0, 0, -120, 0); Start-Sleep -Milliseconds 150 }
+          Start-Sleep -Seconds 1; Shot "10-viewer-lower"
           Click 962 27 4; Shot "30-help"; [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep 2
           Click 928 27 4; Shot "31-settings"; [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep 2
           "app still running: $(-not $app.HasExited)" | Tee-Object gui-result/status.txt

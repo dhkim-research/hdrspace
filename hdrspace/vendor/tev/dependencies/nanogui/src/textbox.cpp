@@ -144,45 +144,58 @@ Vector2i TextBox::preferred_size_impl(NVGcontext *ctx) const {
 void TextBox::draw(NVGcontext* ctx) {
     Widget::draw(ctx);
 
-    nvgBeginPath(ctx);
-
-    NVGpaint bg, fg1, fg2;
-    if (m_solid_color.a() > 0) {
-        bg = fg1 = fg2 = nvgBoxGradient(ctx,
-            m_pos.x(), m_pos.y(), m_size.x(), m_size.y(),
-            3, 4, m_solid_color, m_solid_color);
-
-        nvgRoundedRect(ctx, m_pos.x(), m_pos.y(), m_size.x(),
-                    m_size.y(), m_corner_radius);
+    if (m_flat_style) {
+        // hdrspace: flat field, lighter on hover and while typing, tinted red on bad input
+        const bool typing = m_editable && focused();
+        const bool hot = typing || (m_spinnable && m_mouse_down_pos.x() != -1) || m_mouse_focus;
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, m_pos.x() + 0.5f, m_pos.y() + 0.5f, m_size.x() - 1.f, m_size.y() - 1.f, m_corner_radius);
+        nvgFillColor(ctx, (typing && !m_valid_format) ? Color(232, 108, 96, 48) : (hot ? m_flat_hot_fill : m_flat_fill));
+        nvgFill(ctx);
+        nvgStrokeColor(ctx, m_flat_edge);
+        nvgStrokeWidth(ctx, 1.0f);
+        nvgStroke(ctx);
     } else {
-        bg = nvgBoxGradient(ctx,
-            m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2,
-            3, 4, Color(255, 32), Color(32, 32));
-        fg1 = nvgBoxGradient(ctx,
-            m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2,
-            3, 4, Color(150, 32), Color(32, 32));
-        fg2 = nvgBoxGradient(ctx,
-            m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2,
-            3, 4, nvgRGBA(255, 0, 0, 100), nvgRGBA(255, 0, 0, 50));
+        nvgBeginPath(ctx);
 
-        nvgRoundedRect(ctx, m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2,
-                    m_size.y() - 2, m_corner_radius);
+        NVGpaint bg, fg1, fg2;
+        if (m_solid_color.a() > 0) {
+            bg = fg1 = fg2 = nvgBoxGradient(ctx,
+                m_pos.x(), m_pos.y(), m_size.x(), m_size.y(),
+                3, 4, m_solid_color, m_solid_color);
+
+            nvgRoundedRect(ctx, m_pos.x(), m_pos.y(), m_size.x(),
+                        m_size.y(), m_corner_radius);
+        } else {
+            bg = nvgBoxGradient(ctx,
+                m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2,
+                3, 4, Color(255, 32), Color(32, 32));
+            fg1 = nvgBoxGradient(ctx,
+                m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2,
+                3, 4, Color(150, 32), Color(32, 32));
+            fg2 = nvgBoxGradient(ctx,
+                m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2, m_size.y() - 2,
+                3, 4, nvgRGBA(255, 0, 0, 100), nvgRGBA(255, 0, 0, 50));
+
+            nvgRoundedRect(ctx, m_pos.x() + 1, m_pos.y() + 1 + 1.0f, m_size.x() - 2,
+                        m_size.y() - 2, m_corner_radius);
+        }
+
+        if (m_editable && focused())
+            m_valid_format ? nvgFillPaint(ctx, fg1) : nvgFillPaint(ctx, fg2);
+        else if (m_spinnable && m_mouse_down_pos.x() != -1)
+            nvgFillPaint(ctx, fg1);
+        else
+            nvgFillPaint(ctx, bg);
+
+        nvgFill(ctx);
+
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, m_pos.x() + 0.5f, m_pos.y() + 0.5f, m_size.x() - 1,
+                       m_size.y() - 1, std::max(m_corner_radius - 0.5f, 0.0f));
+        nvgStrokeColor(ctx, Color(0, 48));
+        nvgStroke(ctx);
     }
-
-    if (m_editable && focused())
-        m_valid_format ? nvgFillPaint(ctx, fg1) : nvgFillPaint(ctx, fg2);
-    else if (m_spinnable && m_mouse_down_pos.x() != -1)
-        nvgFillPaint(ctx, fg1);
-    else
-        nvgFillPaint(ctx, bg);
-
-    nvgFill(ctx);
-
-    nvgBeginPath(ctx);
-    nvgRoundedRect(ctx, m_pos.x() + 0.5f, m_pos.y() + 0.5f, m_size.x() - 1,
-                   m_size.y() - 1, std::max(m_corner_radius - 0.5f, 0.0f));
-    nvgStrokeColor(ctx, Color(0, 48));
-    nvgStroke(ctx);
 
     nvgFontSize(ctx, font_size());
     nvgFontFace(ctx, "sans");
