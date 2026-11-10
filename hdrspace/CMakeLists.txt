@@ -159,6 +159,11 @@ add_executable(hdrspace
   MACOSX_BUNDLE
   src/main.cpp
   src/native/Hdrspace.cpp
+  src/native/core/TextUtil.cpp
+  src/native/createview/Environment.cpp
+  src/native/createview/Geometry.cpp
+  src/native/createview/SceneFile.cpp
+  src/native/createview/ViewFile.cpp
   src/native/GazeToneMapping.cpp
   src/native/ImageStatistics.cpp
   src/native/PfsToneMapping.cpp
@@ -187,6 +192,28 @@ if(WIN32)
   if(MSVC)
     target_link_options(hdrspace PRIVATE /ENTRY:mainCRTStartup)
   endif()
+endif()
+
+# Unit tests of the calculations that live outside the UI (not part of the app; build with
+# "cmake --build <dir> --target hdrspace_tests" and run the executable).
+add_executable(hdrspace_tests EXCLUDE_FROM_ALL
+  tests/TestMain.cpp
+  tests/CreateViewTests.cpp
+  src/native/core/TextUtil.cpp
+  src/native/createview/Environment.cpp
+  src/native/createview/Geometry.cpp
+  src/native/createview/SceneFile.cpp
+  src/native/createview/ViewFile.cpp
+  "${MERGEHDR_SOURCE_DIR}/hdrimage.cpp"
+)
+if(WIN32)
+  target_sources(hdrspace_tests PRIVATE src/platform/WinPosix.cpp)
+endif()
+target_include_directories(hdrspace_tests PRIVATE src "${MERGEHDR_SOURCE_DIR}")
+target_compile_features(hdrspace_tests PRIVATE cxx_std_20)
+if(MSVC)
+  target_compile_options(hdrspace_tests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+  target_compile_definitions(hdrspace_tests PRIVATE _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS)
 endif()
 
 set_source_files_properties("${HDRSPACE_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
