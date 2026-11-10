@@ -5178,14 +5178,14 @@ ShadowbandCliOptions parseShadowbandOptions(const std::vector<std::string> &args
         ("sfov", po::value<double>(&opts.analysis.sfov)->default_value(2.0), "valid field of view around source in ND image")
         ("srcsize", po::value<double>(&opts.analysis.srcsize)->default_value(6.7967e-05), "source solid angle in steradians")
         ("bw", po::value<double>(&opts.analysis.bw)->default_value(2.0), "shadow band width in degrees")
-        ("margin", po::value<int>(&opts.analysis.margin)->default_value(20), "pixel margin to crop before alignment/reprojection")
+        ("margin", po::value<int>(&opts.analysis.margin)->default_value(20), "pixel margin beyond 180 degrees in the inputs, cropped before the reprojection (RAW inputs are merged with the profile crop enlarged by this margin)")
         ("align", po::bool_switch(&opts.analysis.align)->default_value(true), "align H to V before blending")
         ("no-align", po::bool_switch()->default_value(false), "disable alignment")
-        ("fisheye", po::bool_switch(&opts.analysis.fisheye)->default_value(true), "convert equisolid fisheye to equiangular")
+        ("fisheye", po::bool_switch(&opts.analysis.fisheye)->default_value(true), "convert equisolid fisheye to equiangular after alignment (skipped for inputs that already have VIEW= -vta)")
         ("no-fisheye", po::bool_switch()->default_value(false), "skip fisheye reprojection")
         ("rawext", po::value<std::string>(&opts.rawExt)->default_value("CR2"), "raw extension for directory inputs")
-        ("bandcfg", po::value<std::string>(&opts.bandCfg), "profile or .cfg for H/V raw merge")
-        ("ndcfg", po::value<std::string>(&opts.ndCfg), "profile or .cfg for ND raw merge")
+        ("bandcfg", po::value<std::string>(&opts.bandCfg), "profile or .cfg for H/V raw merge (merged without fisheye reprojection)")
+        ("ndcfg", po::value<std::string>(&opts.ndCfg), "profile or .cfg for ND raw merge (merged without fisheye reprojection)")
         ("check", po::value<std::string>(&opts.analysis.checkPrefix), "debug output prefix")
         ("input-files", po::value<std::vector<std::string> >(), "input");
 
@@ -6170,10 +6170,65 @@ std::string ensureShadowbandHdrInput(const ShadowbandCliOptions &opts, const std
     runOpts.inputs.push_back(shadowbandRawPatternFromInput(inputPath, opts.rawExt));
 
     const GlobalOptions global = shadowbandGlobalFromConfigSpec(cfgSpec);
+
+    // As in pylinearhdr shadowband, H/V/ND are merged as plain equisolid fisheye pictures and the
+    // single equisolid -> equidistant reprojection happens later, after the H/V alignment and the
+    // margin crop. A profile's fisheye = True is therefore not applied in this pre-merge.
+    RunOptions profileOpts;
+    applyConfigDefaults(profileOpts, loadConfigValues(configPathFromGlobal(global)));
+    if (profileOpts.dualFisheye || !profileOpts.singleFisheyeProjection.empty())
+        throw std::runtime_error("shadowband raw pre-merge needs a profile for one square equisolid fisheye crop; " +
+                                 cfgSpec + " uses dual_fisheye or single_fisheye_projection.");
+    runOpts.fisheyeOverride = true;
+    runOpts.fisheye = false;
+
+    // pylinearhdr expects every input to extend --margin pixels beyond the 180-degree circle (its
+    // shadowband configs carried that larger crop). The profile crop is the 180-degree square of a
+    // normal merge, so it is enlarged by the margin on every side; shadowband crops the margin again
+    // after the alignment, which leaves exactly the profile's 180-degree square.
+    const int margin = std::max(0, opts.analysis.margin);
+    if (margin > 0 && (opts.analysis.align || opts.analysis.fisheye) && profileOpts.crop.size() == 4) {
+        std::vector<int> crop = profileOpts.crop;
+        crop[0] -= margin;
+        crop[1] -= margin;
+        crop[2] += 2 * margin;
+        crop[3] += 2 * margin;
+        if (crop[0] < 0 || crop[1] < 0)
+            throw std::runtime_error("shadowband --margin " + std::to_string(margin) + " reaches outside the raw frame for the " +
+                                     label + " input (profile crop starts at " + std::to_string(profileOpts.crop[0]) + " " +
+                                     std::to_string(profileOpts.crop[1]) + "); use a smaller --margin.");
+        runOpts.crop = crop;
+        runOpts.cropOverride = true;
+    }
+
     const int rc = runMerge(global, runOpts);
     if (rc != 0)
         throw std::runtime_error("shadowband raw pre-merge failed for " + label + " input: " + inputPath);
     return runOpts.outputPath;
+}
+
+// True when the picture's own (column-0) header says it is already an equidistant (-vta) fisheye,
+// i.e. mergehdr reprojected it during the merge.
+bool shadowbandInputIsEquidistant(const HdrImage &image) {
+    for (const std::string &line : image.rawHeaderLines) {
+        if (line.rfind("MERGEHDR_PROJECTION=", 0) == 0) {
+            if (lowerCopy(trimCopy(line.substr(20))) == "equidistant")
+                return true;
+            continue;
+        }
+        if (line.rfind("VIEW=", 0) != 0)
+            continue;
+        std::istringstream tokens(line.substr(5));
+        std::string token;
+        std::string projection;
+        while (tokens >> token) {
+            if (token.rfind("-vt", 0) == 0 && token.size() == 4)
+                projection = token;
+        }
+        if (projection == "-vta")
+            return true;
+    }
+    return false;
 }
 
 int printShadowband(const ShadowbandCliOptions &opts) {
@@ -6195,6 +6250,28 @@ int printShadowband(const ShadowbandCliOptions &opts) {
     HdrImage horizontal = readRadianceHDRTopDown(resolved.horizontalPath);
     HdrImage vertical = readRadianceHDRTopDown(resolved.verticalPath);
     HdrImage noShadow = readRadianceHDRTopDown(resolved.noShadowPath);
+
+    // pylinearhdr shadowband expects equisolid inputs with a margin beyond 180 degrees. HDRs that
+    // mergehdr already reprojected (VIEW= -vta) are exactly 180 degrees and equidistant, so a second
+    // reprojection or a margin crop would distort their angles: both steps are skipped for them.
+    std::vector<std::string> inputProjectionNotes;
+    {
+        const bool hEq = shadowbandInputIsEquidistant(horizontal);
+        const bool vEq = shadowbandInputIsEquidistant(vertical);
+        const bool nEq = shadowbandInputIsEquidistant(noShadow);
+        if (hEq || vEq || nEq) {
+            if (!(hEq && vEq && nEq))
+                throw std::runtime_error("shadowband H/V/ND inputs mix equidistant (VIEW= -vta) and equisolid pictures; "
+                                         "give all three in the same projection.");
+            if (resolved.analysis.fisheye || resolved.analysis.margin > 0)
+                std::cerr << "shadowband: inputs are already equidistant (VIEW= -vta); "
+                             "skipping the fisheye reprojection and the margin crop.\n";
+            resolved.analysis.fisheye = false;
+            resolved.analysis.margin = 0;
+            inputProjectionNotes.push_back("SHADOWBAND_INPUT_PROJECTION= equidistant (VIEW= -vta); "
+                                           "fisheye reprojection and margin crop skipped");
+        }
+    }
 
     const ShadowbandInputColorInfo hColor = resolveShadowbandInputColorInfo(horizontal);
     const ShadowbandInputColorInfo vColor = resolveShadowbandInputColorInfo(vertical);
@@ -6225,6 +6302,7 @@ int printShadowband(const ShadowbandCliOptions &opts) {
         sbopts << " sunloc:None";
     sbopts << " margin:" << resolved.analysis.margin;
     header.push_back(sbopts.str());
+    header.insert(header.end(), inputProjectionNotes.begin(), inputProjectionNotes.end());
     header.push_back(formatPrimariesHeader(parseColorSpaceSpec("rad").primaries));
     header.push_back(formatPairHeader("TargetWhitePoint", parseColorSpaceSpec("rad").white));
     header.push_back(formatTripletHeader("LuminanceRGB", std::array<float, 3>{{0.26507413f, 0.67011463f, 0.06481124f}}));

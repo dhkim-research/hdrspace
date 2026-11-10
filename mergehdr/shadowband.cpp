@@ -1115,17 +1115,19 @@ HdrImage applyAlignment(const HdrImage &image, int shiftX, int shiftY, int margi
     const int srcX1 = std::min(static_cast<int>(image.width), shiftX + static_cast<int>(image.width) - margin);
     const int srcY1 = std::min(static_cast<int>(image.height), shiftY + static_cast<int>(image.height) - margin);
 
-    const int dstX0 = 0;
-    const int dstY0 = 0;
-    const int copyWidth = std::max(0, srcX1 - srcX0);
-    const int copyHeight = std::max(0, srcY1 - srcY0);
-    if (copyWidth == 0 || copyHeight == 0)
+    // Same as pylinearhdr do_alignment while margin + shift >= 0. A shift larger than the margin
+    // used to be applied as -margin; the destination now starts where the clamped source lands.
+    const int dstX0 = std::max(0, -(margin + shiftX));
+    const int dstY0 = std::max(0, -(margin + shiftY));
+    const int copyWidth = std::min(std::max(0, srcX1 - srcX0), outWidth - dstX0);
+    const int copyHeight = std::min(std::max(0, srcY1 - srcY0), outHeight - dstY0);
+    if (copyWidth <= 0 || copyHeight <= 0)
         return out;
 
-    for (int y = 0; y < copyHeight && y < outHeight; ++y) {
+    for (int y = 0; y < copyHeight; ++y) {
         const size_t srcIndex = (static_cast<size_t>(srcY0 + y) * image.width + static_cast<size_t>(srcX0)) * 3;
         const size_t dstIndex = (static_cast<size_t>(dstY0 + y) * out.width + static_cast<size_t>(dstX0)) * 3;
-        const size_t count = static_cast<size_t>(std::min(copyWidth, outWidth)) * 3;
+        const size_t count = static_cast<size_t>(copyWidth) * 3;
         std::copy_n(image.rgb.begin() + static_cast<std::ptrdiff_t>(srcIndex),
                     static_cast<std::ptrdiff_t>(count),
                     out.rgb.begin() + static_cast<std::ptrdiff_t>(dstIndex));
@@ -1651,6 +1653,12 @@ ShadowbandMergeResult mergeShadowbandNative(
         }
         v = cropMargin(v, margin);
         s = cropMargin(s, margin);
+    } else if (opts.fisheye && opts.margin > 0) {
+        // pylinearhdr: without alignment the margin beyond 180 degrees is still cropped
+        // before the reprojection, so the reprojected square is exactly 180 degrees.
+        h = cropMargin(h, opts.margin);
+        v = cropMargin(v, opts.margin);
+        s = cropMargin(s, opts.margin);
     }
 
     if (opts.fisheye) {

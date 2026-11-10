@@ -1430,7 +1430,8 @@ def command_analyze(args: argparse.Namespace) -> int:
         "MERGEHDR_IMAGE_VOS_MAX_DEPTH_M": f"{args.max_depth:.6f}",
         "MERGEHDR_IMAGE_VOS_WINDOW_DISTANCE_M": f"{args.window_distance:.6f}",
     }
-    radiance_view = projection_metadata.get("view")
+    # resolve_projection returns no metadata for inputs without a Radiance VIEW (EXR, PNG, ...)
+    radiance_view = (projection_metadata or {}).get("view")
     if isinstance(radiance_view, str) and radiance_view.strip():
         common_metadata["VIEW"] = radiance_view.strip()
     depth_rgb = np.repeat(depth[..., None], 3, axis=-1)

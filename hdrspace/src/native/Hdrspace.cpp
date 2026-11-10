@@ -48,6 +48,7 @@
 #include <ImfChannelList.h>
 #include <ImfStringAttribute.h>
 #include <ImfHeader.h>
+#include <ImfStandardAttributes.h>
 #include <ImfFrameBuffer.h>
 #include <half.h>
 
@@ -171,12 +172,19 @@ void graphPreviewDebugLog(const std::string& message) {
     output << std::put_time(std::localtime(&time), "%H:%M:%S") << " | " << message << "\n";
 }
 
-void writeNativeOpenExr(const std::string& filename, size_t width, size_t height, int channels, float* data, const ExrMetadataMap& metadata, bool writeHalf) {
+void writeNativeOpenExr(const std::string& filename, size_t width, size_t height, int channels, float* data, const ExrMetadataMap& metadata, bool writeHalf,
+                        const Imf::Chromaticities* chromaticities = nullptr) {
     Imf::setGlobalThreadCount(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
 
     Imf::Header header(static_cast<int>(width), static_cast<int>(height));
     for (const auto& [key, value] : metadata) {
         header.insert(key.c_str(), Imf::StringAttribute(value.c_str()));
+    }
+    if (chromaticities) {
+        // Standard attributes, so software outside Radiance reads the primaries and the absolute
+        // scale: the values are in cd/m², i.e. RGB (1, 1, 1) has a luminance of 1 cd/m².
+        Imf::addChromaticities(header, *chromaticities);
+        Imf::addWhiteLuminance(header, 1.0f);
     }
 
     Imf::ChannelList& channelList = header.channels();
@@ -6592,6 +6600,7 @@ private:
                 outputFolderBox_->set_value(mergeOutputPath.parent_path().string());
                 outputNameBox_->set_value(mergeOutputPath.filename().string());
                 outputFormatCombo_->set_selected_index(0);
+                syncMergeColorspaceChoicesToFormat();
                 if (inputSummaryLabel_) {
                     inputSummaryLabel_->set_caption(summarizeSelectedFiles(inputFiles_));
                 }
@@ -7858,19 +7867,21 @@ private:
         }
     }
 
-    void applyViewVisibilityResultDisplay(bool updateStatus = true) {
+    void applyViewVisibilityResultDisplay(bool updateStatus = true, bool reloadResult = false) {
         if (!viewer_ || !viewVisibilityResult_ || viewVisibilityResult_->resultPath.empty() || !fs::exists(viewVisibilityResult_->resultPath)) {
             return;
         }
 
+        std::error_code equivalentError;
         const bool alreadyShowingResult =
             viewer_->currentImage() &&
             !viewer_->currentImage()->path().empty() &&
-            fs::equivalent(viewer_->currentImage()->path(), viewVisibilityResult_->resultPath);
+            fs::equivalent(viewer_->currentImage()->path(), viewVisibilityResult_->resultPath, equivalentError);
 
         pendingViewVisibilityPair_.reset();
         viewer_->selectReference(nullptr);
-        if (!alreadyShowingResult) {
+        // A new computation rewrites the same cache file, so a result that is already shown is read again.
+        if (!alreadyShowingResult || reloadResult) {
             loadImageIntoViewer(viewVisibilityResult_->resultPath);
         }
         viewer_->setInspectionPresetIndex(0);
@@ -8080,7 +8091,7 @@ private:
                 viewVisibilityResult_->detailLabel,
                 viewVisibilityInputColorLabel()
             ));
-            applyViewVisibilityResultDisplay(false);
+            applyViewVisibilityResultDisplay(false, true);
             updateContextStripUi();
         } catch (const std::exception& e) {
             resetViewVisibilityResult();
@@ -13732,6 +13743,8 @@ private:
         size_t xformCount = 0;
         std::map<std::string, CreateViewMaterialInfo> materials;
         std::map<std::string, fs::path> modifierSourcePaths;
+        std::set<fs::path> parsedPaths;      // every file read while parsing (canonical)
+        std::set<fs::path> roomLoadedPaths;  // the room file and what it loads itself (!include / !xform)
         std::vector<CreateViewPreviewState::Surface> surfaces;
         std::vector<CreateViewPreviewState::PointSample> pointCloud;
         std::map<std::string, size_t> semanticCounts;
@@ -14131,7 +14144,7 @@ private:
             const auto& a = polygon[j];
             const auto& b = polygon[i];
             const bool crosses = ((a[1] > point[1]) != (b[1] > point[1])) &&
-                (point[0] <= (b[0] - a[0]) * (point[1] - a[1]) / std::max(1e-12, b[1] - a[1]) + a[0]);
+                (point[0] <= (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0]);
             if (crosses) {
                 inside = !inside;
             }
@@ -14741,6 +14754,7 @@ private:
             activePaths.erase(resolved);
             return;
         }
+        info.parsedPaths.insert(resolved);
 
         std::vector<std::string> primitiveTokens;
         std::string line;
@@ -14927,7 +14941,10 @@ private:
             std::error_code ec;
             const fs::path canonical = fs::weakly_canonical(candidate, ec);
             const fs::path normalized = ec ? candidate : canonical;
-            if (normalized == normalizedRoomPath || !seen.insert(normalized).second) {
+            // Files the room loads itself (through !include / !xform, with their transforms) must not be
+            // given to oconv again: only the supplemental material files the room does not load.
+            if (normalized == normalizedRoomPath || createViewRoomInfo_.roomLoadedPaths.contains(normalized) ||
+                    !seen.insert(normalized).second) {
                 return;
             }
             out.push_back(normalized);
@@ -14998,6 +15015,7 @@ private:
 
         std::set<fs::path> activePaths;
         parseCreateViewRoomRecursive(path, CreateViewTransform{}, activePaths, info);
+        info.roomLoadedPaths = info.parsedPaths;
         const auto supplementalMaterialFiles = discoverCreateViewSupplementalMaterialFiles(path, info);
         for (const auto& materialFile : supplementalMaterialFiles) {
             std::set<fs::path> materialActivePaths;
@@ -15028,7 +15046,9 @@ private:
         bool hasDirection = false;
         for (size_t i = 0; i < tokens.size(); ++i) {
             const std::string& token = tokens[i];
-            if (token.rfind("-vt", 0) == 0 && token.size() >= 4) {
+            // Only Radiance's six projections are accepted: the token is later put into shell
+            // commands, so anything else (for example "-vtv;cmd") is ignored.
+            if (token == "-vtv" || token == "-vtl" || token == "-vta" || token == "-vth" || token == "-vtc" || token == "-vts") {
                 info.projectionToken = token;
                 info.projectionLabel = radianceViewProjectionLabel(token);
             } else if (token == "-vp" && i + 3 < tokens.size()) {
@@ -15779,7 +15799,7 @@ private:
         const double maxLevel = static_cast<double>(pyramid.size() - 1);
 
         for (size_t displayY = 0; displayY < input.height; ++displayY) {
-            const size_t imageY = input.height - 1 - displayY;
+            const size_t imageY = displayY; // rgb rows are bottom-up, like screenY (0 = bottom of the view)
             for (size_t x = 0; x < input.width; ++x) {
                 const auto& d00 = row0[x];
                 const auto& d10 = row0[x + 1];
@@ -15941,7 +15961,7 @@ private:
         const double maxLevelYV = static_cast<double>(yellowVioletPyramid.size() - 1);
 
         for (size_t displayY = 0; displayY < input.height; ++displayY) {
-            const size_t imageY = input.height - 1 - displayY;
+            const size_t imageY = displayY; // rgb rows are bottom-up, like screenY (0 = bottom of the view)
             for (size_t x = 0; x < input.width; ++x) {
                 const auto& d00 = row0[x];
                 const auto& d10 = row0[x + 1];
@@ -16247,7 +16267,7 @@ private:
                 const auto& d11 = row1[x + 1];
                 const auto& d01 = row1[x];
                 const double pixelSolidAngle = createViewSphericalQuadSolidAngle(d00, d10, d11, d01);
-                const size_t imageY = image.height - 1 - displayY;
+                const size_t imageY = displayY; // rgb rows are bottom-up, like screenY (0 = bottom of the view)
                 const double luminance = std::max(0.0, evaluateHdrLuminance(image, x, imageY, imageInfo.luminanceEvaluator));
                 if (luminance < threshold) {
                     continue;
@@ -18770,14 +18790,30 @@ private:
                     info.projectionLabel = "Assumed angular fisheye";
                 }
 
-                const std::string skySource = createViewHeaderValue(image, "SKYSOURCE");
+                // SKYSOURCE / SOLARSOURCE header text is copied into the scene that oconv reads, and oconv runs
+                // a '!' word as a shell command. Real source descriptions never contain '!', so such text
+                // in a picture's header is ignored instead of being run.
+                std::string skySource = createViewHeaderValue(image, "SKYSOURCE");
+                std::string solarSource = createViewHeaderValue(image, "SOLARSOURCE");
+                std::vector<std::string> ignoredSources;
+                if (skySource.find('!') != std::string::npos) {
+                    ignoredSources.push_back("SKYSOURCE");
+                    skySource.clear();
+                }
+                if (solarSource.find('!') != std::string::npos) {
+                    ignoredSources.push_back("SOLARSOURCE");
+                    solarSource.clear();
+                }
+                if (!ignoredSources.empty()) {
+                    info.note = std::format("Ignored the {} header text: it contains '!', which oconv would run as a command.",
+                                            ignoredSources.size() == 2 ? std::string("SKYSOURCE and SOLARSOURCE") : ignoredSources.front());
+                }
                 if (!skySource.empty()) {
                     info.rawSkySource = skySource;
                     info.imageZRotationDegrees = parseCreateViewInlineRotateZDegrees(skySource);
                     double skyOmega = 0.0;
                     info.hasSkySource = parseCreateViewEnvironmentSourceFromHeader(skySource, info.skyDirection, skyOmega, nullptr);
                 }
-                const std::string solarSource = createViewHeaderValue(image, "SOLARSOURCE");
                 if (!solarSource.empty()) {
                     info.rawSolarSource = solarSource;
                     info.hasSun = parseCreateViewEnvironmentSourceFromHeader(solarSource, info.sunDirection, info.sunSolidAngle, &info.sunColor);
@@ -18791,10 +18827,14 @@ private:
                     info.up,
                     info.imageZRotationDegrees
                 );
+                const std::string ignoredNote = info.note;
                 if (info.patches.empty()) {
                     info.note = "Environment header was parsed, but preview patches could not be generated.";
                 } else {
                     info.note = "HDR fisheye projected onto a hemisphere using header view orientation.";
+                }
+                if (!ignoredNote.empty()) {
+                    info.note += " " + ignoredNote;
                 }
             }
         } catch (const std::exception& e) {
@@ -20500,52 +20540,66 @@ private:
             return block.str();
         };
 
+        {
+            // The editor writes plastic/metal (5 values) and glass (3 values); other types have other
+            // argument layouts and would be damaged by that block.
+            const std::string outputType = createViewLower(overrideValue.radianceType.empty() ? material.type : overrideValue.radianceType);
+            if (outputType != "plastic" && outputType != "metal" && outputType != "glass") {
+                error = std::format("Write to source supports plastic, metal and glass definitions; {} uses another argument layout.",
+                                    overrideValue.radianceType.empty() ? material.type : overrideValue.radianceType);
+                return false;
+            }
+        }
+
         for (size_t start = 0; start < lines.size(); ++start) {
             const auto head = splitWhitespace(trim(lines[start]));
             if (head.size() < 3) {
                 continue;
             }
-            if (head[2] != material.name) {
+            if (head[2] != material.name || createViewLower(head[1]) != createViewLower(material.type)) {
                 continue;
             }
-            size_t pos = start + 1;
-            auto consumeBlock = [&](int count) {
-                while (count > 0 && pos < lines.size()) {
-                    const auto tokens = splitWhitespace(trim(lines[pos]));
-                    count -= static_cast<int>(tokens.size());
-                    ++pos;
+
+            // Radiance allows each argument count and its values on any lines; usually the values follow
+            // the count on the same line ("5 .5 .5 .5 0 0"). Walk the tokens after the name across
+            // lines, so exactly this primitive's lines are replaced and the next primitive is kept.
+            std::vector<std::string> lineTokens(head.begin() + 3, head.end());
+            size_t lineIndex = start;
+            size_t tokenIndex = 0;
+            auto nextToken = [&](std::string& token) -> bool {
+                while (tokenIndex >= lineTokens.size()) {
+                    if (lineIndex + 1 >= lines.size()) {
+                        return false;
+                    }
+                    ++lineIndex;
+                    const std::string trimmed = trim(lines[lineIndex]);
+                    lineTokens = (!trimmed.empty() && trimmed[0] == '#') ? std::vector<std::string>{} : splitWhitespace(trimmed);
+                    tokenIndex = 0;
                 }
+                token = lineTokens[tokenIndex++];
+                return true;
             };
-            if (pos >= lines.size()) {
-                break;
+            bool parsed = true;
+            for (int section = 0; section < 3 && parsed; ++section) {
+                std::string countToken;
+                int count = 0;
+                if (!nextToken(countToken) || !tryParseInteger(countToken, count) || count < 0) {
+                    parsed = false;
+                    break;
+                }
+                for (int i = 0; i < count && parsed; ++i) {
+                    std::string skipped;
+                    parsed = nextToken(skipped);
+                }
             }
-            int n1 = 0;
-            const auto l1 = splitWhitespace(trim(lines[pos]));
-            if (l1.empty() || !tryParseInteger(l1[0], n1)) {
+            if (!parsed) {
                 continue;
             }
-            ++pos;
-            consumeBlock(n1);
-            if (pos >= lines.size()) {
-                break;
+            if (tokenIndex < lineTokens.size()) {
+                error = std::format("The definition of {} in {} shares a line with other text; edit it by hand.", material.name, filePath.string());
+                return false;
             }
-            int n2 = 0;
-            const auto l2 = splitWhitespace(trim(lines[pos]));
-            if (l2.empty() || !tryParseInteger(l2[0], n2)) {
-                continue;
-            }
-            ++pos;
-            consumeBlock(n2);
-            if (pos >= lines.size()) {
-                break;
-            }
-            int n3 = 0;
-            const auto l3 = splitWhitespace(trim(lines[pos]));
-            if (l3.empty() || !tryParseInteger(l3[0], n3)) {
-                continue;
-            }
-            ++pos;
-            consumeBlock(n3);
+            const size_t pos = lineIndex + 1;
 
             const std::string replacement = buildBlock();
             std::vector<std::string> replacementLines;
@@ -20557,16 +20611,34 @@ private:
             lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(start), lines.begin() + static_cast<std::ptrdiff_t>(pos));
             lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(start), replacementLines.begin(), replacementLines.end());
 
-            std::ofstream output(filePath, std::ios::trunc);
-            if (!output) {
-                error = std::format("Could not write {}.", filePath.string());
-                return false;
-            }
-            for (size_t i = 0; i < lines.size(); ++i) {
-                output << lines[i];
-                if (i + 1 < lines.size()) {
-                    output << "\n";
+            // Write a sibling file first and rename it over the original, so a failed write never
+            // leaves the scene file cut short.
+            fs::path temporaryPath = filePath;
+            temporaryPath += ".hdrspace-tmp";
+            {
+                std::ofstream output(temporaryPath, std::ios::trunc);
+                if (!output) {
+                    error = std::format("Could not write {}.", filePath.string());
+                    return false;
                 }
+                for (const std::string& outputLine : lines) {
+                    output << outputLine << "\n";
+                }
+                output.close();
+                if (!output) {
+                    std::error_code removeError;
+                    fs::remove(temporaryPath, removeError);
+                    error = std::format("Could not write {}.", filePath.string());
+                    return false;
+                }
+            }
+            std::error_code renameError;
+            fs::rename(temporaryPath, filePath, renameError);
+            if (renameError) {
+                std::error_code removeError;
+                fs::remove(temporaryPath, removeError);
+                error = std::format("Could not replace {}: {}", filePath.string(), renameError.message());
+                return false;
             }
             return true;
         }
@@ -21300,6 +21372,8 @@ private:
             auto* formatColumn = makeFieldColumn(outputMetaRow, "Format");
             outputFormatCombo_ = new InspectorComboBox(formatColumn, {"HDR (.hdr)", "EXR (.exr)"});
             outputFormatCombo_->set_selected_index(0);
+            outputFormatCombo_->set_tooltip("EXR is written in cd/m² (Radiance values x 179) as Radiance RGB or XYZ, for software outside Radiance");
+            outputFormatCombo_->set_callback([this](int) { syncMergeColorspaceChoicesToFormat(); });
             outputFormatCombo_->set_side(Popup::Side::Left);
             outputFormatCombo_->set_font_size(kMergeFieldFont);
             outputFormatCombo_->set_fixed_width(kMergeFieldWidth);
@@ -22778,12 +22852,58 @@ private:
         relayoutDesktopPanelsPreserveViewerUi();
     }
 
+    static std::string glareResultKey(const fs::path& path) {
+        std::error_code error;
+        const fs::path canonical = fs::weakly_canonical(path, error);
+        return (error ? path : canonical).string();
+    }
+
+    // Keeps a glare result for a picture that is not shown, so it comes back with that picture.
+    void stashGlareResult(const fs::path& imagePath, EvalGlareAnalysisResult result, std::string text,
+                          std::optional<EvalGlareOptions> options, double bandAngle) {
+        const std::string key = glareResultKey(imagePath);
+        std::erase_if(stashedGlareResults_, [&](const StashedGlareResult& entry) { return entry.key == key; });
+        stashedGlareResults_.push_back({key, std::move(result), std::move(text), std::move(options), bandAngle});
+        constexpr size_t kMaxStashedGlareResults = 8;
+        if (stashedGlareResults_.size() > kMaxStashedGlareResults) {
+            stashedGlareResults_.erase(stashedGlareResults_.begin());
+        }
+    }
+
     void syncGlareUiToCurrentImage() {
         const void* currentImageKey = viewer_ && viewer_->currentImage() ? static_cast<const void*>(viewer_->currentImage().get()) : nullptr;
         if (glareUiImageKey_ == currentImageKey) {
             return;
         }
         glareUiImageKey_ = currentImageKey;
+        // The glare result (metrics, sources, report, Save, profile mask) always belongs to the shown
+        // picture: another picture's result is parked and comes back when that picture is shown again.
+        const fs::path currentPath = viewer_ && viewer_->currentImage() ? viewer_->currentImage()->path() : fs::path{};
+        const std::string currentKey = currentPath.empty() ? std::string{} : glareResultKey(currentPath);
+        if (glareResult_ && (glareResultPath_.empty() || glareResultKey(glareResultPath_) != currentKey)) {
+            if (!glareResultPath_.empty()) {
+                stashGlareResult(glareResultPath_, std::move(*glareResult_), std::move(glareResultText_), glareLastOptions_, glareLastBandAngle_);
+            }
+            glareResult_.reset();
+            glareResultText_.clear();
+            glareResultPath_.clear();
+            glareSelectedSource_ = -1;
+        }
+        if (!glareResult_ && !currentKey.empty()) {
+            const auto it = std::find_if(stashedGlareResults_.begin(), stashedGlareResults_.end(),
+                                         [&](const StashedGlareResult& entry) { return entry.key == currentKey; });
+            if (it != stashedGlareResults_.end()) {
+                glareResult_ = std::move(it->result);
+                glareResultText_ = std::move(it->text);
+                glareLastOptions_ = std::move(it->options);
+                glareLastBandAngle_ = it->bandAngle;
+                glareResultPath_ = currentPath;
+                glareSelectedSource_ = -1;
+                stashedGlareResults_.erase(it);
+                // Draw its source overlay again once this frame is done.
+                viewer_->scheduleToUiThread([this] { updateGlareOverlay(); });
+            }
+        }
         glareAiPositivePoints_.clear();
         glareAiNegativePoints_.clear();
         glareAiPointHistory_.clear();
@@ -23297,19 +23417,32 @@ private:
         return metadata;
     }
 
-    void convertHdrToExrNative(const fs::path& hdrPath, const fs::path& exrPath) const {
+    // EXR output is meant for people outside Radiance, so it holds cd/m² instead of Radiance units:
+    // the merged Radiance RGB or XYZ values times 179. The viewer and Statistics read EXR values as
+    // they are stored (only .hdr, .pic and .rgbe get the x 179).
+    void convertHdrToExrNative(const fs::path& hdrPath, const fs::path& exrPath, const std::string& colorspace) const {
         if (!fs::exists(hdrPath)) {
             throw std::runtime_error("Temporary HDR output was not created.");
+        }
+        if (colorspace != "rad" && colorspace != "xyz") {
+            throw std::runtime_error("EXR output supports only the rad and xyz output colours.");
         }
 
         fs::create_directories(exrPath.parent_path());
         HdrImage image = readRadianceHDR(hdrPath.string(), true, false);
+        for (float& value : image.rgb) {
+            value *= 179.0f;
+        }
         auto headerLines = hdrHeaderLinesForExrWrite(image);
         headerLines.push_back("HDRSPACE_EXR_CONVERSION= native");
         headerLines.push_back("HDRSPACE_EXR_SOURCE= " + hdrPath.filename().string());
+        headerLines.push_back("HDRSPACE_EXR_UNITS= cd/m2 (Radiance values x 179)");
         image.headerLines = headerLines;
         ExrMetadataMap metadata = exrMetadataFromHeaderLines(headerLines);
-        writeNativeOpenExr(exrPath.string(), image.width, image.height, 3, image.rgb.data(), metadata, false);
+        const Imf::Chromaticities chromaticities = colorspace == "xyz"
+            ? Imf::Chromaticities(Imath::V2f(1.0f, 0.0f), Imath::V2f(0.0f, 1.0f), Imath::V2f(0.0f, 0.0f), Imath::V2f(1.0f / 3.0f, 1.0f / 3.0f))
+            : Imf::Chromaticities(Imath::V2f(0.640f, 0.330f), Imath::V2f(0.290f, 0.600f), Imath::V2f(0.150f, 0.060f), Imath::V2f(1.0f / 3.0f, 1.0f / 3.0f));
+        writeNativeOpenExr(exrPath.string(), image.width, image.height, 3, image.rgb.data(), metadata, false, &chromaticities);
     }
 
     HdrImage currentCanvasHdrImage() const {
@@ -24227,6 +24360,11 @@ private:
         if (!viewer_ || !viewer_->currentImage() || !glareResult_.has_value()) {
             return std::nullopt;
         }
+        // Only the shown picture's own glare result gives its source mask (not one of the same size).
+        if (viewer_->currentImage()->path().empty() || glareResultPath_.empty() ||
+                glareResultKey(viewer_->currentImage()->path()) != glareResultKey(glareResultPath_)) {
+            return std::nullopt;
+        }
 
         const int width = viewer_->currentImage()->size().x();
         const int height = viewer_->currentImage()->size().y();
@@ -24732,7 +24870,7 @@ private:
         const std::string stem = imagePath.empty() ? sanitizeStem("image_statistics") : sanitizeStem(imagePath);
         fs::path candidate = directory / (stem + "_stats_graph");
         int suffix = 2;
-        while (fs::exists(candidate)) {
+        while (graphCsvBaseIsTaken(candidate)) {
             candidate = directory / (stem + "_stats_graph_" + std::to_string(suffix));
             ++suffix;
         }
@@ -24771,11 +24909,80 @@ private:
         }
         fs::path candidate = directory / (stem + "_" + suffix);
         int serial = 2;
-        while (fs::exists(candidate)) {
+        while (graphCsvBaseIsTaken(candidate)) {
             candidate = directory / (stem + "_" + suffix + "_" + std::to_string(serial));
             ++serial;
         }
         return candidate;
+    }
+
+    // A graph CSV export writes <base>.csv for one graph and <base>_<title>.csv for several graphs.
+    static bool graphCsvBaseIsTaken(const fs::path& base) {
+        std::error_code error;
+        if (fs::exists(base, error) || fs::exists(ensureCsvExtension(base), error)) {
+            return true;
+        }
+        const std::string prefix = base.filename().string() + "_";
+        fs::directory_iterator it(base.parent_path(), error);
+        for (const fs::directory_iterator end; !error && it != end; it.increment(error)) {
+            const fs::path name = it->path().filename();
+            if (name.string().rfind(prefix, 0) == 0 && tev::toLower(name.extension().string()) == ".csv") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The save dialog only asks about <base>.csv, but several graphs are written as <base>_<title>.csv:
+    // existing files of those are confirmed here before they are replaced.
+    void writeGraphCsvsAfterConfirm(const fs::path& basePath, std::vector<native::ImageStatisticsGraph> graphs,
+                                    std::function<void(const std::vector<fs::path>&)> onSaved,
+                                    std::function<void(const std::string&)> onError) {
+        std::vector<fs::path> targets;
+        if (graphs.size() == 1) {
+            targets.push_back(ensureCsvExtension(basePath));
+        } else {
+            for (const auto& graph : graphs) {
+                targets.push_back(ensureCsvExtension(basePath.string() + "_" + sanitizeStem(graph.title)));
+            }
+        }
+        auto writeAll = [targets, graphs = std::move(graphs), onSaved, onError]() {
+            try {
+                for (size_t i = 0; i < targets.size(); ++i) {
+                    writeGraphCsvFile(targets[i], graphs[i]);
+                }
+                onSaved(targets);
+            } catch (const std::exception& e) {
+                onError(e.what());
+            }
+        };
+        std::string existing;
+        if (targets.size() > 1) {
+            for (const auto& target : targets) {
+                std::error_code error;
+                if (fs::exists(target, error)) {
+                    existing += "\n" + target.filename().string();
+                }
+            }
+        }
+        if (existing.empty()) {
+            writeAll();
+            return;
+        }
+        auto* dialog = new MessageDialog(
+            viewer_,
+            MessageDialog::Type::Question,
+            "Replace graph CSV files?",
+            "These files already exist:" + existing,
+            "Replace",
+            "Cancel",
+            true
+        );
+        dialog->set_callback([writeAll](int result) {
+            if (result == 0) {
+                writeAll();
+            }
+        });
     }
 
     static fs::path ensureCsvExtension(fs::path path) {
@@ -24981,26 +25188,25 @@ private:
             basePath.replace_extension("");
             fs::create_directories(basePath.parent_path());
 
-            std::vector<fs::path> writtenPaths;
-            if (graphs.size() == 1) {
-                const fs::path outputPath = ensureCsvExtension(basePath);
-                writeGraphCsvFile(outputPath, graphs.front());
-                writtenPaths.push_back(outputPath);
-            } else {
-                for (size_t i = 0; i < graphs.size(); ++i) {
-                    const fs::path outputPath = ensureCsvExtension(basePath.string() + "_" + sanitizeStem(graphs[i].title));
-                    writeGraphCsvFile(outputPath, graphs[i]);
-                    writtenPaths.push_back(outputPath);
+            writeGraphCsvsAfterConfirm(
+                basePath,
+                graphs,
+                [this](const std::vector<fs::path>& writtenPaths) {
+                    if (graphPreviewStatusLabel_) {
+                        graphPreviewStatusLabel_->set_caption(
+                            writtenPaths.size() == 1
+                                ? ("Saved CSV: " + writtenPaths.front().filename().string())
+                                : std::format("Saved {} CSV files", writtenPaths.size())
+                        );
+                    }
+                },
+                [this](const std::string& error) {
+                    if (graphPreviewStatusLabel_) {
+                        graphPreviewStatusLabel_->set_caption("CSV export failed: " + error);
+                    }
+                    showMessage("Failed to save graph CSV: " + error);
                 }
-            }
-
-            if (graphPreviewStatusLabel_) {
-                graphPreviewStatusLabel_->set_caption(
-                    writtenPaths.size() == 1
-                        ? ("Saved CSV: " + writtenPaths.front().filename().string())
-                        : std::format("Saved {} CSV files", writtenPaths.size())
-                );
-            }
+            );
 
         } catch (const std::exception& e) {
             if (graphPreviewStatusLabel_) {
@@ -25040,22 +25246,19 @@ private:
             fs::path basePath = *chosenPath;
             basePath.replace_extension("");
             fs::create_directories(basePath.parent_path());
-            std::vector<fs::path> writtenPaths;
-            if (imageStatsResult_->graphs.size() == 1) {
-                const fs::path outputPath = ensureCsvExtension(basePath);
-                writeGraphCsvFile(outputPath, imageStatsResult_->graphs.front());
-                writtenPaths.push_back(outputPath);
-            } else {
-                for (const auto& graph : imageStatsResult_->graphs) {
-                    const fs::path outputPath = ensureCsvExtension(basePath.string() + "_" + sanitizeStem(graph.title));
-                    writeGraphCsvFile(outputPath, graph);
-                    writtenPaths.push_back(outputPath);
+            writeGraphCsvsAfterConfirm(
+                basePath,
+                imageStatsResult_->graphs,
+                [this](const std::vector<fs::path>& writtenPaths) {
+                    setImageStatisticsStatusCaption(
+                        writtenPaths.size() == 1
+                            ? ("Saved graph CSV: " + writtenPaths.front().filename().string())
+                            : std::format("Saved {} graph CSV files", writtenPaths.size())
+                    );
+                },
+                [this](const std::string& error) {
+                    showMessage("Failed to save graph CSV: " + error);
                 }
-            }
-            setImageStatisticsStatusCaption(
-                writtenPaths.size() == 1
-                    ? ("Saved graph CSV: " + writtenPaths.front().filename().string())
-                    : std::format("Saved {} graph CSV files", writtenPaths.size())
             );
         } catch (const std::exception& e) {
             showMessage(std::string("Failed to save graph CSV: ") + e.what());
@@ -26306,6 +26509,14 @@ private:
                         std::lock_guard<std::mutex> lock{glareTask_.mutex};
                         glareTask_.active = false;
                     }
+                    const fs::path shownPath = viewer_ && viewer_->currentImage() ? viewer_->currentImage()->path() : fs::path{};
+                    if (shownPath.empty() || glareResultKey(shownPath) != glareResultKey(inputPath)) {
+                        // The picture changed while evalglare ran: keep the result for its own picture.
+                        stashGlareResult(inputPath, std::move(result), std::move(text), glareLastOptions_, bandAngle);
+                        glareStatusLabel_->set_caption("Result for " + inputPath.filename().string() + " is ready; select that image to see it.");
+                        refreshGlareUi();
+                        return;
+                    }
                     glareResult_ = std::move(result);
                     glareResultText_ = std::move(text);
                     glareResultPath_ = inputPath;
@@ -26592,6 +26803,7 @@ private:
             outputFormatCombo_->set_selected_index(0);
             outputFormatCombo_->set_enabled(false);
         }
+        syncMergeColorspaceChoicesToFormat();
     }
 
     std::string selectedProfileName() const {
@@ -26616,6 +26828,26 @@ private:
 
     std::string selectedOutputFormat() const {
         return outputFormatCombo_->selected_index() == 0 ? "hdr" : "exr";
+    }
+
+    // EXR output is for people outside Radiance: only Radiance RGB or XYZ, written in cd/m² (x 179).
+    void syncMergeColorspaceChoicesToFormat() {
+        if (!colorspaceCombo_ || !outputFormatCombo_) {
+            return;
+        }
+        const std::vector<std::string> wanted = selectedOutputFormat() == "exr"
+            ? std::vector<std::string>{"rad", "xyz"}
+            : std::vector<std::string>{"rad", "srgb", "xyz", "raw"};
+        const std::vector<std::string> current = colorspaceCombo_->items();
+        if (current == wanted) {
+            return;
+        }
+        const int index = colorspaceCombo_->selected_index();
+        const std::string selected = index >= 0 && index < static_cast<int>(current.size()) ? current[static_cast<size_t>(index)] : "rad";
+        colorspaceCombo_->set_items(wanted);
+        const auto it = std::find(wanted.begin(), wanted.end(), selected);
+        colorspaceCombo_->set_selected_index(it == wanted.end() ? 0 : static_cast<int>(std::distance(wanted.begin(), it)));
+        relayoutDesktopPanelsPreserveViewerUi();
     }
 
     void startMerge() {
@@ -26669,8 +26901,16 @@ private:
         fs::create_directories(outputDir);
 
         std::string outputFormat = dualFisheye ? "hdr" : selectedOutputFormat();
-        if (fs::path(outputName).extension().empty()) {
+        const std::string outputNameExtension = tev::toLower(fs::path(outputName).extension().string());
+        if (outputNameExtension.empty()) {
             outputName += "." + outputFormat;
+        } else if ((outputNameExtension == ".hdr" || outputNameExtension == ".pic" || outputNameExtension == ".exr") &&
+                   outputNameExtension != "." + outputFormat) {
+            // The extension follows the chosen format, so EXR data never lands in a .hdr file.
+            fs::path renamed(outputName);
+            renamed.replace_extension("." + outputFormat);
+            outputName = renamed.string();
+            outputNameBox_->set_value(outputName);
         }
         if (dualFisheye) {
             fs::path normalizedOutputName(outputName);
@@ -26743,11 +26983,12 @@ private:
         const fs::path outputPath = mergeJob_.outputPath;
         const fs::path secondaryOutputPath = mergeJob_.secondaryOutputPath;
         const fs::path intermediateHdrPath = tempHdr;
+        const std::string exrColorspace = selectedColorspace();
         const bool outputUsesRadiance = selectedColorspace() == "rad" && outputFormat == "hdr";
         const auto previousWriteTime = mergeJob_.previousWriteTime;
         const auto secondaryPreviousWriteTime = mergeJob_.secondaryPreviousWriteTime;
 
-        std::thread([this, token, pid, logPath, outputPath, secondaryOutputPath, intermediateHdrPath,
+        std::thread([this, token, pid, logPath, outputPath, secondaryOutputPath, intermediateHdrPath, exrColorspace,
                      requiresNativeExrConversion, outputUsesRadiance, previousWriteTime,
                      secondaryPreviousWriteTime, dualFisheye]() {
             while (!tev::shuttingDown()) {
@@ -26768,7 +27009,7 @@ private:
                 std::string issues = collectWarnings(log);
                 if (finished && exitCode == 0 && requiresNativeExrConversion) {
                     try {
-                        convertHdrToExrNative(intermediateHdrPath, outputPath);
+                        convertHdrToExrNative(intermediateHdrPath, outputPath, exrColorspace);
                         std::error_code removeError;
                         fs::remove(intermediateHdrPath, removeError);
                     } catch (const std::exception& e) {
@@ -27940,6 +28181,14 @@ private:
     float rightInspectorRevealTarget_ = 1.0f;
     double rightInspectorAnimationLastTime_ = 0.0;
     std::optional<EvalGlareAnalysisResult> glareResult_;
+    struct StashedGlareResult {
+        std::string key;
+        EvalGlareAnalysisResult result;
+        std::string text;
+        std::optional<EvalGlareOptions> options;
+        double bandAngle = 0.0;
+    };
+    std::vector<StashedGlareResult> stashedGlareResults_;
     std::optional<EvalGlareOptions> glareLastOptions_;
     std::optional<native::ImageStatisticsResult> glareProfileResult_;
     std::string glareProfileSignature_;

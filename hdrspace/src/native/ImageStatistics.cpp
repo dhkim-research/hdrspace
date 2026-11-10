@@ -48,6 +48,7 @@ struct StatisticsColorInfo {
     bool usingSourceChannels = true;
     tev::ituth273::ETransfer sourceTransfer = tev::ituth273::ETransfer::Linear;
     float sourceScale = 1.0f;
+    float radiometricScale = kWhiteEfficacy;
     EStatisticsLuminanceMode luminanceMode = EStatisticsLuminanceMode::Unavailable;
     Matrix3f sourceToXyz = Matrix3f{1.0f};
     std::array<float, 3> luminanceWeights{0.0f, 0.0f, 0.0f};
@@ -399,6 +400,25 @@ float statisticsSourceScale(const tev::Image& image) {
     return parseExposureCompensationScale(image.attributes()).value_or(1.0f);
 }
 
+// Radiance pictures (.hdr, .pic, .rgbe) store Radiance units (cd/m² / 179), so their values are
+// scaled by 179, unless the file is marked as cd/m² (HDRSPACE_COLOR= ... cd/m2). Every other file
+// (EXR and so on) is read as stored. This is the same rule as the viewer's read-out.
+float statisticsRadiometricScale(const tev::Image& image) {
+    std::string extension = image.path().extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension != ".hdr" && extension != ".pic" && extension != ".rgbe") {
+        return 1.0f;
+    }
+    if (const auto color = findAttributeValue(image.attributes(), "HDRSPACE_COLOR")) {
+        std::string text{*color};
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (text.find("cd/m2") != std::string::npos) {
+            return 1.0f;
+        }
+    }
+    return kWhiteEfficacy;
+}
+
 bool parseLuminanceRgbWeights(std::span<const tev::AttributeNode> nodes, std::array<float, 3>& weights) {
     const auto value = findAttributeValue(nodes, "LuminanceRGB");
     if (!value) {
@@ -463,6 +483,7 @@ StatisticsColorInfo resolveStatisticsColorInfo(
     info.usingSourceChannels = usingSourceChannels;
     info.sourceTransfer = statisticsSourceTransfer(image, usingSourceChannels);
     info.sourceScale = statisticsSourceScale(image);
+    info.radiometricScale = statisticsRadiometricScale(image);
 
     if (!usingSourceChannels) {
         info.luminanceMode = EStatisticsLuminanceMode::Weighted;
@@ -787,17 +808,17 @@ std::vector<float> applyInspectionTransform(
         rgb *= colorInfo.sourceScale;
         if (valueMode == EImageStatisticsValueMode::Luminance) {
             if (colorInfo.luminanceMode == EStatisticsLuminanceMode::Monochrome) {
-                return {rgb.y() * kWhiteEfficacy};
+                return {rgb.y() * colorInfo.radiometricScale};
             }
             if (colorInfo.luminanceWeights[0] != 0.0f || colorInfo.luminanceWeights[1] != 0.0f || colorInfo.luminanceWeights[2] != 0.0f) {
                 const float luminance =
                     rgb.x() * colorInfo.luminanceWeights[0] +
                     rgb.y() * colorInfo.luminanceWeights[1] +
                     rgb.z() * colorInfo.luminanceWeights[2];
-                return {std::max(0.0f, luminance) * kWhiteEfficacy};
+                return {std::max(0.0f, luminance) * colorInfo.radiometricScale};
             }
             const auto xyz = clampToHdrDomain(colorInfo.sourceToXyz * rgb);
-            return {xyz.y() * kWhiteEfficacy};
+            return {xyz.y() * colorInfo.radiometricScale};
         }
     }
 
@@ -805,7 +826,7 @@ std::vector<float> applyInspectionTransform(
         values[c] = std::max(
             0.0f,
             tev::ituth273::invTransferComponent(colorInfo.sourceTransfer, values[c] * alphaFactor) * colorInfo.sourceScale
-        ) * kWhiteEfficacy;
+        ) * colorInfo.radiometricScale;
     }
 
     if (valueMode == EImageStatisticsValueMode::Luminance) {
