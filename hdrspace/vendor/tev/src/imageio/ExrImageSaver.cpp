@@ -25,6 +25,8 @@
 #include <ImfIO.h>
 #include <ImfInputPart.h>
 #include <ImfOutputFile.h>
+#include <ImfStandardAttributes.h>
+#include <ImfStringAttribute.h>
 
 #include <ostream>
 #include <span>
@@ -70,7 +72,11 @@ private:
     ostream& mStream;
 };
 
-Task<void> ExrImageSaver::save(ostream& oStream, const fs::path& path, span<const float> data, Vector2i imageSize, int nChannels) const {
+namespace {
+
+void writeExr(
+    ostream& oStream, const fs::path& path, span<const float> data, Vector2i imageSize, int nChannels, const ExrAbsoluteAttributes* attributes
+) {
     const vector<string> channelNames = {"R", "G", "B", "A"};
 
     if (nChannels <= 0 || nChannels > 4) {
@@ -78,6 +84,16 @@ Task<void> ExrImageSaver::save(ostream& oStream, const fs::path& path, span<cons
     }
 
     Imf::Header header{imageSize.x(), imageSize.y()};
+    if (attributes) {
+        const auto& c = attributes->chromaticities;
+        Imf::addChromaticities(
+            header, Imf::Chromaticities{Imath::V2f{c[0], c[1]}, Imath::V2f{c[2], c[3]}, Imath::V2f{c[4], c[5]}, Imath::V2f{c[6], c[7]}}
+        );
+        Imf::addWhiteLuminance(header, attributes->whiteLuminance);
+        for (const auto& [key, value] : attributes->strings) {
+            header.insert(key.c_str(), Imf::StringAttribute{value});
+        }
+    }
     Imf::FrameBuffer frameBuffer;
 
     for (int i = 0; i < nChannels; ++i) {
@@ -97,8 +113,19 @@ Task<void> ExrImageSaver::save(ostream& oStream, const fs::path& path, span<cons
     Imf::OutputFile file{imfOStream, header};
     file.setFrameBuffer(frameBuffer);
     file.writePixels(imageSize.y());
+}
 
+} // namespace
+
+Task<void> ExrImageSaver::save(ostream& oStream, const fs::path& path, span<const float> data, Vector2i imageSize, int nChannels) const {
+    writeExr(oStream, path, data, imageSize, nChannels, nullptr);
     co_return;
+}
+
+void saveExrWithAttributes(
+    ostream& oStream, const fs::path& path, span<const float> data, Vector2i imageSize, int nChannels, const ExrAbsoluteAttributes& attributes
+) {
+    writeExr(oStream, path, data, imageSize, nChannels, &attributes);
 }
 
 } // namespace tev

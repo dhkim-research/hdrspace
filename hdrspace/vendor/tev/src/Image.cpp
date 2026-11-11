@@ -22,6 +22,7 @@
 #include <tev/ThreadPool.h>
 #include <tev/imageio/Colors.h>
 #include <tev/imageio/ImageLoader.h>
+#include <tev/imageio/ExrImageSaver.h>
 #include <tev/imageio/ImageSaver.h>
 #include <tev/imageio/StbiImageLoader.h>
 
@@ -209,6 +210,22 @@ std::optional<std::vector<std::string>> readRadianceHeaderLines(const fs::path& 
         lines.push_back(line);
     }
     return std::nullopt;
+}
+
+// Product of the EXPOSURE= lines of a Radiance header (Radiance counts only lines that start with
+// "EXPOSURE="; indented lines are copied history). 1 when there are none.
+double radianceExposureProduct(const std::vector<std::string>& lines) {
+    double product = 1.0;
+    for (const auto& line : lines) {
+        if (!line.starts_with("EXPOSURE=")) {
+            continue;
+        }
+        const auto values = parseFloatList(std::string_view{line}.substr(9));
+        if (!values.empty() && std::isfinite(values.front()) && values.front() > 0.0f) {
+            product *= values.front();
+        }
+    }
+    return std::isfinite(product) && product > 0.0 ? product : 1.0;
 }
 
 // Radiance setcolr(): shared exponent, mantissas truncated.
@@ -1875,6 +1892,48 @@ Task<void> Image::save(
             throw ImageSaveError{format("Could not write {}", path)};
         }
         co_return;
+    }
+
+    // EXR is meant for software outside Radiance, so a Radiance picture is saved in cd/m², like the EXR
+    // output of Merge HDR: RGB x 179 / EXPOSURE (no x 179 when the header marks the values as cd/m²),
+    // with the picture's primaries as chromaticities and whiteLuminance 1. The viewer and Statistics read
+    // EXR values as they are stored. A difference to a reference image is saved as it is shown.
+    if (toLower(tev::toString(path.extension())) == ".exr" && !reference && isRadianceExtension(mPath)) {
+        if (const auto source = readRadianceHeaderLines(mPath)) {
+            const ParsedRadianceHeader parsedHeader = parseRadianceHeader(mPath);
+            bool valuesInCdm2 = false;
+            if (const auto color = parsedHeader.items.find("HDRSPACE_COLOR"); color != parsedHeader.items.end()) {
+                valuesInCdm2 = toLower(color->second).find("cd/m2") != std::string::npos;
+            }
+            const float scale = static_cast<float>((valuesInCdm2 ? 1.0 : 179.0) / radianceExposureProduct(*source));
+
+            auto rgbaHdrData = co_await getRgbaHdrImageData(reference, imageRegion, requestedChannelGroup, metric, mask, bg, false, priority);
+            for (size_t i = 0; i + 3 < rgbaHdrData.size(); i += 4) {
+                rgbaHdrData[i + 0] *= scale;
+                rgbaHdrData[i + 1] *= scale;
+                rgbaHdrData[i + 2] *= scale;
+            }
+
+            ExrAbsoluteAttributes attributes;
+            // Radiance's default primaries when the header names none, as in the Merge HDR EXR output.
+            attributes.chromaticities = {0.640f, 0.330f, 0.290f, 0.600f, 0.150f, 0.060f, 1.0f / 3.0f, 1.0f / 3.0f};
+            if (const auto chroma = parseTargetChroma(parsedHeader)) {
+                for (size_t k = 0; k < 4; ++k) {
+                    attributes.chromaticities[2 * k] = (*chroma)[k].x();
+                    attributes.chromaticities[2 * k + 1] = (*chroma)[k].y();
+                }
+            }
+            attributes.strings = {
+                {"HDRSPACE_EXR_SOURCE", tev::toString(mPath.filename())},
+                {"HDRSPACE_EXR_UNITS", valuesInCdm2 ? "cd/m2 (values / EXPOSURE)" : "cd/m2 (Radiance values x 179 / EXPOSURE)"},
+                {"HDRSPACE_EXR_CONVERSION", "hdrspace Export image"},
+            };
+            saveExrWithAttributes(f, path, std::span<const float>{rgbaHdrData.data(), rgbaHdrData.size()}, size, 4, attributes);
+            if (!f) {
+                throw ImageSaveError{format("Could not write {}", path)};
+            }
+            co_return;
+        }
     }
 
     for (const auto& saver : ImageSaver::getSavers()) {

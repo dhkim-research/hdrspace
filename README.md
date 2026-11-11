@@ -30,12 +30,14 @@ Wasilewski's linearhdr / pylinearhdr method.
 2. **Exposure** of each frame from shutter, aperture and ISO, with optional fitted
    corrections for the real shutter times and apertures of your camera
    (`mergehdr shutter`, `mergehdr aperture`). Mixed-aperture brackets work.
-3. **Merging**: *neighborhood* weighting (from linearhdr; frames with clipped pixels nearby
-   are left out, against sensor bloom) with DHT demosaicing, or the faster *pixel* weighting
-   (from hdrmerge) with AHD demosaicing.
+3. **Merging**: the faster *pixel* weighting (from hdrmerge, the default) or *neighborhood*
+   weighting (from linearhdr; frames with clipped pixels nearby are left out, against sensor
+   bloom), and AHD (the default) or DHT demosaicing. The two are chosen separately; *Bloom
+   prevent* (`--bloom-prevent`) sets neighborhood weighting with DHT.
 4. **Colour**: camera RGB → XYZ with the camera matrix from the RAW file, or one fitted to a
    photographed colour chart (`mergehdr colorcalibrate`, `mergehdr chartcells`). Output in
-   Radiance RGB, linear sRGB or XYZ, with the primaries stored in the header.
+   Radiance RGB, linear sRGB or XYZ, with the primaries stored in the header, or in raw
+   camera RGB (no primaries and no `LuminanceRGB`).
 5. **Geometry**: fisheye reprojection (equisolid → equidistant, or a measured lens curve),
    vignetting correction from an angle table, and a Radiance `VIEW` line.
 6. **Sun**: `shadowband` combines shadowband and ND-filter captures so the solar disc is not
@@ -53,10 +55,17 @@ colour space, and the luminance weights for that space are written to the header
 | linear sRGB (Rec. 709) | 0.2126, 0.7152, 0.0722 | `179 × (0.2126 R + 0.7152 G + 0.0722 B)` |
 | XYZ | 0, 1, 0 | `179 × Y` |
 
-Every tool in hdrspace reads files this way (Glare, View Visibility, Perceptual maps and the
-viewer's luminance read-out). The one exception is an XYZ file that already holds cd/m², for
-example one written by another program: mark it as *XYZ (cd/m²)* in the viewer, or choose
-`--input-color xyz-cdm2` on the command line, and the ×179 is left out.
+Glare, Perceptual maps, Statistics and the viewer's luminance read-out read Radiance files
+(`.hdr`, `.pic`, `.rgbe`) this way. View Visibility instead converts with the primaries chosen
+in its *Input color* menu (header `EXPOSURE=` lines are still undone). EXR files are read as
+they are stored. The EXR files hdrspace writes (the Merge HDR output and *Export image*) hold
+cd/m², i.e. the Radiance values × 179 ÷ `EXPOSURE`, with the primaries as EXR chromaticities.
+
+An XYZ file that already holds cd/m², for example one written by another program, can be
+marked as *XYZ (cd/m²)* in the viewer (only Radiance files without a colour header). The
+viewer and Statistics then leave out the ×179; Glare does not read the mark. In View
+Visibility, choose *CIE XYZ (cd/m²)* as Input color (`--input-color xyz-cdm2` for
+`mergehdr view_visibility`).
 
 The absolute scale comes from the exposure model, so check a new camera and lens against a
 luminance meter before relying on absolute values.
@@ -67,15 +76,21 @@ luminance meter before relying on absolute values.
   luminance), false colour, histograms, region statistics. Files without colour information
   are shown as *Unknown* until you say what they are.
 - **Merge HDR / Calibrate**: the pipeline above, plus colour, shutter and aperture
-  calibration.
+  calibration. The shadowband step is only on the command line (`mergehdr shadowband`), and a
+  vignetting table or fitted shutter and aperture corrections come from a profile file or the
+  *Extra arguments* box.
 - **Glare**: DGP, DGI, UGR, glare sources, bands and zones, based on evalglare 3.06.
 - **View Visibility**: how much of a view's detectable contrast is kept in a second image
   (e.g. with blinds), using the visibility stages of HDR-VDP 3.
 - **Perceptual maps**: cone and rod response, local adaptation, detectable contrast and
   equivalent luminance, with pixels per degree read from the `VIEW` header.
+- **Statistics**: whole-image, rectangle, circle (by opening angle) and mask statistics, row
+  and column profiles, and CSV and region-HDR export.
 - **Tonemapping**: pfstools operators and Radiance `pcond` (Ward).
 - **Crop & Projection, Blur, Create View** (Radiance rendering), and **View Volume /
-  AI Segmentation** (SAM 3 and Depth Anything 3, downloaded only on request).
+  AI Segmentation** (SAM 3 and Depth Anything 3). Depth Anything 3 is installed with the
+  *Install DA3 Metric* button (needs Homebrew Python 3.12 or 3.13). SAM 3 needs an MLX SAM3
+  runtime that is already in `~/Library/Application Support/hdrspace/mlx-sam3-runtime`.
 
 ## Based on, and what changed
 
@@ -95,7 +110,8 @@ column, uses the header's `LuminanceRGB`, divides `av_lum_pos2` once, and comput
 `r_contrast` (an uninitialised value in the original). Very dark pixels (a few tens of DN)
 are slightly more precise than in pylinearhdr because there is no 16-bit TIFF step.
 
-Licence texts for all bundled components are in `hdrspace/assets/licenses`.
+Licence texts for the bundled components are in `hdrspace/assets/licenses`. The Windows
+package also gets the BusyBox (busybox-w32) licence note when it is built.
 
 ## Windows
 
@@ -103,8 +119,9 @@ Download `hdrspace-windows-x64.zip` from the
 [1.01 release](https://github.com/dhkim-research/hdrspace/releases/tag/v1.01),
 unzip it anywhere and start `hdrspace-windows-x64\bin\hdrspace.exe`. The program is not
 code-signed, so Windows may show a SmartScreen warning the first time ("More info" → "Run
-anyway"). Newer builds are made by GitHub Actions on every change (workflow "hdrspace Windows
-app", package `hdrspace-windows-x64`). Nothing else has to be installed: the
+anyway"). Newer builds are made by GitHub Actions when `hdrspace/`, `mergehdr/` or the
+workflow change, or when the workflow is started by hand (workflow "hdrspace Windows app",
+package `hdrspace-windows-x64`). Nothing else has to be installed: the
 package contains `mergehdr`, the Radiance programs, the HDR-VDP data, the camera profiles and a
 small POSIX shell (BusyBox) that runs the background jobs.
 
@@ -114,10 +131,11 @@ Not available on Windows:
 - The **pfstools** tone-mapping operators. Radiance `pcond` (Ward '97) works.
 
 Each build is checked on a Windows Server virtual machine with software OpenGL. `mergehdr` and
-the Radiance programs run in the package, and the app opens an HDR image and computes Glare
-and Perceptual maps with the same numbers as on macOS. It has not yet been tested on a
-Windows PC with a real graphics card. The command-line tools alone are described in
-[mergehdr/README.rst](mergehdr/README.rst#windows).
+the Radiance programs run in the package, and the app opens an HDR image, computes Glare and
+Perceptual maps and saves screenshots. The numbers are compared with the macOS reference
+results for the `mergehdr` command line, in the separate "mergehdr Windows" workflow. The app
+has not yet been tested on a Windows PC with a real graphics card. The command-line tools
+alone are described in [mergehdr/README.rst](mergehdr/README.rst#windows).
 
 ## Building
 
@@ -126,12 +144,17 @@ hdrspace/   the app (C++, NanoGUI, vendored tev)
 mergehdr/   the HDR engine and command-line tool
 ```
 
-Requirements: Xcode command-line tools, CMake, Ninja, and Homebrew OpenEXR, Imath,
-jpeg-turbo, little-cms2, Exiv2, Boost, FFTW, Eigen and libomp. pfstools is optional.
+Requirements: Xcode command-line tools, CMake, Ninja, pkg-config, and Homebrew OpenEXR,
+Imath, jpeg-turbo, little-cms2, Exiv2, LibRaw, Boost (1.90 or newer), FFTW, Eigen and libomp.
+pfstools is optional.
 
-Packaging also needs a runtime payload (Radiance binaries, pinned dynamic libraries,
-HDR-VDP data) that is not in this repository. Place it at `hdrspace-baseline/payload` next
-to these folders, then:
+Building and packaging also need a runtime payload that is not in this repository: Radiance
+binaries, pinned dynamic libraries, the AI runtime folder (`Contents/Resources/ai`), arm64
+`mergehdr` and `mergehdrcore`, and the HDR-VDP data (which must match the copy in
+`hdrspace/assets/hdrvdp3-data`). CMake does not configure without it, and
+`build_hdrspace.py` stops unless each Homebrew library is the exact release whose machine code
+matches the dynamic library in the payload. Place the payload at `hdrspace-baseline/payload`
+next to these folders, then:
 
 ```
 cd hdrspace
@@ -155,10 +178,17 @@ hdrspace.app/Contents/MacOS/hdrspace --gui-test /tmp/gui-test mergehdr/tests/cro
 ```
 
 It opens every tool in the rail in turn, plus the lower part of the Viewer, the Calibrate
-pages, the Create View tabs, Settings and Help, saves a PNG of the window for each and a
-list in `gui-test.txt`, then quits. `--size 1440x900` sets the window size (the default).
+pages, the Create View 3D, Top and HDR tabs (not Preview), Settings and Help, saves a PNG of
+the window for each and a list in `gui-test.txt`, then quits. `--size 1440x900` sets the
+window size (the default).
 The app reads back its own Metal frames, so macOS asks for no screen-recording permission.
 On Windows the GitHub Actions workflow takes the screenshots instead.
+
+### Other start options
+
+Image paths after the program name open at start. `--export-create-view-turntable` writes a
+Create View turntable video (`--room`, `--view`, `--env`, `--output`, `--size`, `--frames`,
+`--fps`, `--zoom`, `--env-alpha`, `--bg`).
 
 ## Licence
 

@@ -271,6 +271,12 @@ Notes
   changing the RAW level workflow.
 - ``tools/compare_rawconvert_levels.cpp`` checks the fixed-level decode against
   rawconvert pixel by pixel on real RAW files (build line in the file).
+- ``shadowband`` merges the RAW brackets without the fisheye reprojection and with
+  the profile crop enlarged by ``--margin``; the one equisolid to equidistant
+  reprojection runs after alignment and the margin crop, as pylinearhdr intends.
+  pylinearhdr 0.2.1 itself reprojects twice when its profile has ``fisheye = True``
+  (the merge already runs ``raytools solid2ang``): use it with ``fisheye = False``
+  and a crop enlarged by the margin.
 
 Acknowledgements
 ----------------

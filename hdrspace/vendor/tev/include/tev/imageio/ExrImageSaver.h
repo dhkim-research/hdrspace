@@ -22,7 +22,12 @@
 #include <tev/imageio/ImageSaver.h>
 
 #include <ostream>
+#include <array>
+#include <span>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace tev {
 
@@ -36,5 +41,23 @@ public:
 
     bool canSaveFile(std::string_view extension) const override { return toLower(extension) == ".exr"; }
 };
+
+// hdrspace: an EXR whose values are absolute (cd/m², written from a Radiance picture). It carries the
+// standard chromaticities (red, green, blue and white as CIE x, y) and whiteLuminance attributes, so
+// software outside Radiance reads the primaries and the scale, and string attributes.
+struct ExrAbsoluteAttributes {
+    std::array<float, 8> chromaticities{};
+    float whiteLuminance = 1.0f;
+    std::vector<std::pair<std::string, std::string>> strings;
+};
+
+void saveExrWithAttributes(
+    std::ostream& oStream,
+    const fs::path& path,
+    std::span<const float> data,
+    nanogui::Vector2i imageSize,
+    int nChannels,
+    const ExrAbsoluteAttributes& attributes
+);
 
 } // namespace tev

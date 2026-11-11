@@ -4162,6 +4162,18 @@ RunOptions parseRunOptions(const std::vector<std::string> &args) {
     return opts;
 }
 
+// The vignetting table and the dual-fisheye VIEW put 90 degrees at half the image width (as
+// pylinearhdr does), while the calibrated fisheye remap puts it at projection_target_radius. The
+// shipped profiles use half the crop, so this only warns when a profile differs (#16, #18).
+void warnIfTargetRadiusIsNotHalfCrop(double targetRadius, int cropWidth) {
+    const double halfCrop = 0.5 * static_cast<double>(cropWidth);
+    if (std::fabs(targetRadius - halfCrop) <= 0.5)
+        return;
+    std::cerr << "Warning: projection_target_radius " << targetRadius << " px is not half the crop width ("
+              << halfCrop << " px). The vignetting table and a 180-degree VIEW assume 90 degrees at half the "
+              << "width, so angles and solid angles will be off.\n";
+}
+
 void validateRunOptions(const RunOptions &opts) {
     if (opts.inputs.empty())
         throw std::runtime_error("No input files were given.");
@@ -4215,6 +4227,7 @@ void validateRunOptions(const RunOptions &opts) {
             if (!(derivative > 0.0) || !std::isfinite(derivative))
                 throw std::runtime_error("dual_fisheye projection polynomial must be strictly monotonic on u=[0,1].");
         }
+        warnIfTargetRadiusIsNotHalfCrop(opts.projectionTargetRadius, opts.cropLeft[2]);
     }
 
     if (!opts.singleFisheyeProjection.empty()) {
@@ -4246,6 +4259,7 @@ void validateRunOptions(const RunOptions &opts) {
             if (value < 0.0 || !(derivative > 0.0) || !std::isfinite(value) || !std::isfinite(derivative))
                 throw std::runtime_error("single_fisheye_projection polynomial must be finite, non-negative, and strictly monotonic on phi=[0,pi/2].");
         }
+        warnIfTargetRadiusIsNotHalfCrop(opts.projectionTargetRadius, opts.crop[2]);
     }
 }
 
