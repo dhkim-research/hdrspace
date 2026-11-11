@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,15 @@ import subprocess
 import tempfile
 
 HOMEBREW = Path("/opt/homebrew")
+
+# One macOS version for the app and its helpers; package_hdrspace.py writes it as
+# LSMinimumSystemVersion and checks that no bundled binary needs a newer one.
+MACOS_DEPLOYMENT_TARGET = "26.0"
+
+# The validated baseline payload, file by file (SHA-256), with the Radiance build and the
+# Homebrew release whose machine code matches each shipped library. The build stops when the
+# payload differs; --update-payload-manifest records a deliberately refreshed payload.
+PAYLOAD_MANIFEST = Path(__file__).with_name("baseline_payload_manifest.json")
 
 # The rebuilt helpers load the libraries already shipped in the baseline payload
 # (Contents/Frameworks). They are compiled against the headers of exactly those
@@ -44,6 +54,52 @@ def text_digest(library: Path) -> str:
         subprocess.run(["segedit", str(library), "-extract", "__TEXT", "__text", str(section)],
                        check=True, capture_output=True)
         return hashlib.sha256(section.read_bytes()).hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    result = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(block)
+    return result.hexdigest()
+
+
+def payload_inventory(baseline_app: Path) -> dict[str, str]:
+    """SHA-256 of every payload file; Finder's .DS_Store and ._ files are left out."""
+    result = {}
+    for path in sorted(baseline_app.rglob("*")):
+        if path.name == ".DS_Store" or path.name.startswith("._"):
+            continue
+        relative = path.relative_to(baseline_app).as_posix()
+        if path.is_symlink():
+            result[relative] = "symlink:" + os.readlink(path)
+        elif path.is_file():
+            result[relative] = file_digest(path)
+    return result
+
+
+def recorded_payload() -> dict | None:
+    return json.loads(PAYLOAD_MANIFEST.read_text()) if PAYLOAD_MANIFEST.exists() else None
+
+
+def verify_payload(baseline_app: Path) -> None:
+    manifest = recorded_payload()
+    if manifest is None:
+        raise SystemExit(f"{PAYLOAD_MANIFEST} is missing. Record the validated payload with --update-payload-manifest.")
+    expected = manifest["files"]
+    actual = payload_inventory(baseline_app)
+    changed = sorted(name for name in expected.keys() & actual.keys() if expected[name] != actual[name])
+    missing = sorted(expected.keys() - actual.keys())
+    extra = sorted(actual.keys() - expected.keys())
+    if changed or missing or extra:
+        report = [f"  {label} ({len(names)}): " + ", ".join(names[:6]) + (" ..." if len(names) > 6 else "")
+                  for label, names in (("changed", changed), ("missing", missing), ("not recorded", extra)) if names]
+        raise SystemExit(
+            f"The baseline payload {baseline_app} differs from tools/{PAYLOAD_MANIFEST.name}:\n"
+            + "\n".join(report)
+            + "\nBuild on the validated payload. After a deliberate refresh, check the helpers again "
+            "(mergehdr/tests/crossplatform) and record it with --update-payload-manifest.")
+    print(f"baseline payload matches tools/{PAYLOAD_MANIFEST.name} ({len(actual)} files)")
 
 
 def shipped_library(frameworks: Path, pattern: str) -> Path:
@@ -115,15 +171,42 @@ def pinned_dependencies(source: Path, work: Path, baseline_app: Path) -> tuple[l
             pkgconfig.insert(0, directory)
             print(f"mergehdr dependency {formula}: {note}")
         else:
+            recorded = ((recorded_payload() or {}).get("homebrew", {}).get(formula) or {}).get("keg")
             raise SystemExit(
-                f"No installed Homebrew {formula} matches the shipped {shipped.name}. Install that "
-                "release, or refresh the Frameworks payload and validate the helpers again.")
+                f"No installed Homebrew {formula} matches the shipped {shipped.name}"
+                + (f" (the manifest records Homebrew {formula} {recorded})" if recorded else "")
+                + ". Install that release, or refresh the Frameworks payload and validate the helpers again.")
     eigen = (HOMEBREW / "opt/eigen/include/eigen3/Eigen/Version")
     if eigen.exists():
         parts = dict(re.findall(r"#define EIGEN_(\w+)_VERSION (\d+)", eigen.read_text()))
         print("mergehdr dependency eigen (header-only): "
               + ".".join(parts.get(key, "?") for key in ("MAJOR", "MINOR", "PATCH")))
     return prefixes, pkgconfig
+
+
+def write_payload_manifest(source: Path, baseline_app: Path) -> None:
+    """Records the payload as it is now: run it only on a payload whose helpers were checked."""
+    frameworks = baseline_app / "Contents/Frameworks"
+    homebrew = {}
+    for formula, pattern, keg_library in PINNED_LIBRARIES:
+        shipped = shipped_library(frameworks, pattern)
+        keg = matching_keg(formula, keg_library, shipped)
+        entry = {"shipped": shipped.name, "text_sha256": text_digest(shipped), "keg": keg.name if keg else None}
+        if keg is None and formula == "libraw" and (source / VENDORED_LIBRAW).is_dir():
+            entry["headers"] = str(VENDORED_LIBRAW)
+        elif keg is None:
+            raise SystemExit(f"No installed Homebrew {formula} matches the shipped {shipped.name}; nothing recorded.")
+        homebrew[formula] = entry
+    rpict = baseline_app / "Contents/Resources/radiance/bin/rpict"
+    radiance = subprocess.run([str(rpict), "-version"], capture_output=True, text=True).stdout.strip()
+    manifest = {
+        "comment": "The validated baseline payload (tools/build_hdrspace.py checks it before every build).",
+        "radiance": radiance,
+        "homebrew": homebrew,
+        "files": payload_inventory(baseline_app),
+    }
+    PAYLOAD_MANIFEST.write_text(json.dumps(manifest, indent=1) + "\n")
+    print(f"recorded {len(manifest['files'])} payload files in {PAYLOAD_MANIFEST}")
 
 
 def build_mergehdr(source: Path, work: Path, baseline_app: Path, cmake: str, ninja: str,
@@ -145,7 +228,7 @@ def build_mergehdr(source: Path, work: Path, baseline_app: Path, cmake: str, nin
     configure = [
         cmake, "-S", str(mergehdr), "-B", str(build), "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_OSX_ARCHITECTURES=arm64",
-        "-DCMAKE_OSX_DEPLOYMENT_TARGET=26.0",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=" + MACOS_DEPLOYMENT_TARGET,
         "-DCMAKE_C_COMPILER=/usr/bin/clang", "-DCMAKE_CXX_COMPILER=/usr/bin/clang++",
         "-DCMAKE_MAKE_PROGRAM=" + ninja,
         "-DCMAKE_PREFIX_PATH=" + ";".join([str(path) for path in prefixes] + [str(HOMEBREW)]),
@@ -174,8 +257,13 @@ def main() -> int:
     parser.add_argument("--configure-only", action="store_true")
     parser.add_argument("--keep-baseline-helpers", action="store_true",
                         help="Ship the baseline mergehdr/mergehdrcore instead of rebuilding them from ../mergehdr")
+    parser.add_argument("--update-payload-manifest", action="store_true",
+                        help="Record the baseline payload in tools/baseline_payload_manifest.json and stop")
     args = parser.parse_args()
     source = Path(__file__).resolve().parent.parent
+    if args.update_payload_manifest:
+        write_payload_manifest(source, args.baseline_app.resolve(strict=True))
+        return 0
     work = args.work_dir.resolve()
     if work.is_relative_to(source) or "Applications" in work.parts or work == Path("/"):
         raise SystemExit("Choose a temporary build workspace outside source and Applications directories.")
@@ -185,10 +273,11 @@ def main() -> int:
     ninja = shutil.which("ninja")
     if not cmake or not ninja:
         raise SystemExit("Existing CMake and Ninja executables are required; no packages are installed automatically.")
+    verify_payload(args.baseline_app.resolve(strict=True))
     configure = [
         cmake, "-S", str(source), "-B", str(work / "build"), "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_OSX_ARCHITECTURES=arm64",
-        "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=" + MACOS_DEPLOYMENT_TARGET,
         "-DCMAKE_C_COMPILER=/usr/bin/clang", "-DCMAKE_CXX_COMPILER=/usr/bin/clang++",
         "-DCMAKE_OBJC_COMPILER=/usr/bin/clang", "-DCMAKE_OBJCXX_COMPILER=/usr/bin/clang++",
         "-DCMAKE_MAKE_PROGRAM=" + ninja,

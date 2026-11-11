@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 
 if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS deployment target" FORCE)
+  # tools/build_hdrspace.py passes MACOS_DEPLOYMENT_TARGET, the value for the app and its helpers.
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS deployment target" FORCE)
 endif()
 
 project(hdrspace VERSION 1.01 LANGUAGES C CXX)
@@ -334,6 +335,7 @@ if(APPLE)
       --brand-svg "${CMAKE_CURRENT_SOURCE_DIR}/assets/branding/hdrspace.svg"
       --hdrvdp-data "${HDRSPACE_HDRVDP3_DATA_DIR}"
       --licenses "${HDRSPACE_LICENSES_DIR}"
+      --minimum-macos "${CMAKE_OSX_DEPLOYMENT_TARGET}"
       ${HDRSPACE_PACKAGE_EXTRA_ARGS}
     VERBATIM
   )

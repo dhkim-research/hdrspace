@@ -154,18 +154,40 @@ Requirements: Xcode command-line tools, CMake, Ninja, pkg-config, and Homebrew O
 Imath, jpeg-turbo, little-cms2, Exiv2, LibRaw, Boost (1.90 or newer), FFTW, Eigen and libomp.
 pfstools is optional.
 
-Building and packaging also need a runtime payload that is not in this repository: Radiance
-binaries, pinned dynamic libraries, the AI runtime folder (`Contents/Resources/ai`), arm64
-`mergehdr` and `mergehdrcore`, and the HDR-VDP data (which must match the copy in
-`hdrspace/assets/hdrvdp3-data`). CMake does not configure without it, and
-`build_hdrspace.py` stops unless each Homebrew library is the exact release whose machine code
-matches the dynamic library in the payload. Place the payload at `hdrspace-baseline/payload`
-next to these folders, then:
+Building and packaging also need a runtime payload that is not in this repository; CMake does
+not configure without it. Place it at `hdrspace-baseline/payload` next to these folders, then:
 
 ```
 cd hdrspace
 python3 tools/build_hdrspace.py --work-dir /tmp/hdrspace-build
 ```
+
+`hdrspace/tools/baseline_payload_manifest.json` records the payload: the SHA-256 of each of its
+586 files, the Radiance build, and the Homebrew release whose machine code matches each
+library. `build_hdrspace.py` checks the payload against it before building and names the files
+that differ. It also stops unless each Homebrew library is that exact release. The payload
+holds:
+
+- `Contents/Resources/radiance`: Radiance 6.1a (`rpict -version`: LBNL, 2025-10-21,
+  7e412c84d6), `bin` and `lib`. `rtrace.pre_progress_20260327` is a byte-identical copy of
+  `rtrace`, which packaging leaves out.
+- `Contents/Frameworks`: the 24 Homebrew libraries that the app and the helpers load (releases
+  in the manifest). `tools/bundle_macos_helpers.py` copies the libraries a helper links into
+  an app bundle and rewrites their install names.
+- `Contents/MacOS/mergehdr` and `mergehdrcore` (arm64). The build replaces them with helpers
+  built from `mergehdr/`.
+- `Contents/Resources/hdrvdp3/data`: the same files as `hdrspace/assets/hdrvdp3-data`.
+- `Contents/Resources/ai`: the AI helper scripts. `mlx_sam3_mask_helper.py` equals
+  `hdrspace/tools/mlx_sam3_mask_helper.py`; packaging takes the two DA3 scripts from
+  `mergehdr/tools`.
+- `Contents/profiles`: camera profiles (some are also in `mergehdr/profiles`).
+
+After a deliberate change of the payload, run the helper checks again
+(`mergehdr/tests/crossplatform`) and record it with
+`python3 tools/build_hdrspace.py --update-payload-manifest`. The app and its helpers are built
+for one macOS version, `MACOS_DEPLOYMENT_TARGET` in `build_hdrspace.py` (26.0). Packaging
+writes it as the app's minimum system version and stops if a bundled program or library needs
+a newer one.
 
 The engine alone builds with CMake:
 

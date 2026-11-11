@@ -9,6 +9,9 @@ icon and branding images (unused by hdrspace) and the two DA3 Python helpers, wh
 are taken from mergehdr/tools (AI_HELPERS). License texts are added under
 Contents/Resources/licenses."""
 
+# Annotations such as "str | None" are not evaluated, so Python 3.9 can run it.
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -167,6 +170,37 @@ def require_arm64(path: Path) -> None:
         raise RuntimeError(f"Expected an Apple Silicon binary: {path}")
 
 
+def version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
+def macho_minimum_macos(path: Path) -> str | None:
+    """The macOS version a Mach-O file needs (LC_BUILD_VERSION minos); None for other files."""
+    with path.open("rb") as stream:
+        if stream.read(4) not in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+            return None
+    try:
+        output = run("/usr/bin/otool", "-l", str(path))
+    except subprocess.CalledProcessError:
+        return None  # the same magic number as a Java class file
+    found = re.findall(r"cmd LC_BUILD_VERSION.*?minos (\S+)", output, re.S)
+    found += re.findall(r"cmd LC_VERSION_MIN_MACOSX.*?version (\S+)", output, re.S)
+    return max(found, key=version_tuple) if found else None
+
+
+def check_minimum_macos(app: Path, minimum: str) -> None:
+    """No bundled program or library may need a newer macOS than the app declares (#128)."""
+    too_new = []
+    for path in sorted(app.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            needed = macho_minimum_macos(path)
+            if needed and version_tuple(needed) > version_tuple(minimum):
+                too_new.append(f"{path.relative_to(app)} (macOS {needed})")
+    if too_new:
+        raise RuntimeError(f"These need a newer macOS than LSMinimumSystemVersion {minimum}: "
+                           + ", ".join(too_new[:6]) + (" ..." if len(too_new) > 6 else ""))
+
+
 def assert_staging_path(stage: Path, baseline: Path, built: Path) -> None:
     if stage == Path("/") or "Applications" in stage.parts:
         raise RuntimeError("Packaging only stages an app; choose a temporary directory outside Applications.")
@@ -281,8 +315,9 @@ def package(args: argparse.Namespace) -> Path:
             "CFBundleIconFile": "hdrspace.icns",
             "CFBundleVersion": built_info["CFBundleVersion"],
             "CFBundleShortVersionString": built_info["CFBundleShortVersionString"],
-            # The bundled mergehdr helpers are built for macOS 26 (#128).
-            "LSMinimumSystemVersion": "26.0",
+            # The deployment target of the app and its helpers (MACOS_DEPLOYMENT_TARGET in
+            # build_hdrspace.py, passed on by CMake); check_minimum_macos() below holds it (#128).
+            "LSMinimumSystemVersion": args.minimum_macos,
             # Offered under Finder "Open With" for HDR images; never claims to be the default app.
             "CFBundleDocumentTypes": [
                 {
@@ -300,6 +335,7 @@ def package(args: argparse.Namespace) -> Path:
             ],
         })
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
+        check_minimum_macos(app, args.minimum_macos)
         resources = app / "Contents/Resources"
         shutil.copy2(args.icon, resources / "hdrspace.icns")
         shutil.copy2(args.brand_png, resources / "branding/hdrspace_icon_1024.png")
@@ -358,6 +394,8 @@ def main() -> int:
                         help="Folder with da3_vos_helper.py and install_da3_mps.py to ship")
     parser.add_argument("--mergehdr-dir", type=Path,
                         help="Folder with rebuilt mergehdr and mergehdrcore to ship instead of the baseline pair")
+    parser.add_argument("--minimum-macos", default="26.0",
+                        help="LSMinimumSystemVersion; CMake passes CMAKE_OSX_DEPLOYMENT_TARGET")
     args = parser.parse_args()
     app = package(args)
     kept = "libraries, resources and profiles" if args.mergehdr_dir else "helpers, libraries, resources and profiles"
