@@ -318,6 +318,19 @@ void writeViewVisibilityResultHdr(const std::string &path, const ViewVisibilityS
 void writePerceptualMapHdr(const std::string &path, const PerceptualMapResult &result);
 void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, const std::string &outDir);
 std::string formatEvalGlare(const EvalGlareAnalysisResult &result, bool detailed, bool simple);
+
+// The Radiance view of a crop of `source` (`width` x `height` pixels at `left`, `top`, rows counted
+// from the top). The picture's view is read like evalglare and Radiance read it (every view line of
+// the header, in order); the crop keeps the viewpoint and directions, its view sizes are scaled per
+// projection as Radiance's image.c setview()/viewray() map pixels, and its position goes into -vs/-vl,
+// so that every crop pixel keeps the direction it had in the source.
+struct RadianceCropView {
+    bool sourceHasView = false;
+    std::string sourceView;  // " -vta -vp ..." view options of the whole picture (fprintview form)
+    std::string view;        // view options of the crop; empty when it cannot be given (see note)
+    std::string note;
+};
+RadianceCropView radianceCropView(const HdrImage &source, int left, int top, int width, int height);
 int printEvalGlare(const EvalGlareOptions &opts);
 
 #endif

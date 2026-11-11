@@ -367,7 +367,10 @@ bool primariesToXyzMatrix(const std::array<double, 8> &primaries, Mat3d &matrix)
     const double by = primaries[5];
     const double wx = primaries[6];
     const double wy = primaries[7];
-    if (ry <= 0.0 || gy <= 0.0 || by <= 0.0 || wy <= 0.0)
+    // Only the white y is divided by. Primaries with y = 0 are valid: XYZ identity primaries
+    // (1 0, 0 1, 0 0), as hdrspace's "Interpret file as > XYZ" writes them, give the weights 0 1 0.
+    // A degenerate set is caught by the matrix inversion.
+    if (!(wy > 0.0))
         return false;
 
     Mat3d pxyz{};
@@ -415,7 +418,10 @@ bool weightsFromPrimaries(const std::array<double, 8> &primaries, std::array<dou
     const double by = primaries[5];
     const double wx = primaries[6];
     const double wy = primaries[7];
-    if (ry <= 0.0 || gy <= 0.0 || by <= 0.0 || wy <= 0.0)
+    // Only the white y is divided by. Primaries with y = 0 are valid: XYZ identity primaries
+    // (1 0, 0 1, 0 0), as hdrspace's "Interpret file as > XYZ" writes them, give the weights 0 1 0.
+    // A degenerate set is caught by the matrix inversion.
+    if (!(wy > 0.0))
         return false;
 
     Mat3d pxyz;
@@ -7066,6 +7072,13 @@ void runMain(const EvalGlareOptions &o, EvalGlareAnalysisResult &res, Io &io) {
         calcfast = 1;
     if (output == 2 && ext_vill == 1)
         calcfast = 2;
+    // -1 and -2 are evalglare's fast modes for gendgp_profile: dgp comes from the vertical illuminance
+    // given with -i. evalglare 3.06 also runs them without it and then uses Ev = 0 (dgp 1.0 whenever a
+    // source is found), so here they need it.
+    if ((output == 1 || output == 2) && !(E_vl_ext > 0.0)) {
+        io.errf(" -1 and -2 need the vertical illuminance with -i: they do not calculate it.\n");
+        throw EvalGlareExit{1};
+    }
     if (masking == 1 && zones > 0) {
         io.errf(" masking and zoning cannot be activated at the same time!\n");
         throw EvalGlareExit{1};
@@ -8015,9 +8028,11 @@ void runMain(const EvalGlareOptions &o, EvalGlareAnalysisResult &res, Io &io) {
                                     const int splitgs = static_cast<int>(p->gl(act_gsn, PICT_Z1_GSN));
                                     split_pixel_from_gs(*p, x, y, splitgs, io);
                                     // move direct illuminance contribution into zone -value
+                                    // (evalglare 3.06 adds it to igs, the newest split source, which is another
+                                    // source as soon as two sources are split; it belongs to splitgs)
                                     delta_E = DOT(p->view.vdir, p->cdir(x, y)) * p->omega(x, y) * luminance(p->color(x, y));
                                     p->gl(act_gsn, PICT_EGLARE) = p->gl(act_gsn, PICT_EGLARE) - delta_E;
-                                    p->gl(igs, PICT_EGLARE) = p->gl(igs, PICT_EGLARE) + delta_E;
+                                    p->gl(splitgs, PICT_EGLARE) = p->gl(splitgs, PICT_EGLARE) + delta_E;
                                 }
                             }
                             // zone 2 (r_actual > angle_z1 && r_actual <= angle_z2)
@@ -8039,9 +8054,10 @@ void runMain(const EvalGlareOptions &o, EvalGlareAnalysisResult &res, Io &io) {
                                     }
                                     const int splitgs = static_cast<int>(p->gl(act_gsn, PICT_Z2_GSN));
                                     split_pixel_from_gs(*p, x, y, splitgs, io);
+                                    // (as in zone 1: the illuminance belongs to splitgs, not to the newest source igs)
                                     delta_E = DOT(p->view.vdir, p->cdir(x, y)) * p->omega(x, y) * luminance(p->color(x, y));
                                     p->gl(act_gsn, PICT_EGLARE) = p->gl(act_gsn, PICT_EGLARE) - delta_E;
-                                    p->gl(igs, PICT_EGLARE) = p->gl(igs, PICT_EGLARE) + delta_E;
+                                    p->gl(splitgs, PICT_EGLARE) = p->gl(splitgs, PICT_EGLARE) + delta_E;
                                 }
                             }
                         }
@@ -8489,8 +8505,9 @@ void runMain(const EvalGlareOptions &o, EvalGlareAnalysisResult &res, Io &io) {
                                     p->pgs[p->idx(xmap, ymap)] = 1;
                                     add_pixel_to_gs(*p, xmap, ymap, actual_igs, io);
                                     lastpixelwas_gs = actual_igs;
-                                    delta_E = DOT(p->view.vdir, p->cdir(xmap, ymap)) * p->omega(xmap, ymap) * luminance(p->color(xmap, ymap));
-                                    p->gl(actual_igs, PICT_EGLARE) = p->gl(actual_igs, PICT_EGLARE) + delta_E;
+                                    // evalglare 3.06 also adds the pixel's direct illuminance here and again after
+                                    // the peak extraction, so each source's Eglare counted twice in -Q mode. As in
+                                    // the single-image mode it is summed once, after the peak extraction.
                                 } else {
                                     p->pgs[p->idx(xmap, ymap)] = 0;
                                     lastpixelwas_gs = 0;
@@ -8700,6 +8717,107 @@ std::string formatFromResult(const EvalGlareAnalysisResult &r, bool detailed, bo
 } // namespace eg
 
 } // namespace
+
+namespace {
+
+// image.c fprintview(), with 10 significant digits instead of 6 (values below 1e-12 are written as 0)
+std::string formatRadianceViewOptions(const eg::RadView &v) {
+    const auto num = [](double value) {
+        if (std::abs(value) < 1e-12)
+            value = 0.0;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.10g", value);
+        return std::string(buf);
+    };
+    std::string s = " -vt";
+    s += static_cast<char>(v.type);
+    s += " -vp " + num(v.vp[0]) + " " + num(v.vp[1]) + " " + num(v.vp[2]);
+    s += " -vd " + num(v.vdir[0]*v.vdist) + " " + num(v.vdir[1]*v.vdist) + " " + num(v.vdir[2]*v.vdist);
+    s += " -vu " + num(v.vup[0]) + " " + num(v.vup[1]) + " " + num(v.vup[2]);
+    s += " -vh " + num(v.horiz) + " -vv " + num(v.vert);
+    s += " -vo " + num(v.vfore) + " -va " + num(v.vaft);
+    s += " -vs " + num(v.hoff) + " -vl " + num(v.voff);
+    return s;
+}
+
+} // namespace
+
+RadianceCropView radianceCropView(const HdrImage &source, int left, int top, int width, int height) {
+    using namespace eg;
+    RadianceCropView out;
+    const PictHeader h = parsePictHeader(source);
+    if (h.viewLines == 0)
+        return out;
+    out.sourceHasView = true;
+    out.sourceView = formatRadianceViewOptions(h.view);
+    if (h.invalidExposure) {
+        out.note = "the header has an EXPOSURE line with a tab, which stops the header reading";
+        return out;
+    }
+    if (h.viewError) {
+        out.note = std::string("the picture's view is not valid (") + h.viewError + ")";
+        return out;
+    }
+    if (source.radianceOrientation != kRadiancePixStandard) {
+        out.note = "the picture is not stored in the standard orientation (-Y h +X w)";
+        return out;
+    }
+    if (left < 0 || top < 0 || width <= 0 || height <= 0 ||
+            static_cast<size_t>(left + width) > source.width || static_cast<size_t>(top + height) > source.height) {
+        out.note = "the crop is outside the picture";
+        return out;
+    }
+
+    // viewray() takes x = pixel/width + hoff - 0.5 (y counted from the bottom) and multiplies it by a
+    // factor of the view size that setview() computes per projection. Keeping every pixel's direction
+    // means: that factor scales by crop size / picture size, and the offset moves to the crop.
+    RadView v = h.view;
+    const double W = static_cast<double>(source.width);
+    const double H = static_cast<double>(source.height);
+    const double w = static_cast<double>(width);
+    const double hh = static_cast<double>(height);
+    const double rx = w / W;
+    const double ry = hh / H;
+    const auto viaTan = [](double angle, double r, double parts) {  // factor 2 tan(angle/parts)
+        return parts * std::atan(std::tan(angle * PI / (180.0 * parts)) * r) * 180.0 / PI;
+    };
+    switch (v.type) {
+        case VT_PAR:  // hn2 = horiz (world size)
+        case VT_ANG:  // x * horiz/180
+            v.horiz *= rx;
+            v.vert *= ry;
+            break;
+        case VT_PER:  // 2 tan(horiz/2)
+            v.horiz = viaTan(v.horiz, rx, 2.0);
+            v.vert = viaTan(v.vert, ry, 2.0);
+            break;
+        case VT_CYL:  // x * horiz, 2 tan(vert/2)
+            v.horiz *= rx;
+            v.vert = viaTan(v.vert, ry, 2.0);
+            break;
+        case VT_HEM:  // 2 sin(horiz/2)
+            v.horiz = 2.0 * std::asin(std::min(1.0, std::sin(v.horiz * PI / 360.0) * rx)) * 180.0 / PI;
+            v.vert = 2.0 * std::asin(std::min(1.0, std::sin(v.vert * PI / 360.0) * ry)) * 180.0 / PI;
+            break;
+        case VT_PLS:  // 2 sin(horiz/2) / (1 + cos(horiz/2)) = 2 tan(horiz/4)
+            v.horiz = viaTan(v.horiz, rx, 4.0);
+            v.vert = viaTan(v.vert, ry, 4.0);
+            break;
+        default:
+            out.note = "unknown view type";
+            return out;
+    }
+    const double bottom = H - static_cast<double>(top) - hh;
+    v.hoff = (static_cast<double>(left) + v.hoff * W - 0.5 * W + 0.5 * w) / w;
+    v.voff = (bottom + v.voff * H - 0.5 * H + 0.5 * hh) / hh;
+    RadView check = v;
+    if (const char *error = setview(check)) {
+        out.note = std::string("the crop's view is not valid (") + error + ")";
+        return out;
+    }
+    out.view = formatRadianceViewOptions(v);
+    return out;
+}
 
 HdrLuminanceEvaluator resolveHdrLuminanceEvaluator(const HdrImage &image) {
     const HeaderLuminanceInfo info = resolveLuminanceInfo(image);

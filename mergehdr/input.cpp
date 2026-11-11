@@ -21,6 +21,15 @@
  *  - the images were taken using the same camera settings
  */
 void ExposureSeries::add(const std::string &fmt) {
+    // A path that exists is one frame and is used as it is: '%' in a folder or file name ("Sun 100%")
+    // is not a pattern. A name that is not a frame-number pattern is a path as well (it was given to
+    // snprintf as the format before, which dropped such frames or crashed).
+    if (access(fmt.c_str(), F_OK) == 0 || !isFrameNumberPattern(fmt)) {
+        if (access(fmt.c_str(), F_OK) == 0)
+            exposures.push_back(Exposure(fmt));
+        return;
+    }
+
     bool success = false;
 
     for (int exposure = 0; ; ++exposure) {

@@ -121,7 +121,9 @@ Eigen::MatrixXd readTextData(const std::string &path) {
 
     std::vector<std::vector<double>> rows;
     std::string line;
+    size_t lineNumber = 0;
     while (std::getline(input, line)) {
+        ++lineNumber;
         line = trimCopy(line);
         if (line.empty() || line[0] == '#')
             continue;
@@ -130,8 +132,21 @@ Eigen::MatrixXd readTextData(const std::string &path) {
             continue;
         std::vector<double> row;
         row.reserve(tokens.size());
-        for (const std::string &token : tokens)
-            row.push_back(std::stod(token));
+        for (const std::string &token : tokens) {
+            // The whole token must be a number (like numpy.loadtxt in pylinearhdr): std::stod alone
+            // read "0.12,0.34,0.56" as 0.12 and "152,7" as 152 without an error.
+            size_t used = 0;
+            double value = 0.0;
+            try {
+                value = std::stod(token, &used);
+            } catch (const std::exception &) {
+                used = 0;
+            }
+            if (used == 0 || used != token.size())
+                throw std::runtime_error("Data file " + path + ", line " + std::to_string(lineNumber) + ": '" + token +
+                                         "' is not a number (separate columns with spaces or tabs; the decimal point is '.').");
+            row.push_back(value);
+        }
         rows.push_back(row);
     }
 
@@ -411,6 +426,8 @@ double scalarLeastSquares(const Eigen::VectorXd &x, const Eigen::VectorXd &y) {
 }
 
 Eigen::Matrix3d matrixFromVector(const Eigen::VectorXd &v) {
+    if (v.size() != 9)
+        throw std::runtime_error("Color matrix vector must hold 9 values.");
     Eigen::Matrix3d m;
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j)
@@ -432,7 +449,8 @@ Eigen::MatrixXd loadSampledData(const std::string &path, const std::string &cell
         HdrImage image = readRadianceHDR(path);
         if (headerOut)
             *headerOut = image.header;
-        return sampleCells(image, loadCellFile(cellsPath), 179.0);
+        // x 179 and / EXPOSURE, as pylinearhdr's load_data() reads pictures (pvalue -o, then x 179)
+        return sampleCells(image, loadCellFile(cellsPath), 179.0 / hdrExposureProduct(image));
     }
     if (headerOut)
         headerOut->clear();
@@ -468,8 +486,9 @@ Eigen::VectorXd residualVectorFromMatrix(const Eigen::Matrix3d &matrix, const Ei
     return residual;
 }
 
+// Returns the 3N x 9 matrix (it was declared VectorXd, which kept only its first column).
 template <typename ResidualFunction>
-Eigen::VectorXd finiteDifferenceJacobian(const Eigen::VectorXd &x, const Eigen::VectorXd &baseResidual,
+Eigen::MatrixXd finiteDifferenceJacobian(const Eigen::VectorXd &x, const Eigen::VectorXd &baseResidual,
         ResidualFunction residualFunction) {
     Eigen::MatrixXd J(baseResidual.size(), x.size());
     for (Eigen::Index i = 0; i < x.size(); ++i) {

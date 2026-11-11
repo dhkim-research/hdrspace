@@ -563,6 +563,13 @@ struct EquidistantViewInfo {
     bool valid = false;
     double horizontalDegrees = 180.0;
     double verticalDegrees = 180.0;
+    // Radiance -vs/-vl (view shift and lift), and the view size of the whole picture whose 180° circle
+    // holds the valid pixels: the picture itself, or the picture a crop came from (mergehdr hdrcrop
+    // writes MERGEHDR_CROP_SOURCE_VIEW_OPTIONS).
+    double horizontalShift = 0.0;
+    double verticalShift = 0.0;
+    double circleHorizontalDegrees = 180.0;
+    double circleVerticalDegrees = 180.0;
 };
 
 std::optional<std::string_view> findAttributeValue(std::span<const tev::AttributeNode> nodes, std::string_view name) {
@@ -599,6 +606,22 @@ void parseViewAngles(std::string_view viewValue, double& horizontalDegrees, doub
     }
 }
 
+void parseViewShift(std::string_view viewValue, double& horizontalShift, double& verticalShift) {
+    std::istringstream iss(std::string{viewValue});
+    std::vector<std::string> tokens;
+    std::string token;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+    for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+        if (tokens[i] == "-vs") {
+            horizontalShift = std::atof(tokens[i + 1].c_str());
+        } else if (tokens[i] == "-vl") {
+            verticalShift = std::atof(tokens[i + 1].c_str());
+        }
+    }
+}
+
 EquidistantViewInfo detectEquidistantViewInfo(const std::shared_ptr<tev::Image>& image) {
     EquidistantViewInfo info;
     if (!image) {
@@ -607,9 +630,15 @@ EquidistantViewInfo detectEquidistantViewInfo(const std::shared_ptr<tev::Image>&
 
     if (const auto view = findAttributeValue(image->attributes(), "VIEW")) {
         parseViewAngles(*view, info.horizontalDegrees, info.verticalDegrees);
+        parseViewShift(*view, info.horizontalShift, info.verticalShift);
         if (view->find("-vta") != std::string_view::npos) {
             info.valid = true;
         }
+    }
+    info.circleHorizontalDegrees = info.horizontalDegrees;
+    info.circleVerticalDegrees = info.verticalDegrees;
+    if (const auto sourceView = findAttributeValue(image->attributes(), "MERGEHDR_CROP_SOURCE_VIEW_OPTIONS")) {
+        parseViewAngles(*sourceView, info.circleHorizontalDegrees, info.circleVerticalDegrees);
     }
 
     if (const auto projection = findAttributeValue(image->attributes(), "MERGEHDR_PROJECTION")) {
@@ -623,9 +652,13 @@ EquidistantViewInfo detectEquidistantViewInfo(const std::shared_ptr<tev::Image>&
 }
 
 static Vector3f equidistantDirFromViewerPixel(int x, int y, size_t width, size_t height, const EquidistantViewInfo& viewInfo) {
-    const double nx = (static_cast<double>(x) + 0.5) / static_cast<double>(width) - 0.5;
-    const double ny = (static_cast<double>(y) + 0.5) / static_cast<double>(height) - 0.5;
-    const double radius = std::sqrt(nx * nx + ny * ny);
+    // Radiance viewray(): pixel/size + shift - 0.5, with the lift counted upward (rows here count down).
+    const double nx = (static_cast<double>(x) + 0.5) / static_cast<double>(width) - 0.5 + viewInfo.horizontalShift;
+    const double ny = (static_cast<double>(y) + 0.5) / static_cast<double>(height) - 0.5 - viewInfo.verticalShift;
+    // Radius in the frame of the whole picture, whose circle has radius 0.5.
+    const double cx = nx * viewInfo.horizontalDegrees / viewInfo.circleHorizontalDegrees;
+    const double cy = ny * viewInfo.verticalDegrees / viewInfo.circleVerticalDegrees;
+    const double radius = std::sqrt(cx * cx + cy * cy);
     if (radius <= 1e-12) {
         return {0.0f, 1.0f, 0.0f};
     }
@@ -14027,7 +14060,9 @@ private:
         const double by = primaries[5];
         const double wx = primaries[6];
         const double wy = primaries[7];
-        if (ry <= 0.0 || gy <= 0.0 || by <= 0.0 || wy <= 0.0) {
+        // Only the white y is divided by; primaries with y = 0 (XYZ identity primaries) are valid, and
+        // a degenerate set is caught by the matrix inversion (as in glareeval).
+        if (!(wy > 0.0)) {
             return false;
         }
 
@@ -20681,7 +20716,7 @@ private:
         if (useRgb) {
             output << ",r,g,b\n";
         } else {
-            output << ",luminance\n";
+            output << ",value\n";  // grey picture: the stored value (r = g = b), not cd/m²
         }
 
         for (size_t y = 0; y < image.height; ++y) {
@@ -20843,7 +20878,9 @@ private:
                     -1.0,
                     1.0
                 );
-                const double rActual = 2.0 * std::acos(cosine);
+                // R° is the radius of the circle, as in Image Statistics (evalglare's -t/-l angles are
+                // full opening angles; this test used that convention before).
+                const double rActual = std::acos(cosine);
                 if (rActual > radiusRadians) {
                     continue;
                 }
@@ -24472,7 +24509,13 @@ private:
             std::ostringstream output;
             output << "Reference chart XYZ (A-D top-to-bottom, 1-6 left-to-right)\n";
             output << "Color transform: " << colorInfo.description << "\n";
-            output << "Sample scale: HDR values x 179\n\n";
+            // EXPOSURE is undone as in colorcalibrate and pylinearhdr (pvalue -o, then x 179).
+            const double exposureProduct = hdrExposureProduct(image);
+            if (exposureProduct == 1.0) {
+                output << "Sample scale: HDR values x 179\n\n";
+            } else {
+                output << "Sample scale: HDR values x 179 / EXPOSURE " << exposureProduct << "\n\n";
+            }
             output << std::left << std::setw(6) << "Cell"
                    << std::right << std::setw(16) << "X"
                    << std::setw(16) << "Y"
@@ -24491,7 +24534,7 @@ private:
                         source[2] += static_cast<double>(image.rgb[pixel + 2]);
                     }
                 }
-                const double sampleScale = 179.0 / static_cast<double>(cell.w * cell.h);
+                const double sampleScale = 179.0 / exposureProduct / static_cast<double>(cell.w * cell.h);
                 for (double& value : source) {
                     value *= sampleScale;
                 }

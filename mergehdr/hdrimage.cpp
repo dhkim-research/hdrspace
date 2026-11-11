@@ -130,6 +130,19 @@ std::string readAsciiLine(std::ifstream &input) {
 
 } // namespace
 
+double hdrExposureProduct(const HdrImage &image) {
+    const std::vector<std::string> &lines = image.rawHeaderLines.empty() ? image.headerLines : image.rawHeaderLines;
+    double product = 1.0;
+    for (const std::string &line : lines) {
+        if (line.compare(0, 9, "EXPOSURE=") != 0)
+            continue;
+        const double exposure = std::atof(line.c_str() + 9);
+        if (exposure > 0.0)
+            product *= exposure;
+    }
+    return product;
+}
+
 bool isRadianceHDR(const std::string &path) {
     std::ifstream input(path.c_str(), std::ios::binary);
     if (!input)

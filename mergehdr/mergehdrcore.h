@@ -85,6 +85,36 @@ struct RawChannelSampleStats {
     size_t totalSamples = 0;
 };
 
+/// True when `name` holds exactly one printf integer conversion (%d, %i or %u with optional flags,
+/// width and precision, such as %03d) and no other '%' except "%%". Only such a name is read as a
+/// numbered frame pattern (IMG_%04d.CR3); any other '%' (a folder "Sun 100%") makes it a path.
+inline bool isFrameNumberPattern(const std::string &name) {
+    int conversions = 0;
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (name[i] != '%')
+            continue;
+        if (i + 1 < name.size() && name[i + 1] == '%') {
+            ++i;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < name.size() && (name[j] == '-' || name[j] == '+' || name[j] == ' ' || name[j] == '#' || name[j] == '0'))
+            ++j;
+        while (j < name.size() && name[j] >= '0' && name[j] <= '9')
+            ++j;
+        if (j < name.size() && name[j] == '.') {
+            ++j;
+            while (j < name.size() && name[j] >= '0' && name[j] <= '9')
+                ++j;
+        }
+        if (j >= name.size() || (name[j] != 'd' && name[j] != 'i' && name[j] != 'u'))
+            return false;
+        ++conversions;
+        i = j;
+    }
+    return conversions == 1;
+}
+
 /// Stores a series of exposures, manages demosaicing and subsequent steps
 struct ExposureSeries {
     std::vector<Exposure> exposures;

@@ -36,6 +36,14 @@ struct ProjectionMetadata {
     bool square = false;
     double horizontalViewDegrees = 180.0;
     double verticalViewDegrees = 180.0;
+    // Equidistant pictures: Radiance -vs/-vl (view shift and lift), and the view size of the whole
+    // picture whose 180° circle holds the valid pixels (the picture itself, or for a mergehdr hdrcrop
+    // crop the picture it came from, MERGEHDR_CROP_SOURCE_VIEW_OPTIONS; then cropView is set).
+    double horizontalShift = 0.0;
+    double verticalShift = 0.0;
+    double circleHorizontalDegrees = 180.0;
+    double circleVerticalDegrees = 180.0;
+    bool cropView = false;
 };
 
 enum class EStatisticsLuminanceMode {
@@ -146,6 +154,22 @@ void parseViewAngles(std::string_view viewValue, double& horizontalDegrees, doub
     }
 }
 
+void parseViewShift(std::string_view viewValue, double& horizontalShift, double& verticalShift) {
+    std::istringstream iss(std::string{viewValue});
+    std::vector<std::string> tokens;
+    std::string token;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+    for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+        if (tokens[i] == "-vs") {
+            horizontalShift = std::atof(tokens[i + 1].c_str());
+        } else if (tokens[i] == "-vl") {
+            verticalShift = std::atof(tokens[i + 1].c_str());
+        }
+    }
+}
+
 ProjectionMetadata detectProjectionMetadata(const tev::Image& image) {
     ProjectionMetadata metadata;
     const auto attributes = image.attributes();
@@ -153,6 +177,13 @@ ProjectionMetadata detectProjectionMetadata(const tev::Image& image) {
     metadata.square = image.size().x() == image.size().y();
     if (const auto view = findAttributeValue(attributes, "VIEW")) {
         parseViewAngles(*view, metadata.horizontalViewDegrees, metadata.verticalViewDegrees);
+        parseViewShift(*view, metadata.horizontalShift, metadata.verticalShift);
+    }
+    metadata.circleHorizontalDegrees = metadata.horizontalViewDegrees;
+    metadata.circleVerticalDegrees = metadata.verticalViewDegrees;
+    if (const auto sourceView = findAttributeValue(attributes, "MERGEHDR_CROP_SOURCE_VIEW_OPTIONS")) {
+        parseViewAngles(*sourceView, metadata.circleHorizontalDegrees, metadata.circleVerticalDegrees);
+        metadata.cropView = true;
     }
 
     if (const auto explicitProjection = findAttributeValue(attributes, "MERGEHDR_PROJECTION")) {
@@ -579,16 +610,46 @@ Vector3f normalizeVec(const Vector3f& value) {
     return value / len;
 }
 
+// Directions and solid angles are known for square projected pictures, and for equidistant crops
+// whose header gives the view of the whole picture (mergehdr hdrcrop), square or not.
+bool projectedGeometryAvailable(const ProjectionMetadata& metadata) {
+    if (metadata.projection == EDetectedProjection::Unknown) {
+        return false;
+    }
+    return metadata.square || (metadata.cropView && metadata.projection == EDetectedProjection::Equidistant);
+}
+
+// Normalised pixel position (Radiance viewray(): pixel/size + shift - 0.5, the lift counted upward,
+// rows here count down) and its radius in the frame of the whole picture, whose circle has radius 0.5.
+// Shift and circle apply to equidistant pictures; for the others they are 0 and the picture itself.
+struct NormalisedPixel {
+    double nx = 0.0;
+    double ny = 0.0;
+    double radius = 0.0;
+};
+
+NormalisedPixel normalisedPixel(const tev::Image& image, const ProjectionMetadata& metadata, double px, double py) {
+    const bool equidistant = metadata.projection == EDetectedProjection::Equidistant;
+    const double width = static_cast<double>(image.size().x());
+    const double height = static_cast<double>(image.size().y());
+    NormalisedPixel p;
+    p.nx = (px + 0.5) / width - 0.5 + (equidistant ? metadata.horizontalShift : 0.0);
+    p.ny = (py + 0.5) / height - 0.5 - (equidistant ? metadata.verticalShift : 0.0);
+    const double cx = equidistant ? p.nx * metadata.horizontalViewDegrees / metadata.circleHorizontalDegrees : p.nx;
+    const double cy = equidistant ? p.ny * metadata.verticalViewDegrees / metadata.circleVerticalDegrees : p.ny;
+    p.radius = std::sqrt(cx * cx + cy * cy);
+    return p;
+}
+
 std::optional<Vector3f> directionForPixel(const tev::Image& image, const ProjectionMetadata& metadata, double px, double py) {
-    if (metadata.projection == EDetectedProjection::Unknown || !metadata.square) {
+    if (!projectedGeometryAvailable(metadata)) {
         return std::nullopt;
     }
 
-    const double width = static_cast<double>(image.size().x());
-    const double height = static_cast<double>(image.size().y());
-    const double nx = (px + 0.5) / width - 0.5;
-    const double ny = (py + 0.5) / height - 0.5;
-    const double radius = std::sqrt(nx * nx + ny * ny);
+    const NormalisedPixel pixel = normalisedPixel(image, metadata, px, py);
+    const double nx = pixel.nx;
+    const double ny = pixel.ny;
+    const double radius = pixel.radius;
     if (radius > 0.5) {
         return std::nullopt;
     }
@@ -636,12 +697,13 @@ double pixelSolidAngle(const tev::Image& image, const ProjectionMetadata& metada
     }
     const double pixelArea = 1.0 / (width * height);
 
-    if (metadata.projection == EDetectedProjection::Unknown || !metadata.square) {
+    if (!projectedGeometryAvailable(metadata)) {
         return pixelArea;
     }
-    const double nx = (px + 0.5) / width - 0.5;
-    const double ny = (py + 0.5) / height - 0.5;
-    const double radius = std::sqrt(nx * nx + ny * ny);
+    const NormalisedPixel pixel = normalisedPixel(image, metadata, px, py);
+    const double nx = pixel.nx;
+    const double ny = pixel.ny;
+    const double radius = pixel.radius;
     if (radius > 0.5) {
         return 0.0;
     }
@@ -1784,7 +1846,7 @@ void drawGraphVerticalTextBitmap(
 
 bool imageStatisticsSupportsAngularAxis(const tev::Image& image) {
     const auto metadata = detectProjectionMetadata(image);
-    return metadata.projection != EDetectedProjection::Unknown && metadata.square;
+    return projectedGeometryAvailable(metadata);
 }
 
 std::string imageStatisticsAngularAxisMessage(const tev::Image& image) {
@@ -1792,7 +1854,7 @@ std::string imageStatisticsAngularAxisMessage(const tev::Image& image) {
     if (metadata.projection == EDetectedProjection::Unknown) {
         return "Angular axis requires valid VIEW/projection metadata.";
     }
-    if (!metadata.square) {
+    if (!projectedGeometryAvailable(metadata)) {
         return "Angular axis currently requires a square projected image.";
     }
     return {};

@@ -893,7 +893,12 @@ bool wildcardMatch(const std::string &pattern, const std::string &name) {
 #endif
 
 std::vector<std::string> expandInputArg(const std::string &arg) {
-    if (arg.find('%') != std::string::npos) {
+    // A name that exists is used as it is, like a shell does: folder names such as "Sun 100%" or
+    // "Shoot [A]" are not patterns. Only names with one %d-style conversion are frame-number patterns.
+    if (fileExists(arg))
+        return std::vector<std::string>(1, arg);
+
+    if (isFrameNumberPattern(arg)) {
         std::vector<std::string> expanded = expandPrintfPattern(arg);
         if (!expanded.empty())
             return expanded;
@@ -1912,12 +1917,31 @@ std::string buildHdrCropCommandLine(const GlobalOptions &global, const HdrCropOp
 std::vector<std::string> buildHdrCropHeaderLines(const HdrImage &source, const HdrCropOptions &opts,
         const std::string &commandLine) {
     std::vector<std::string> lines = headerLinesForWrite(source);
+    // The source VIEW describes the whole picture. The crop gets its own view (same viewpoint,
+    // smaller view size, position in -vs/-vl), or none when that cannot be given, as Radiance
+    // pcompos leaves no active view. The source view is kept under another name.
+    const RadianceCropView cropView = radianceCropView(source, opts.crop[0], opts.crop[1], opts.crop[2], opts.crop[3]);
+    lines.erase(std::remove_if(lines.begin(), lines.end(), [](const std::string &line) {
+        return headerKeyLower(line) == "view";
+    }), lines.end());
     const int stepIndex = nextMergeHdrStepIndex(lines);
     lines.push_back("MERGEHDR_STEP_" + std::to_string(stepIndex) + "= " + commandLine);
     lines.push_back("MERGEHDR_CROP= " + std::to_string(opts.crop[0]) + " " + std::to_string(opts.crop[1]) +
                     " " + std::to_string(opts.crop[2]) + " " + std::to_string(opts.crop[3]));
     lines.push_back("MERGEHDR_CROP_SOURCE= " + fs::path(opts.inputPath).filename().string());
     lines.push_back("MERGEHDR_CROP_SOURCE_SIZE= " + std::to_string(source.width) + " " + std::to_string(source.height));
+    if (cropView.sourceHasView) {
+        // The view of the uncropped picture: a crop of a crop keeps the first one.
+        const bool haveSourceView = std::any_of(lines.begin(), lines.end(), [](const std::string &line) {
+            return headerKeyLower(line) == "mergehdr_crop_source_view_options";
+        });
+        if (!haveSourceView)
+            lines.push_back("MERGEHDR_CROP_SOURCE_VIEW_OPTIONS=" + cropView.sourceView);
+        if (!cropView.view.empty())
+            lines.push_back("VIEW=" + cropView.view);
+        else
+            lines.push_back("MERGEHDR_CROP_VIEW_NOTE= no view for the crop: " + cropView.note);
+    }
     return lines;
 }
 
@@ -2591,6 +2615,12 @@ struct ExtractProjectionMetadata {
     bool available = false;
     double horizontalViewDegrees = 180.0;
     double verticalViewDegrees = 180.0;
+    // Radiance -vs/-vl (view shift and lift), and the view size of the whole picture whose 180° circle
+    // holds the valid pixels: the picture itself, or for a hdrcrop crop the picture it came from.
+    double horizontalShift = 0.0;
+    double verticalShift = 0.0;
+    double circleHorizontalDegrees = 180.0;
+    double circleVerticalDegrees = 180.0;
 };
 
 struct ExtractLuminanceInfo {
@@ -2785,7 +2815,9 @@ bool extractWeightsFromPrimaries(const std::array<double, 8> &primaries, std::ar
     const double by = primaries[5];
     const double wx = primaries[6];
     const double wy = primaries[7];
-    if (ry <= 0.0 || gy <= 0.0 || by <= 0.0 || wy <= 0.0)
+    // Only the white y is divided by; primaries with y = 0 (XYZ identity primaries) are valid, and a
+    // degenerate set is caught by the matrix inversion (as in glareeval).
+    if (!(wy > 0.0))
         return false;
 
     ExtractMat3d pxyz;
@@ -2882,11 +2914,36 @@ bool extractLooksLikeTechnoteamOrLmk(const HdrImage &image) {
            extractHeaderContainsInsensitive(image, "camera=tt");
 }
 
-bool extractLooksLikePlainRadianceRgb(const HdrImage &image) {
-    if (!extractHeaderContainsInsensitive(image, "#?radiance") &&
-        !extractHeaderContainsInsensitive(image, "format=32-bit_rle_rgbe")) {
-        return false;
+// A Radiance RGBE picture, as glareeval's headerDeclaresRadianceRgbe(): a FORMAT header whose value is
+// 32-bit_rle_rgbe (case-insensitive), or no FORMAT line at all in a file whose magic line is
+// "#?RADIANCE". (The previous test searched headerLines for "format=32-bit_rle_rgbe" / "#?radiance",
+// which never matched: readRadianceHDR() stores "FORMAT= 32-bit_rle_rgbe" and keeps the magic line
+// out of headerLines, so plain RGBE pictures were refused by shadowband.)
+bool extractHeaderDeclaresRadianceRgbe(const HdrImage &image) {
+    bool sawFormat = false;
+    for (const auto &entry : image.header) {
+        if (lowerCopy(trimCopy(entry.first)) != "format")
+            continue;
+        sawFormat = true;
+        if (lowerCopy(trimCopy(entry.second)) == "32-bit_rle_rgbe")
+            return true;
     }
+    for (const std::string &line : image.headerLines) {
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos || lowerCopy(trimCopy(line.substr(0, eq))) != "format")
+            continue;
+        sawFormat = true;
+        if (lowerCopy(trimCopy(line.substr(eq + 1))) == "32-bit_rle_rgbe")
+            return true;
+    }
+    if (sawFormat)
+        return false;
+    return lowerCopy(trimCopy(image.magicLine)) == "#?radiance";
+}
+
+bool extractLooksLikePlainRadianceRgb(const HdrImage &image) {
+    if (!extractHeaderDeclaresRadianceRgbe(image))
+        return false;
 
     if (image.header.find("LuminanceRGB") != image.header.end() ||
         image.header.find("SENSOR2XYZ") != image.header.end() ||
@@ -2939,7 +2996,9 @@ bool extractPrimariesToXyzMatrix(const std::array<double, 8> &primaries, Extract
     const double by = primaries[5];
     const double wx = primaries[6];
     const double wy = primaries[7];
-    if (ry <= 0.0 || gy <= 0.0 || by <= 0.0 || wy <= 0.0)
+    // Only the white y is divided by; primaries with y = 0 (XYZ identity primaries) are valid, and a
+    // degenerate set is caught by the matrix inversion (as in glareeval).
+    if (!(wy > 0.0))
         return false;
 
     ExtractMat3d pxyz{};
@@ -3170,11 +3229,29 @@ ExtractViewBasis extractResolveViewBasis(const HdrImage &image) {
 
 ExtractProjectionMetadata extractDetectProjection(const HdrImage &image) {
     ExtractProjectionMetadata meta;
-    if (image.width != image.height)
+    // A crop made by hdrcrop gives the view of the whole picture; it need not be square.
+    std::map<std::string, std::string>::const_iterator sourceViewIt = image.header.find("MERGEHDR_CROP_SOURCE_VIEW_OPTIONS");
+    if (image.width != image.height && sourceViewIt == image.header.end())
         return meta;
     std::map<std::string, std::string>::const_iterator viewIt = image.header.find("VIEW");
-    if (viewIt != image.header.end())
+    if (viewIt != image.header.end()) {
         extractParseViewAnglesFromViewString(viewIt->second, meta.horizontalViewDegrees, meta.verticalViewDegrees);
+        std::istringstream iss(viewIt->second);
+        std::vector<std::string> tokens;
+        std::string token;
+        while (iss >> token)
+            tokens.push_back(token);
+        for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+            if (tokens[i] == "-vs")
+                meta.horizontalShift = std::atof(tokens[i + 1].c_str());
+            else if (tokens[i] == "-vl")
+                meta.verticalShift = std::atof(tokens[i + 1].c_str());
+        }
+    }
+    meta.circleHorizontalDegrees = meta.horizontalViewDegrees;
+    meta.circleVerticalDegrees = meta.verticalViewDegrees;
+    if (sourceViewIt != image.header.end())
+        extractParseViewAnglesFromViewString(sourceViewIt->second, meta.circleHorizontalDegrees, meta.circleVerticalDegrees);
     if (viewIt != image.header.end() && extractStringContainsInsensitive(viewIt->second, "-vta")) {
         meta.available = true;
         return meta;
@@ -3260,9 +3337,14 @@ double extractLuminanceAt(const HdrImage &image, size_t x, size_t y, const Extra
 ExtractGeometrySample extractGeometryAt(size_t width, size_t height, int x, int y,
         const ExtractViewBasis &view, const ExtractProjectionMetadata &projection) {
     ExtractGeometrySample sample;
-    const double nx = (static_cast<double>(x) + 0.5) / static_cast<double>(width) - 0.5;
-    const double ny = (static_cast<double>(y) + 0.5) / static_cast<double>(height) - 0.5;
-    const double radius = std::sqrt(nx * nx + ny * ny);
+    // Radiance viewray(): pixel/size + shift - 0.5, with the lift counted upward (extract reads the
+    // picture top-down, so rows here count down).
+    const double nx = (static_cast<double>(x) + 0.5) / static_cast<double>(width) - 0.5 + projection.horizontalShift;
+    const double ny = (static_cast<double>(y) + 0.5) / static_cast<double>(height) - 0.5 - projection.verticalShift;
+    // Radius in the frame of the whole picture, whose circle has radius 0.5.
+    const double cx = nx * projection.horizontalViewDegrees / projection.circleHorizontalDegrees;
+    const double cy = ny * projection.verticalViewDegrees / projection.circleVerticalDegrees;
+    const double radius = std::sqrt(cx * cx + cy * cy);
     if (radius > 0.5)
         return sample;
 
@@ -4206,7 +4288,8 @@ std::string shutterHelp(const std::string &command) {
     oss << "  -range, --range FLOAT\n";
     oss << "                     Shadow floor in normalized sensor units.\n";
     oss << "  -shutterc, --shutterc FLOAT\n";
-    oss << "                     Shutter correction factor used while sampling.\n";
+    oss << "                     Shutter correction factor used while sampling. A profile's\n";
+    oss << "                     shutterc is not used here (as in pylinearhdr shutter).\n";
     oss << "  -fo, --fo TEXT     Aperture override pairs nominal,exact.\n";
     oss << "  --help              Show this help.\n";
     oss << "\nExamples:\n";
@@ -4324,6 +4407,9 @@ std::string hdrCropHelp(const std::string &command) {
     oss << "What it does:\n";
     oss << "  - Reads the source HDR natively.\n";
     oss << "  - Keeps the existing header lines.\n";
+    oss << "  - Replaces the VIEW by the view of the crop: same viewpoint, view size scaled per\n";
+    oss << "    projection, position in -vs/-vl, so every pixel keeps its direction. The source\n";
+    oss << "    view is kept as MERGEHDR_CROP_SOURCE_VIEW_OPTIONS.\n";
     oss << "  - Appends mergehdr crop metadata for the new file.\n";
     oss << "  - Writes a cropped Radiance HDR.\n\n";
     oss << "Options:\n";
@@ -5651,7 +5737,15 @@ int printShutterCalibration(const GlobalOptions &global, const ShutterOptions &o
     std::string configPath = configPathFromGlobal(global);
     ConfigValues cfg = loadConfigValues(configPath);
     ShutterOptions resolved = opts;
+    // As in pylinearhdr's `shutter`, the frames are sampled with the nominal (1/3-stop) shutter times:
+    // a profile's shutterc is not applied, otherwise the fit finds only what that correction leaves
+    // and prints it as the new shutterc. A -shutterc given on the command line is still used.
+    const bool explicitShutterc = resolved.common.shuttercOverride;
     applyCalibrationDefaults(resolved.common, cfg);
+    if (!explicitShutterc) {
+        resolved.common.shutterc = 0.0;
+        resolved.common.shuttercOverride = false;
+    }
     validateShutterOptions(resolved);
 
     std::vector<std::vector<int>> crops;
@@ -6251,6 +6345,31 @@ int printShadowband(const ShadowbandCliOptions &opts) {
     HdrImage vertical = readRadianceHDRTopDown(resolved.verticalPath);
     HdrImage noShadow = readRadianceHDRTopDown(resolved.noShadowPath);
 
+    // As pylinearhdr reads them (raytools hdr2carray: pvalue -o), the pixel values are divided by
+    // the inputs' EXPOSURE, and the inputs' EXPOSURE lines are not copied into the output header.
+    std::vector<std::string> inputExposureNotes;
+    {
+        const double hExposure = hdrExposureProduct(horizontal);
+        const double vExposure = hdrExposureProduct(vertical);
+        const double nExposure = hdrExposureProduct(noShadow);
+        const auto undoExposure = [](HdrImage &image, double exposure) {
+            if (exposure == 1.0)
+                return;
+            const float scale = static_cast<float>(1.0 / exposure);
+            for (float &value : image.rgb)
+                value *= scale;
+        };
+        undoExposure(horizontal, hExposure);
+        undoExposure(vertical, vExposure);
+        undoExposure(noShadow, nExposure);
+        if (hExposure != 1.0 || vExposure != 1.0 || nExposure != 1.0) {
+            std::ostringstream note;
+            note << std::setprecision(10) << "SHADOWBAND_INPUT_EXPOSURES= H " << hExposure << " V " << vExposure
+                 << " ND " << nExposure << " (pixel values divided by them before the merge)";
+            inputExposureNotes.push_back(note.str());
+        }
+    }
+
     // pylinearhdr shadowband expects equisolid inputs with a margin beyond 180 degrees. HDRs that
     // mergehdr already reprojected (VIEW= -vta) are exactly 180 degrees and equidistant, so a second
     // reprojection or a margin crop would distort their angles: both steps are skipped for them.
@@ -6303,13 +6422,14 @@ int printShadowband(const ShadowbandCliOptions &opts) {
     sbopts << " margin:" << resolved.analysis.margin;
     header.push_back(sbopts.str());
     header.insert(header.end(), inputProjectionNotes.begin(), inputProjectionNotes.end());
+    header.insert(header.end(), inputExposureNotes.begin(), inputExposureNotes.end());
     header.push_back(formatPrimariesHeader(parseColorSpaceSpec("rad").primaries));
     header.push_back(formatPairHeader("TargetWhitePoint", parseColorSpaceSpec("rad").white));
     header.push_back(formatTripletHeader("LuminanceRGB", std::array<float, 3>{{0.26507413f, 0.67011463f, 0.06481124f}}));
     if (!sameInputColorMetadata)
         header.push_back("MERGEHDR_SHADOWBAND_INPUT_COLORSPACE_MISMATCH= converted all inputs to Rad before merge");
 
-    const std::set<std::string> replacedShadowbandKeys{"view"};
+    const std::set<std::string> replacedShadowbandKeys{"view", "exposure"};
     const std::vector<std::string> hh = headerLinesReplacing(horizontal, replacedShadowbandKeys);
     const std::vector<std::string> hv = headerLinesReplacing(vertical, replacedShadowbandKeys);
     const std::vector<std::string> hs = headerLinesReplacing(noShadow, replacedShadowbandKeys);

@@ -29,6 +29,10 @@ struct HdrImage {
 };
 
 bool isRadianceHDR(const std::string &path);
+// Product of the picture's EXPOSURE as Radiance reads it (isexpos/exposval, pvalue -o): every header
+// line that starts with "EXPOSURE=" multiplies; indented lines are copied headers of input pictures
+// and do not count. 1 when there is none. Stored value / product = the value before the exposure.
+double hdrExposureProduct(const HdrImage &image);
 // Reads a Radiance picture. All eight resolution-line orientations are accepted and mapped exactly
 // like Radiance fgetsresolu() + pictool pict_read(): scanline number s (0 = first in the file) becomes
 // Radiance row y = (YDECR ? height-1-s : s) (row 0 = bottom for standard files), pixels keep their
