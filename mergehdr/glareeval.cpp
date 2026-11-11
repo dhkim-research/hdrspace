@@ -260,16 +260,7 @@ bool stringContainsInsensitive(const std::string &haystack, const std::string &n
 // starts with "EXPOSURE=" multiplies; indented lines are headers of input pictures copied by the
 // writing program (pcomb and others) and do not describe these pixels.
 double radianceExposureProduct(const HdrImage &image) {
-    const std::vector<std::string> &lines = image.rawHeaderLines.empty() ? image.headerLines : image.rawHeaderLines;
-    double exposureProduct = 1.0;
-    for (const std::string &line : lines) {
-        if (line.compare(0, 9, "EXPOSURE=") != 0)
-            continue;
-        const double exposure = std::atof(line.c_str() + 9);
-        if (exposure > 0.0)
-            exposureProduct *= exposure;
-    }
-    return exposureProduct;
+    return hdrExposureProduct(image);  // the shared rule (hdrimage.h)
 }
 
 double headerExposureScale(const HdrImage &image) {
@@ -7180,9 +7171,17 @@ void runMain(const EvalGlareOptions &o, EvalGlareAnalysisResult &res, Io &io) {
         pict.view = hdr.view;
         pict.validView = !(hdr.viewError != nullptr || hdr.viewLines == 0);
         const LuminanceWeights lw = resolveGlareWeights(img);
-        if (o.equivLuminance)
+        // A picture marked as cd/m² (HDRSPACE_COLOR) holds 179 times the Radiance values: Glare
+        // follows the mark like the viewer and Statistics. Other pictures are read as evalglare does.
+        const double markScale = radianceValuesInCdm2(img.header) ? 179.0 : 1.0;
+        if (o.equivLuminance) {
             equivalentMap = std::make_shared<std::vector<double>>(computeEquivalentLuminanceMap(img));
-        std::vector<float> grey = greyValues(img, hdr.exposure, lw.w, equivalentMap.get());
+            if (markScale != 1.0) {
+                for (double &value : *equivalentMap)
+                    value /= markScale;
+            }
+        }
+        std::vector<float> grey = greyValues(img, hdr.exposure * markScale, lw.w, equivalentMap.get());
         equivalentMap.reset();
         img = HdrImage();  // release the input pixels early
         pict.col.resize(grey.size() * 3);
@@ -8903,7 +8902,28 @@ HdrLuminanceEvaluator resolveHdrLuminanceEvaluator(const HdrImage &image) {
     evaluator.weights = info.weights;
     evaluator.exposureScale = info.exposureScale;
     evaluator.description = info.description;
+    // Values marked as cd/m² are not multiplied by 179, as in the viewer and Statistics.
+    if (radianceValuesInCdm2(image.header)) {
+        evaluator.exposureScale /= kWhiteEfficacy;
+        evaluator.description += "; values marked as cd/m2";
+    }
     return evaluator;
+}
+
+HdrLuminanceEvaluator resolveHeaderLuminanceEvaluator(const std::vector<std::string> &rawHeaderLines) {
+    HdrImage header;  // no pixels: the colour rule only
+    header.rawHeaderLines = rawHeaderLines;
+    if (!rawHeaderLines.empty() && rawHeaderLines.front().compare(0, 2, "#?") == 0)
+        header.magicLine = rawHeaderLines.front();
+    for (const std::string &line : rawHeaderLines) {
+        if (line.empty() || line[0] == '#')
+            continue;
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos)
+            header.headerLines.push_back(trimCopy(line.substr(0, eq)) + "= " + trimCopy(line.substr(eq + 1)));
+    }
+    header.header = radianceDescribingValues(rawHeaderLines);
+    return resolveHdrLuminanceEvaluator(header);
 }
 
 double evaluateHdrLuminance(const HdrImage &image, size_t x, size_t y, const HdrLuminanceEvaluator &evaluator) {

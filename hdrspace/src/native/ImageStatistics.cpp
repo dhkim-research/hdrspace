@@ -3,6 +3,9 @@
 #include <tev/Channel.h>
 #include <tev/imageio/Colors.h>
 
+#include "glareeval.h"
+#include "hdrimage.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -535,6 +538,26 @@ StatisticsColorInfo resolveStatisticsColorInfo(
         return info;
     }
 
+    // Radiance pictures: the weights Glare, Blur and extract use, by the same header rule (left-
+    // justified lines, or the colour keys of the nearest copied header). The scale (179, EXPOSURE,
+    // the cd/m² mark) is applied separately below, as before.
+    {
+        const std::string extension = toLowerCopy(image.path().extension().string());
+        if (extension == ".hdr" || extension == ".pic" || extension == ".rgbe") {
+            const std::vector<std::string> headerLines = radianceHeaderLinesOfFile(image.path().string());
+            const HdrLuminanceEvaluator evaluator = resolveHeaderLuminanceEvaluator(headerLines);
+            if (!headerLines.empty() && evaluator.valid && !evaluator.monochrome) {
+                info.luminanceMode = EStatisticsLuminanceMode::Weighted;
+                info.luminanceWeights = {
+                    static_cast<float>(evaluator.weights[0]),
+                    static_cast<float>(evaluator.weights[1]),
+                    static_cast<float>(evaluator.weights[2]),
+                };
+                info.description = evaluator.description;
+                return info;
+            }
+        }
+    }
     std::array<float, 3> luminanceWeights{};
     if (parseLuminanceRgbWeights(image.attributes(), luminanceWeights)) {
         info.luminanceMode = EStatisticsLuminanceMode::Weighted;

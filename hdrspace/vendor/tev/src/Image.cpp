@@ -23,6 +23,7 @@
 #include <tev/imageio/Colors.h>
 #include <tev/imageio/ImageLoader.h>
 #include <tev/imageio/ExrImageSaver.h>
+#include "hdrimage.h"  // mergehdr: the shared Radiance header rule
 #include <tev/imageio/ImageSaver.h>
 #include <tev/imageio/StbiImageLoader.h>
 
@@ -98,6 +99,7 @@ ParsedRadianceHeader parseRadianceHeader(const fs::path& path) {
     }
 
     std::string line;
+    std::vector<std::string> rawLines;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -106,6 +108,7 @@ ParsedRadianceHeader parseRadianceHeader(const fs::path& path) {
         if (line.empty()) {
             break;
         }
+        rawLines.push_back(line);
 
         if (line.starts_with("#?")) {
             continue;
@@ -150,6 +153,22 @@ ParsedRadianceHeader parseRadianceHeader(const fs::path& path) {
 
         parsed.items[key] = value;
         parsed.attributes.push_back(AttributeNode{.name = key, .value = value, .type = "", .children = {}});
+    }
+
+    // Colour keys of the nearest copied header when the top lines have none (pcomb and pcompos
+    // indent their inputs' headers): the rule mergehdr uses (radianceDescribingValues), so the
+    // viewer and Statistics agree with Glare, Blur and extract.
+    AttributeNode adoptedRoot;
+    adoptedRoot.name = "Colour from nearest copied header";
+    for (const auto& [key, value] : radianceDescribingValues(rawLines)) {
+        if (!radianceColourKey(key) || parsed.items.contains(key)) {
+            continue;
+        }
+        parsed.items[key] = value;
+        adoptedRoot.children.push_back(AttributeNode{.name = key, .value = value, .type = "from the nearest copied header", .children = {}});
+    }
+    if (!adoptedRoot.children.empty()) {
+        parsed.attributes.emplace_back(std::move(adoptedRoot));
     }
 
     AttributeNode inheritedRoot;

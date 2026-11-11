@@ -313,6 +313,9 @@ void clearEvalGlareCaches();
 ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySummaryOptions &opts);
 PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, PerceptualMapKind kind);
 HdrLuminanceEvaluator resolveHdrLuminanceEvaluator(const HdrImage &image);
+// The same rule from a Radiance header alone (no pixels, so no monochrome test): the app's
+// Statistics and gaze tone mapping use it so that they agree with Glare, Blur and extract.
+HdrLuminanceEvaluator resolveHeaderLuminanceEvaluator(const std::vector<std::string> &rawHeaderLines);
 double evaluateHdrLuminance(const HdrImage &image, size_t x, size_t y, const HdrLuminanceEvaluator &evaluator);
 void writeViewVisibilityResultHdr(const std::string &path, const ViewVisibilitySummaryResult &result);
 void writePerceptualMapHdr(const std::string &path, const PerceptualMapResult &result);

@@ -33,6 +33,25 @@ bool isRadianceHDR(const std::string &path);
 // line that starts with "EXPOSURE=" multiplies; indented lines are copied headers of input pictures
 // and do not count. 1 when there is none. Stored value / product = the value before the exposure.
 double hdrExposureProduct(const HdrImage &image);
+
+// Which lines of a Radiance header describe the picture: one rule for mergehdr and the app
+// (Glare, extract, Blur, Statistics, gaze tone mapping and the viewer). Left-justified lines
+// describe the picture; indented lines are headers of input pictures that the writing program
+// copied (pcomb and pcompos indent them).
+//  - EXPOSURE, VIEW and every other key count only on left-justified lines (Radiance).
+//  - The colour keys (radianceColourKey) come from the left-justified lines when any of them is
+//    there; otherwise all of them come from the nearest copied header that has any.
+bool radianceColourKey(const std::string &key);
+// key -> value by the rule above; comment lines and lines without '=' are skipped, keys and values
+// are trimmed, and a later line wins over an earlier one at the same level.
+std::map<std::string, std::string> radianceDescribingValues(const std::vector<std::string> &rawHeaderLines);
+// Product of the left-justified EXPOSURE= lines (Radiance isexpos/exposval); 1 when there are none.
+double radianceHeaderExposureProduct(const std::vector<std::string> &rawHeaderLines);
+// HDRSPACE_COLOR marks the values as cd/m² (the viewer's "Interpret file as ... (cd/m²)").
+bool radianceValuesInCdm2(const std::map<std::string, std::string> &values);
+// The information header of a Radiance picture file, line by line (the magic line first); empty
+// when the file is not a Radiance picture.
+std::vector<std::string> radianceHeaderLinesOfFile(const std::string &path);
 // Reads a Radiance picture. All eight resolution-line orientations are accepted and mapped exactly
 // like Radiance fgetsresolu() + pictool pict_read(): scanline number s (0 = first in the file) becomes
 // Radiance row y = (YDECR ? height-1-s : s) (row 0 = bottom for standard files), pixels keep their

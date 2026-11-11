@@ -199,6 +199,7 @@ endif()
 add_executable(hdrspace_tests EXCLUDE_FROM_ALL
   tests/TestMain.cpp
   tests/CreateViewTests.cpp
+  tests/RadianceHeaderTests.cpp
   src/native/core/TextUtil.cpp
   src/native/createview/Environment.cpp
   src/native/createview/Geometry.cpp

@@ -130,10 +130,9 @@ std::string readAsciiLine(std::ifstream &input) {
 
 } // namespace
 
-double hdrExposureProduct(const HdrImage &image) {
-    const std::vector<std::string> &lines = image.rawHeaderLines.empty() ? image.headerLines : image.rawHeaderLines;
+double radianceHeaderExposureProduct(const std::vector<std::string> &rawHeaderLines) {
     double product = 1.0;
-    for (const std::string &line : lines) {
+    for (const std::string &line : rawHeaderLines) {
         if (line.compare(0, 9, "EXPOSURE=") != 0)
             continue;
         const double exposure = std::atof(line.c_str() + 9);
@@ -141,6 +140,84 @@ double hdrExposureProduct(const HdrImage &image) {
             product *= exposure;
     }
     return product;
+}
+
+double hdrExposureProduct(const HdrImage &image) {
+    return radianceHeaderExposureProduct(image.rawHeaderLines.empty() ? image.headerLines : image.rawHeaderLines);
+}
+
+bool radianceColourKey(const std::string &key) {
+    static const char *const kColourKeys[] = {"LuminanceRGB", "PRIMARIES", "TargetPrimaries", "TargetWhitePoint",
+                                              "SENSOR2XYZ", "XYZCAM", "CAM_PREMULTIPLIERS", "Camera2RGB",
+                                              "HDRSPACE_COLOR"};
+    for (const char *colourKey : kColourKeys) {
+        if (key == colourKey)
+            return true;
+    }
+    return false;
+}
+
+std::map<std::string, std::string> radianceDescribingValues(const std::vector<std::string> &rawHeaderLines) {
+    std::map<std::string, std::string> values;
+    std::map<std::string, std::string> nearestColour;
+    size_t nearestDepth = 0;  // indentation of the nearest copied header with a colour key; 0 = none
+    bool topLevelColour = false;
+    for (const std::string &line : rawHeaderLines) {
+        size_t depth = 0;
+        while (depth < line.size() && (line[depth] == '\t' || line[depth] == ' '))
+            ++depth;
+        if (depth >= line.size() || line[depth] == '#')
+            continue;
+        const size_t eq = line.find('=', depth);
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = trimCopy(line.substr(depth, eq - depth));
+        if (key.empty())
+            continue;
+        const std::string value = trimCopy(line.substr(eq + 1));
+        if (depth == 0) {
+            values[key] = value;
+            topLevelColour = topLevelColour || radianceColourKey(key);
+        } else if (radianceColourKey(key)) {
+            if (nearestDepth == 0 || depth < nearestDepth) {
+                nearestDepth = depth;
+                nearestColour.clear();
+            }
+            if (depth == nearestDepth)
+                nearestColour[key] = value;
+        }
+    }
+    if (!topLevelColour)
+        values.insert(nearestColour.begin(), nearestColour.end());
+    return values;
+}
+
+bool radianceValuesInCdm2(const std::map<std::string, std::string> &values) {
+    const auto it = values.find("HDRSPACE_COLOR");
+    if (it == values.end())
+        return false;
+    std::string text = it->second;
+    for (char &c : text)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return text.find("cd/m2") != std::string::npos;
+}
+
+std::vector<std::string> radianceHeaderLinesOfFile(const std::string &path) {
+    std::vector<std::string> lines;
+    std::ifstream input(path.c_str(), std::ios::binary);
+    if (!input)
+        return lines;
+    std::string line = readAsciiLine(input);
+    if (line.compare(0, 2, "#?") != 0)
+        return lines;
+    lines.push_back(line);
+    while (input) {
+        line = readAsciiLine(input);
+        if (!input || line.empty())
+            break;
+        lines.push_back(line);
+    }
+    return lines;
 }
 
 bool isRadianceHDR(const std::string &path) {
@@ -179,9 +256,11 @@ HdrImage readRadianceHDR(const std::string &path, bool addHalfStep, bool flipY) 
             std::string key = trimCopy(line.substr(0, eq));
             std::string value = trimCopy(line.substr(eq + 1));
             image.headerLines.push_back(key + "= " + value);
-            image.header[key] = value;
         }
     }
+    // The values that describe this picture: top lines, or the colour keys of the nearest copied
+    // header (the same rule as the app's viewer and Statistics).
+    image.header = radianceDescribingValues(image.rawHeaderLines);
 
     // Resolution line, parsed like Radiance str2resolu(): the last 'X' and 'Y' in the line give the
     // sizes; the axis named last is the scanline (minor) axis; a '-' sign means decreasing order.

@@ -2827,62 +2827,6 @@ bool extractInvertMatrix(const ExtractMat3d &input, ExtractMat3d &output) {
     return true;
 }
 
-bool extractWeightsFromPrimaries(const std::array<double, 8> &primaries, std::array<double, 3> &weights) {
-    const double rx = primaries[0];
-    const double ry = primaries[1];
-    const double gx = primaries[2];
-    const double gy = primaries[3];
-    const double bx = primaries[4];
-    const double by = primaries[5];
-    const double wx = primaries[6];
-    const double wy = primaries[7];
-    // Only the white y is divided by; primaries with y = 0 (XYZ identity primaries) are valid, and a
-    // degenerate set is caught by the matrix inversion (as in glareeval).
-    if (!(wy > 0.0))
-        return false;
-
-    ExtractMat3d pxyz;
-    pxyz.m[0][0] = rx;
-    pxyz.m[1][0] = ry;
-    pxyz.m[2][0] = 1.0 - rx - ry;
-    pxyz.m[0][1] = gx;
-    pxyz.m[1][1] = gy;
-    pxyz.m[2][1] = 1.0 - gx - gy;
-    pxyz.m[0][2] = bx;
-    pxyz.m[1][2] = by;
-    pxyz.m[2][2] = 1.0 - bx - by;
-
-    ExtractMat3d inversePxyz;
-    if (!extractInvertMatrix(pxyz, inversePxyz))
-        return false;
-
-    const ExtractVec3d white{
-        wx / wy,
-        1.0,
-        (1.0 - wx - wy) / wy
-    };
-
-    const ExtractVec3d scales{
-        inversePxyz.m[0][0] * white.x + inversePxyz.m[0][1] * white.y + inversePxyz.m[0][2] * white.z,
-        inversePxyz.m[1][0] * white.x + inversePxyz.m[1][1] * white.y + inversePxyz.m[1][2] * white.z,
-        inversePxyz.m[2][0] * white.x + inversePxyz.m[2][1] * white.y + inversePxyz.m[2][2] * white.z
-    };
-
-    weights[0] = pxyz.m[1][0] * scales.x;
-    weights[1] = pxyz.m[1][1] * scales.y;
-    weights[2] = pxyz.m[1][2] * scales.z;
-    return std::isfinite(weights[0]) && std::isfinite(weights[1]) && std::isfinite(weights[2]) &&
-           (weights[0] > 0.0 || weights[1] > 0.0 || weights[2] > 0.0);
-}
-
-bool extractWeightsFromSensorToXyz(const ExtractMat3d &sensorToXyz, std::array<double, 3> &weights) {
-    weights[0] = sensorToXyz.m[1][0];
-    weights[1] = sensorToXyz.m[1][1];
-    weights[2] = sensorToXyz.m[1][2];
-    return std::isfinite(weights[0]) && std::isfinite(weights[1]) && std::isfinite(weights[2]) &&
-           (weights[0] > 0.0 || weights[1] > 0.0 || weights[2] > 0.0);
-}
-
 bool extractParseSensorToXyz(const HdrImage &image, ExtractMat3d &sensorToXyz) {
     if (extractParseHeaderMatrix3x3(image, "SENSOR2XYZ", sensorToXyz))
         return true;
@@ -2898,19 +2842,6 @@ bool extractParseSensorToXyz(const HdrImage &image, ExtractMat3d &sensorToXyz) {
             xyzCam.m[row][col] *= premults[static_cast<size_t>(row)];
     }
     return extractInvertMatrix(xyzCam, sensorToXyz);
-}
-
-bool extractImageIsMonochromeRgb(const HdrImage &image) {
-    const double epsilon = 1e-6;
-    for (size_t i = 0; i + 2 < image.rgb.size(); i += 3) {
-        const double r = image.rgb[i + 0];
-        const double g = image.rgb[i + 1];
-        const double b = image.rgb[i + 2];
-        const double scale = std::max(std::max(1.0, std::abs(r)), std::max(std::abs(g), std::abs(b)));
-        if (std::abs(r - g) > epsilon * scale || std::abs(r - b) > epsilon * scale)
-            return false;
-    }
-    return !image.rgb.empty();
 }
 
 bool extractStringContainsInsensitive(const std::string &haystack, const std::string &needle) {
@@ -3287,55 +3218,16 @@ ExtractProjectionMetadata extractDetectProjection(const HdrImage &image) {
 }
 
 ExtractLuminanceInfo extractResolveLuminanceInfo(const HdrImage &image) {
+    // The rule Glare, Blur and the app's Statistics use (glareeval, hdrimage.h): left-justified
+    // EXPOSURE lines only (#132), the colour keys of the nearest header, the plain Radiance RGB
+    // fallback (#131) and values marked as cd/m².
+    const HdrLuminanceEvaluator evaluator = resolveHdrLuminanceEvaluator(image);
     ExtractLuminanceInfo info;
-
-    double exposureProduct = 1.0;
-    for (size_t i = 0; i < image.headerLines.size(); ++i) {
-        const std::string &line = image.headerLines[i];
-        if (!extractStringContainsInsensitive(line, "EXPOSURE="))
-            continue;
-        const size_t eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        const double exposure = std::atof(trimCopy(line.substr(eq + 1)).c_str());
-        if (exposure > 0.0)
-            exposureProduct *= exposure;
-    }
-    if (exposureProduct > 0.0)
-        info.exposureScale = 1.0 / exposureProduct;
-
-    if (extractImageIsMonochromeRgb(image)) {
-        info.mode = ExtractLuminanceInfo::Monochrome;
+    info.exposureScale = evaluator.exposureScale;
+    if (!evaluator.valid)
         return info;
-    }
-
-    if (extractParseHeaderTriplet(image, "LuminanceRGB", info.weights)) {
-        info.mode = ExtractLuminanceInfo::Weighted;
-        return info;
-    }
-
-    ExtractMat3d sensorToXyz;
-    if (extractParseSensorToXyz(image, sensorToXyz) && extractWeightsFromSensorToXyz(sensorToXyz, info.weights)) {
-        info.mode = ExtractLuminanceInfo::Weighted;
-        return info;
-    }
-
-    std::array<double, 8> primaries{};
-    if (extractParseTargetPrimariesAndWhite(image, primaries) && extractWeightsFromPrimaries(primaries, info.weights)) {
-        info.mode = ExtractLuminanceInfo::Weighted;
-        return info;
-    }
-    if (extractParseRadiancePrimaries(image, primaries) && extractWeightsFromPrimaries(primaries, info.weights)) {
-        info.mode = ExtractLuminanceInfo::Weighted;
-        return info;
-    }
-
-    if (extractLooksLikeTechnoteamOrLmk(image)) {
-        info.mode = ExtractLuminanceInfo::Weighted;
-        info.weights = {{0.265074126, 0.670114631, 0.064811243}};
-        return info;
-    }
-
+    info.mode = evaluator.monochrome ? ExtractLuminanceInfo::Monochrome : ExtractLuminanceInfo::Weighted;
+    info.weights = evaluator.weights;
     return info;
 }
 

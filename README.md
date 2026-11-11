@@ -61,9 +61,15 @@ in its *Input color* menu (header `EXPOSURE=` lines are still undone). EXR files
 they are stored. The EXR files hdrspace writes (the Merge HDR output and *Export image*) hold
 cd/m², i.e. the Radiance values × 179 ÷ `EXPOSURE`, with the primaries as EXR chromaticities.
 
+Only header lines that start at the left margin describe the picture; indented lines are the
+headers of input pictures that a program such as `pcomb` or `pcompos` copied. `EXPOSURE` and
+`VIEW` count only at the left margin, as in Radiance. When the top lines carry no colour keys
+(`LuminanceRGB`, `PRIMARIES`, `TargetPrimaries`, `XYZCAM`, ...), they are taken from the nearest
+copied header. Every tool reads headers with this one rule (`mergehdr/hdrimage.h`).
+
 An XYZ file that already holds cd/m², for example one written by another program, can be
 marked as *XYZ (cd/m²)* in the viewer (only Radiance files without a colour header). The
-viewer and Statistics then leave out the ×179; Glare does not read the mark. In View
+viewer, Statistics, Glare, Blur, extract and gaze tone mapping then leave out the ×179. In View
 Visibility, choose *CIE XYZ (cd/m²)* as Input color (`--input-color xyz-cdm2` for
 `mergehdr view_visibility`).
 

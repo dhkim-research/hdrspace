@@ -3,6 +3,9 @@
 #include <tev/Channel.h>
 #include <tev/imageio/Colors.h>
 
+#include "glareeval.h"
+#include "hdrimage.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -396,7 +399,14 @@ ResolvedLuminance resolveLuminance(
         result.info.scaleSource = std::move(scaleSource);
     };
 
-    const double radianceScale = kWhiteEfficacy * exposureScale;
+    // Radiance pictures: the header rule and the weights Glare, Blur, extract and Statistics use;
+    // values marked as cd/m² are not multiplied by 179 (as in the viewer and Statistics).
+    const std::vector<std::string> radianceHeader = radianceHeaderLinesOfFile(image.path().string());
+    const bool valuesMarkedCdm2 = radianceValuesInCdm2(radianceDescribingValues(radianceHeader));
+    const double radianceScale = (valuesMarkedCdm2 ? 1.0 : kWhiteEfficacy) * exposureScale;
+    const std::string radianceScaleSource = valuesMarkedCdm2
+        ? std::format("1 / EXPOSURE = {:.7g} (values marked as cd/m2)", radianceScale)
+        : std::format("179 / EXPOSURE = {:.7g}", radianceScale);
     if (settings.encoding == EGazeInputEncoding::Auto) {
         if (format.find("xyze") != std::string::npos) {
             configureY(
@@ -404,12 +414,16 @@ ResolvedLuminance resolveLuminance(
                 "Radiance XYZE from FORMAT header",
                 true,
                 radianceScale,
-                std::format("179 / EXPOSURE = {:.7g}", radianceScale)
+                radianceScaleSource
             );
         } else if (format.find("rgbe") != std::string::npos) {
             std::array<double, 3> weights = kRadianceLuminanceWeights;
             std::string source = "standard Radiance RGB primaries";
-            if (const auto headerWeights = parseHeaderLuminanceWeights(attributes)) {
+            const HdrLuminanceEvaluator evaluator = resolveHeaderLuminanceEvaluator(radianceHeader);
+            if (!radianceHeader.empty() && evaluator.valid && !evaluator.monochrome) {
+                weights = evaluator.weights;
+                source = evaluator.description;
+            } else if (const auto headerWeights = parseHeaderLuminanceWeights(attributes)) {
                 weights = *headerWeights;
                 source = findAttributeValue(attributes, "LuminanceRGB")
                     ? "LuminanceRGB header"
@@ -422,7 +436,7 @@ ResolvedLuminance resolveLuminance(
                 "Radiance RGBE from FORMAT; " + source,
                 true,
                 radianceScale,
-                std::format("179 / EXPOSURE = {:.7g}", radianceScale)
+                radianceScaleSource
             );
         } else if (const auto headerWeights = parseHeaderLuminanceWeights(attributes)) {
             configureRgb(
@@ -475,7 +489,7 @@ ResolvedLuminance resolveLuminance(
                     "manual Radiance RGBE",
                     true,
                     radianceScale,
-                    std::format("179 / EXPOSURE = {:.7g}", radianceScale)
+                    radianceScaleSource
                 );
                 break;
             case EGazeInputEncoding::RadianceXyze:
@@ -484,7 +498,7 @@ ResolvedLuminance resolveLuminance(
                     "manual Radiance XYZE",
                     true,
                     radianceScale,
-                    std::format("179 / EXPOSURE = {:.7g}", radianceScale)
+                    radianceScaleSource
                 );
                 break;
             case EGazeInputEncoding::LinearRec709Rgb:
