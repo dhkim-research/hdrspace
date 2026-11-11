@@ -10,7 +10,8 @@ loads HDR and EXR files and the usual image formats (PNG, JPEG, TIFF, PFM, …),
 also drop files onto the window. **Export image** saves the current image; a Radiance picture
 saved as EXR is written in cd/m² (× 179 ÷ `EXPOSURE`), like the EXR output of Merge HDR. The
 gear button opens **Settings** (tool locations), and **?** opens the help window with all
-keyboard shortcuts.
+keyboard shortcuts. Closing the window also stops the work that is still running: a merge, a
+Create View render, a shell command of a tool or the AI helper.
 
 ---
 

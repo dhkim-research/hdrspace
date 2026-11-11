@@ -5,6 +5,7 @@
 
 #include "glareeval.h"
 #include "hdrimage.h"
+#include "native/core/JobRunner.h"
 #include "native/core/TextUtil.h"
 #include "native/createview/Environment.h"
 #include "native/createview/Geometry.h"
@@ -64,6 +65,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
@@ -1010,29 +1012,43 @@ std::string summarizeSelectedFiles(const std::vector<std::string>& files) {
     return oss.str();
 }
 
+// Starts a shell job (merge, Create View preview and render) with stdout and stderr in logPath.
+// The job is a registered child process group: the caller waits for it with waitChildProcess(),
+// and the app stops it when it closes.
 #if defined(_WIN32)
 pid_t spawnShellJob(const std::string& command, const fs::path& logPath) {
-    return hdrspaceSpawnShell(command, logPath);
+    const pid_t pid = hdrspaceSpawnShell(command, logPath);
+    registerChildProcess(pid, true);
+    return pid;
 }
 #else
 pid_t spawnShellJob(const std::string& command, const fs::path& logPath) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        throw std::runtime_error("Could not start merge job.");
-    }
+    pid_t pid = -1;
+    {
+        std::lock_guard<std::mutex> lock{childSpawnMutex()};
+        pid = fork();
+        if (pid == 0) {
+            setpgid(0, 0);
+            resetSignalsInChild();
+            int fd = open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+            if (fd < 0) {
+                _exit(127);
+            }
 
-    if (pid == 0) {
-        setpgid(0, 0);
-        int fd = open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
-        if (fd < 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+            execl("/bin/zsh", "zsh", "-lc", command.c_str(), static_cast<char*>(nullptr));
             _exit(127);
         }
-
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
-        close(fd);
-        execl("/bin/zsh", "zsh", "-lc", command.c_str(), static_cast<char*>(nullptr));
-        _exit(127);
+        if (pid > 0) {
+            // Also here, so the group exists before anyone signals it.
+            setpgid(pid, pid);
+            registerChildProcess(pid, true);
+        }
+    }
+    if (pid < 0) {
+        throw std::runtime_error("Could not start merge job.");
     }
 
     return pid;
@@ -5994,6 +6010,22 @@ public:
     CreateViewTurntableExportResult exportCreateViewTurntable(const CreateViewTurntableExportOptions& options);
     void startHiddenFukuokaDemo(const HiddenFukuokaDemoOptions& options);
     void startGuiTest(const GuiTestOptions& options);
+
+    // Called once after the window has closed. Stops the child processes that are still running
+    // (merge and render jobs, shell commands, the AI helper: SIGTERM, then SIGKILL) and waits for
+    // the background threads. Returns false when a calculation was still running after the wait.
+    bool finishBackgroundWork() {
+        {
+            // An idle AI helper is stopped here. During a request its thread holds the lock; the
+            // helper is then stopped with the other children and the thread ends.
+            std::unique_lock<std::mutex> lock{glareAiProcess_.mutex, std::try_to_lock};
+            if (lock.owns_lock()) {
+                stopPersistentAiProcessLocked();
+            }
+        }
+        terminateChildProcesses(std::chrono::milliseconds{2000});
+        return jobs_.finish(std::chrono::milliseconds{3000}) == 0;
+    }
 private:
     static constexpr int kGlareBandSelection = -2;
     static constexpr int kGlareZone1Selection = -3;
@@ -6307,6 +6339,9 @@ private:
             }
             if (options.quitOnFinish && viewer_ && viewer_->glfw_window()) {
                 glfwSetWindowShouldClose(viewer_->glfw_window(), GLFW_TRUE);
+                // The main loop checks the flag after its next event; without one it waited
+                // until something else happened (up to minutes).
+                glfwPostEmptyEvent();
             }
         });
     }
@@ -6439,6 +6474,7 @@ private:
         viewer_->scheduleToUiThread([this]() {
             if (viewer_ && viewer_->glfw_window()) {
                 glfwSetWindowShouldClose(viewer_->glfw_window(), GLFW_TRUE);
+                glfwPostEmptyEvent();  // as for the demo above
             }
         });
     }
@@ -7185,7 +7221,7 @@ private:
             return;
         }
         recentHdrLoadingPaths_.insert(normalizedPath);
-        std::thread([this, normalizedPath]() {
+        jobs_.start([this, normalizedPath]() {
             std::vector<uint8_t> thumbnailRgba;
             try {
                 const HdrImage image = readRadianceHDR(normalizedPath.string());
@@ -7206,7 +7242,7 @@ private:
                 entryIt->loading = false;
                 refreshRecentHdrFilmstripUi();
             });
-        }).detach();
+        });
     }
 
     void rememberRecentHdr(const fs::path& path, bool makeCurrent, bool refreshThumbnail) {
@@ -9754,7 +9790,7 @@ private:
         }
         refreshToneMappingUi();
 
-        std::thread([
+        jobs_.start([
             this,
             inputPath,
             outputPath,
@@ -9855,7 +9891,7 @@ private:
                 showToneMappingPfsPreview(inputPath, outputPath);
                 refreshToneMappingUi();
             });
-        }).detach();
+        });
     }
 
     void restoreToneMappingPfsInput() {
@@ -16467,7 +16503,7 @@ private:
         std::string manualPpdError;
         const bool manualPpdOk = currentBlurManualPpd(manualPpdX, manualPpdY, hasManualPpd, &manualPpdError);
         const std::string projectionToken = blurProjectionOverrideToken(blurProjectionCombo_ ? blurProjectionCombo_->selected_index() : 0);
-        std::thread([this, inputPath, outputPath, mode, mmPerPixel, fwhmMm, threshold, hasThreshold, manualPpdOk, manualPpdX, manualPpdY,
+        jobs_.start([this, inputPath, outputPath, mode, mmPerPixel, fwhmMm, threshold, hasThreshold, manualPpdOk, manualPpdX, manualPpdY,
                      hasManualPpd, manualPpdError, projectionToken]() {
             BlurRunResult result;
             result.inputPath = inputPath;
@@ -16607,7 +16643,7 @@ private:
                 loadImageIntoViewer(result.outputPath);
                 blurResultsJustStored_ = false;
             });
-        }).detach();
+        });
     }
 
     CreateViewEnvironmentInfo parseCreateViewEnvironment(const std::string& spec) const {
@@ -16705,7 +16741,7 @@ private:
             createViewWindowMaskStatusLabel_->set_caption("Calculating refined Window FoV and saving white.hdr debug mask...");
         }
 
-        std::thread([this, analysisRevision, roomInfo, viewInfo, cacheDir, stem]() {
+        jobs_.start([this, analysisRevision, roomInfo, viewInfo, cacheDir, stem]() {
             CreateViewWindowMaskFovInfo resultInfo;
             std::string errorText;
             const fs::path scenePath = cacheDir / (stem + ".rad");
@@ -16797,7 +16833,7 @@ private:
                 }
                 refreshCreateViewSummaryLabels();
             });
-        }).detach();
+        });
     }
 
     void terminateCreateViewActiveJob() {
@@ -16976,7 +17012,7 @@ private:
         refreshCreateViewViewportVisibility();
 
         jobStarted = true;
-        std::thread([this, commandText = command.str(), logPath, outputPath]() {
+        jobs_.start([this, commandText = command.str(), logPath, outputPath]() {
             pid_t pid = -1;
             try {
                 pid = spawnShellJob(commandText, logPath);
@@ -17004,7 +17040,7 @@ private:
                 createViewQuickPreviewState_.pid = pid;
             }
             int status = 0;
-            waitpid(pid, &status, 0);
+            waitChildProcess(pid, &status, 0);
             bool cancelled = false;
             {
                 std::lock_guard<std::mutex> lock{createViewQuickPreviewState_.mutex};
@@ -17048,7 +17084,7 @@ private:
                     showMessage(log.empty() ? "Create View preview failed." : log);
                 }
             });
-        }).detach();
+        });
     }
 
     void startCreateViewRender() {
@@ -17298,7 +17334,7 @@ private:
         }
 
         jobStarted = true;
-        std::thread([this, commandText = command.str(), logPath, outputPath, smallOutputPath, rawOutputPath, ambPath,
+        jobs_.start([this, commandText = command.str(), logPath, outputPath, smallOutputPath, rawOutputPath, ambPath,
                      applyPfiltDownsample, fastDirectMode]() {
             constexpr int kRxpieceTiles = 8;  // rxpiece -X 8 -Y 8 above
             constexpr int kRxpieceTileCount = kRxpieceTiles * kRxpieceTiles;
@@ -17334,7 +17370,7 @@ private:
             double rxpieceFraction = 0.0;
             while (!tev::shuttingDown()) {
                 int status = 0;
-                const pid_t result = waitpid(pid, &status, WNOHANG);
+                const pid_t result = waitChildProcess(pid, &status, WNOHANG);
                 const bool finished = result == pid;
                 const bool ok = finished && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
                     fs::exists(outputPath) &&
@@ -17464,7 +17500,7 @@ private:
                 }
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-        }).detach();
+        });
     }
 
     fs::path createViewSpectralDbCachePath() const {
@@ -21282,7 +21318,7 @@ private:
                 << " --hf-home " << shellQuote(paths_.da3HfHomeDir.string())
                 << " --helper " << shellQuote(installHelper.string());
 
-        std::thread([this, commandText = command.str()]() {
+        jobs_.start([this, commandText = command.str()]() {
             ProcessResult result;
             try {
                 result = runShellCommandWithCapturedOutput(commandText);
@@ -21302,7 +21338,7 @@ private:
                     showMessage("DA3 Metric installation failed:\n" + detail);
                 }
             });
-        }).detach();
+        });
     }
 
     void startImageVosAnalysis() {
@@ -21383,7 +21419,7 @@ private:
         updateAiMaskPointUi();
 
         const AiRequestSettings aiSettings = currentAiRequestSettings();
-        std::thread([this, python, helper, sourceImagePath, exteriorReferencePath, pairedAnalysis, previewPath, outputDir, buildingCandidates, greeneryCandidates, windowDistanceM,
+        jobs_.start([this, python, helper, sourceImagePath, exteriorReferencePath, pairedAnalysis, previewPath, outputDir, buildingCandidates, greeneryCandidates, windowDistanceM,
                      aiSettings]() {
             ProcessResult result;
             if (pairedAnalysis) {
@@ -21496,7 +21532,7 @@ private:
                     showMessage("Image VOS calculation failed:\n" + detail);
                 }
             });
-        }).detach();
+        });
     }
 
     fs::path suggestedAiPreviewPath() const {
@@ -23090,7 +23126,7 @@ private:
         setAiStatusCaption("Generating AI candidates...");
 
         const AiRequestSettings aiSettings = currentAiRequestSettings();
-        std::thread([this, previewPath, candidateDirPath, prompt, positivePoints, negativePoints, revision, aiSettings]() {
+        jobs_.start([this, previewPath, candidateDirPath, prompt, positivePoints, negativePoints, revision, aiSettings]() {
             ProcessResult result = runPersistentAiPrediction(previewPath, candidateDirPath, prompt, positivePoints, negativePoints, aiSettings);
             viewer_->scheduleToUiThread([this, candidateDirPath, prompt, revision, result = std::move(result)]() mutable {
                 {
@@ -23124,7 +23160,7 @@ private:
                     startAiMaskPreviewWorker(glareAiPreviewRevision_);
                 }
             });
-        }).detach();
+        });
     }
 
     static std::string aiMaskModeString(AiMaskApplyMode mode) {
@@ -23284,8 +23320,8 @@ private:
             glareAiProcess_.stdoutFd = -1;
         }
         if (glareAiProcess_.pid > 0) {
-            kill(glareAiProcess_.pid, SIGTERM);
-            waitpid(glareAiProcess_.pid, nullptr, 0);
+            // SIGTERM, and SIGKILL if it has not ended after 2 s.
+            stopChildProcess(glareAiProcess_.pid, false, std::chrono::milliseconds{2000});
             glareAiProcess_.pid = -1;
         }
         glareAiProcess_.launchKey.clear();
@@ -23343,7 +23379,7 @@ private:
             // kill(pid, 0) also succeeds for a helper that exited but was not reaped; the next write
             // to its pipe then raised SIGPIPE. waitpid() tells a running helper from an exited one.
             int status = 0;
-            if (waitpid(glareAiProcess_.pid, &status, WNOHANG) == 0) {
+            if (waitChildProcess(glareAiProcess_.pid, &status, WNOHANG) == 0) {
                 return true;
             }
             glareAiProcess_.pid = -1;  // exited and reaped: nothing to stop
@@ -23354,6 +23390,9 @@ private:
         int stdinPipe[2] = {-1, -1};
         int stdoutPipe[2] = {-1, -1};
         char stderrTemplate[] = "/tmp/hdrspace-ai-stderr-XXXXXX";
+        // The pipes and the log are close-on-exec, and no other child is forked while they are
+        // made: a merge or render started later must not keep the helper's stdin open.
+        std::unique_lock<std::mutex> spawnLock{childSpawnMutex()};
         const int stderrFd = mkstemp(stderrTemplate);
         if (stderrFd < 0 || pipe(stdinPipe) != 0 || pipe(stdoutPipe) != 0) {
             if (stderrFd >= 0) {
@@ -23368,6 +23407,9 @@ private:
                 *error = "Could not create AI helper pipes.";
             }
             return false;
+        }
+        for (const int fd : {stderrFd, stdinPipe[0], stdinPipe[1], stdoutPipe[0], stdoutPipe[1]}) {
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
         }
 
         // The helper's arguments and environment are prepared here: between fork() and exec the
@@ -23411,6 +23453,7 @@ private:
         }
 
         if (pid == 0) {
+            resetSignalsInChild();
             dup2(stdinPipe[0], STDIN_FILENO);
             dup2(stdoutPipe[1], STDOUT_FILENO);
             dup2(stderrFd, STDERR_FILENO);
@@ -23424,6 +23467,8 @@ private:
             execve(childArgv[0], childArgv.data(), childEnv.data());
             _exit(127);
         }
+        registerChildProcess(pid, false);
+        spawnLock.unlock();
 
         close(stdinPipe[0]);
         close(stdoutPipe[1]);
@@ -23958,7 +24003,7 @@ private:
         }
 
         const fs::path inputPath = opts->inputPath;
-        std::thread([this, opts = *opts, inputPath, fallbackView = std::move(fallbackView)]() mutable {
+        jobs_.start([this, opts = *opts, inputPath, fallbackView = std::move(fallbackView)]() mutable {
             try {
                 EvalGlareAnalysisResult result;
                 std::string viewNote;
@@ -24028,7 +24073,7 @@ private:
                     updateGlareOverlay();
                 });
             }
-        }).detach();
+        });
     }
 
     void refreshProfiles() {
@@ -24504,12 +24549,12 @@ private:
         const auto previousWriteTime = mergeJob_.previousWriteTime;
         const auto secondaryPreviousWriteTime = mergeJob_.secondaryPreviousWriteTime;
 
-        std::thread([this, token, pid, logPath, outputPath, secondaryOutputPath, intermediateHdrPath, exrColorspace,
+        jobs_.start([this, token, pid, logPath, outputPath, secondaryOutputPath, intermediateHdrPath, exrColorspace,
                      requiresNativeExrConversion, outputUsesRadiance, previousWriteTime,
                      secondaryPreviousWriteTime, dualFisheye]() {
             while (!tev::shuttingDown()) {
                 int status = 0;
-                pid_t result = waitpid(pid, &status, WNOHANG);
+                pid_t result = waitChildProcess(pid, &status, WNOHANG);
                 const bool finished = result == pid;
                 int exitCode = finished ? (WIFEXITED(status) ? WEXITSTATUS(status) : status) : -1;
                 std::string log = readFile(logPath);
@@ -24600,7 +24645,7 @@ private:
                 }
                 std::this_thread::sleep_for(80ms);
             }
-        }).detach();
+        });
     }
 
     template <typename Builder, typename Finish>
@@ -24624,7 +24669,7 @@ private:
             task.active = true;
         }
 
-        std::thread([this, &task, command, finish = std::forward<Finish>(finish)]() mutable {
+        jobs_.start([this, &task, command, finish = std::forward<Finish>(finish)]() mutable {
             ProcessResult result = runShellCommandWithCapturedOutput(command);
             viewer_->scheduleToUiThread([&task, result = std::move(result), finish = std::move(finish)]() mutable {
                 {
@@ -24633,7 +24678,7 @@ private:
                 }
                 finish(std::move(result));
             });
-        }).detach();
+        });
     }
 
     template <typename Work, typename Finish>
@@ -24647,7 +24692,7 @@ private:
             task.active = true;
         }
 
-        std::thread([this, &task, work = std::forward<Work>(work), finish = std::forward<Finish>(finish)]() mutable {
+        jobs_.start([this, &task, work = std::forward<Work>(work), finish = std::forward<Finish>(finish)]() mutable {
             ProcessResult result = work();
             viewer_->scheduleToUiThread([&task, result = std::move(result), finish = std::move(finish)]() mutable {
                 {
@@ -24656,7 +24701,7 @@ private:
                 }
                 finish(std::move(result));
             });
-        }).detach();
+        });
     }
 
     static ProcessResult calculateReferenceChartXyz(
@@ -25684,6 +25729,8 @@ private:
     WorkerTask glareAiPreviewTask_;
     WorkerTask imageVosTask_;
     PersistentAiProcess glareAiProcess_;
+    // Every background thread of the tools runs here (see finishBackgroundWork()).
+    hdrspace::JobRunner jobs_;
     std::atomic<uint64_t> mergeToken_{0};
     struct PendingViewVisibilityPair {
         fs::path referencePath;
@@ -25782,11 +25829,11 @@ private:
 };
 
 void DesktopController::startHiddenFukuokaDemo(const HiddenFukuokaDemoOptions& options) {
-    std::thread([this, options]() { runHiddenFukuokaDemoWorker(options); }).detach();
+    jobs_.start([this, options]() { runHiddenFukuokaDemoWorker(options); });
 }
 
 void DesktopController::startGuiTest(const GuiTestOptions& options) {
-    std::thread([this, options]() { runGuiTestWorker(options); }).detach();
+    jobs_.start([this, options]() { runGuiTestWorker(options); });
 }
 
 CreateViewTurntableExportResult DesktopController::exportCreateViewTurntable(const CreateViewTurntableExportOptions& options) {
@@ -26079,5 +26126,17 @@ int runHdrspaceNativeApp(int argc, char** argv) {
     }
     nanogui::run(nanogui::RunMode::Lazy);
 
-    return guiTestRequested ? sGuiTestExitCode.load() : 0;
+    // The window has closed: stop the jobs that are still running before GLFW and the viewer go.
+    const bool backgroundWorkEnded = controller->finishBackgroundWork();
+    const int exitCode = guiTestRequested ? sGuiTestExitCode.load() : 0;
+    if (!backgroundWorkEnded) {
+        // A calculation (Glare, Blur, ...) is still running and cannot be interrupted. A normal
+        // return would destroy objects it still uses, so the process ends here; its child
+        // processes are already stopped.
+        std::cout.flush();
+        std::cerr.flush();
+        std::fflush(nullptr);
+        std::_Exit(exitCode);
+    }
+    return exitCode;
 }

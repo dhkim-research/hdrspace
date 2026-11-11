@@ -159,6 +159,7 @@ add_executable(hdrspace
   MACOSX_BUNDLE
   src/main.cpp
   src/native/Hdrspace.cpp
+  src/native/core/JobRunner.cpp
   src/native/core/TextUtil.cpp
   src/native/createview/Environment.cpp
   src/native/createview/Geometry.cpp
@@ -200,11 +201,14 @@ add_executable(hdrspace_tests EXCLUDE_FROM_ALL
   tests/TestMain.cpp
   tests/CreateViewTests.cpp
   tests/RadianceHeaderTests.cpp
+  tests/JobRunnerTests.cpp
+  src/native/core/JobRunner.cpp
   src/native/core/TextUtil.cpp
   src/native/createview/Environment.cpp
   src/native/createview/Geometry.cpp
   src/native/createview/SceneFile.cpp
   src/native/createview/ViewFile.cpp
+  src/platform/ProcessRunner.cpp
   "${MERGEHDR_SOURCE_DIR}/hdrimage.cpp"
 )
 if(WIN32)

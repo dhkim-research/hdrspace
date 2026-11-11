@@ -37,6 +37,13 @@ std::map<pid_t, ChildJob>& jobs() {
     return table;
 }
 
+// Held from creating a child's inheritable handles until they are closed again, so a shell started
+// at the same time by another thread does not inherit them (the Windows side of close-on-exec).
+std::mutex& spawnMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 std::wstring widen(const std::string& text) {
     if (text.empty()) {
         return {};
@@ -122,6 +129,7 @@ pid_t hdrspaceSpawnShell(const std::string& command, const fs::path& logPath) {
     }
     std::wstring commandLine = quoteArgument(shell.wstring()) + L" sh -c " + quoteArgument(widen(command));
 
+    std::unique_lock<std::mutex> spawnLock{spawnMutex()};
     SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE log = CreateFileW(logPath.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                              &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -151,6 +159,7 @@ pid_t hdrspaceSpawnShell(const std::string& command, const fs::path& logPath) {
     if (input != INVALID_HANDLE_VALUE) {
         CloseHandle(input);
     }
+    spawnLock.unlock();
     if (!started) {
         if (job) {
             CloseHandle(job);
