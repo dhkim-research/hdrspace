@@ -28,31 +28,8 @@ std::string normalizedTextBoxValue(std::string text) {
         return {};
     }
 
-    const std::string lowered = createViewLower(text);
-    static const std::set<std::string> sentinels = {
-        "untitled",
-        "default",
-        "optional",
-        "optional override",
-        "advanced options",
-        "output folder",
-        "reference hdr",
-        "test hdr",
-        "ref_cells.txt",
-        "test_cells.txt",
-        "shutterc",
-        "x y w h",
-        "r g b [g2]",
-        "mergehdr binary",
-        "oiiotool",
-        "default (profile / libraw)",
-        "default (profile / libraw defaults)",
-    };
-
-    if (sentinels.contains(lowered)) {
-        return {};
-    }
-
+    // Text boxes no longer hold placeholder words as values (smallTextBox uses set_placeholder), so a
+    // typed value is kept as it is; 'default' or 'untitled' used to be dropped without a note (#138).
     return text;
 }
 

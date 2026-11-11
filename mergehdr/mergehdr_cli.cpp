@@ -56,6 +56,22 @@ extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void
 #endif
 
 namespace po = boost::program_options;
+
+// A value of at most `count` words, for options such as --crop L T W H. A plain multitoken value
+// also takes the positional words that follow it (the RAW files after the crop) (#21).
+template <typename T>
+class BoundedTokensValue : public po::typed_value<T> {
+public:
+    BoundedTokensValue(T *store, unsigned count) : po::typed_value<T>(store), count_(count) {}
+    unsigned max_tokens() const override { return count_; }
+
+private:
+    unsigned count_;
+};
+
+po::typed_value<std::vector<int>> *fourIntegers(std::vector<int> *store) {
+    return new BoundedTokensValue<std::vector<int>>(store, 4);
+}
 namespace fs = boost::filesystem;
 
 namespace {
@@ -266,6 +282,8 @@ struct ExtractOptions {
     bool imageOutput = false;
     bool rgbOutput = false;
     Mode mode = None;
+    // -vr / -hr: the row or column means leave out the pixels outside the 180-degree circle.
+    bool insideCircleOnly = false;
     int left = 0;
     int bottom = 0;
     int width = 0;
@@ -2107,13 +2125,11 @@ void emitRangeStats(const std::vector<FrameInfo> &frames, double saturationOffse
     if (colorHeaders == nullptr || colorHeaders->raw)
         return;
 
-    Eigen::Vector3f rgbScale = Eigen::Vector3f::Ones();
-    for (int i = 0; i < 3 && i < static_cast<int>(cscale.size()); ++i)
-        rgbScale(i) = cscale[i];
-
+    // cam2rgb already holds cscale (buildColorHeaders); multiplying by it again squared it (#19).
+    (void) cscale;
     double calcfac = 0.0;
     for (int idx = 0; idx < 3; ++idx)
-        calcfac += colorHeaders->luminanceRgb[idx] * rgbScale(idx) * colorHeaders->cam2rgb.row(idx).sum();
+        calcfac += colorHeaders->luminanceRgb[idx] * colorHeaders->cam2rgb.row(idx).sum();
 
     double floor = std::max(rangeValue, 0.005);
     double globalMin = std::numeric_limits<double>::infinity();
@@ -2197,12 +2213,10 @@ std::vector<std::string> buildHeaderLines(const GlobalOptions &global, const Run
     lines.push_back("HDR_SEQUENCE_COUNT= " + std::to_string(frames.size()));
 
     if (colorHeaders && !colorHeaders->raw) {
-        Eigen::Vector3f rgbScale = Eigen::Vector3f::Ones();
-        for (int i = 0; i < 3 && i < static_cast<int>(cscale.size()); ++i)
-            rgbScale(i) = cscale[i];
+        // cam2rgb already holds cscale (buildColorHeaders), so it is not applied again (#19).
         double calcfac = 0.0;
         for (int idx = 0; idx < 3; ++idx)
-            calcfac += colorHeaders->luminanceRgb[idx] * rgbScale(idx) * colorHeaders->cam2rgb.row(idx).sum();
+            calcfac += colorHeaders->luminanceRgb[idx] * colorHeaders->cam2rgb.row(idx).sum();
         double floor = std::max(opts.rangeValue, 0.005);
         double globalMin = std::numeric_limits<double>::infinity();
         double globalMax = 0.0;
@@ -3589,6 +3603,9 @@ void extractWriteSectionData(const std::vector<ExtractPixelSample> &samples, con
         minY = std::min(minY, samples[i].y);
     }
     for (size_t i = 0; i < samples.size(); ++i) {
+        // -vr/-hr: pixels outside the 180-degree circle have no solid angle and are left out (#24).
+        if (opts.insideCircleOnly && !(samples[i].omega > 0.0))
+            continue;
         const size_t index = opts.mode == ExtractOptions::AverageOfRows
             ? static_cast<size_t>(samples[i].y - minY)
             : static_cast<size_t>(samples[i].x - minX);
@@ -3673,6 +3690,8 @@ int printExtract(const ExtractOptions &opts) {
     }
 
     const ExtractProjectionMetadata projection = extractDetectProjection(image);
+    if (opts.insideCircleOnly && !projection.available)
+        throw std::runtime_error("-vr/-hr need an angular fisheye VIEW (-vta) to tell which pixels lie outside the 180-degree circle.");
     const ExtractViewBasis viewBasis = extractResolveViewBasis(image);
     const ExtractLuminanceInfo luminanceInfo = extractResolveLuminanceInfo(image);
     const bool haveLuminance = luminanceInfo.mode != ExtractLuminanceInfo::Unavailable;
@@ -3706,8 +3725,14 @@ std::vector<float> parseOptionalFloatValues(const std::string &text) {
 }
 
 std::vector<float> resolveXYZCamValues(const RunOptions &opts, const std::vector<FrameInfo> &frames) {
-    if (!opts.xyzcamText.empty())
-        return parseFloatList(opts.xyzcamText);
+    if (!opts.xyzcamText.empty()) {
+        // mergehdrcore refuses anything but 9 values; checked here as well, so that makelist does
+        // not print headers made with an identity matrix (#23).
+        std::vector<float> values = parseFloatList(opts.xyzcamText);
+        if (values.size() != 9)
+            throw std::runtime_error("xyzcam expects 9 values (a 3 x 3 matrix), got " + std::to_string(values.size()) + ".");
+        return values;
+    }
 
     if (frames.empty())
         return std::vector<float>();
@@ -4090,7 +4115,7 @@ RunOptions parseRunOptions(const std::vector<std::string> &args) {
         ("range", po::value<double>(&opts.rangeValue), "range")
         ("black", po::value<int>(&opts.blacklevel), "black")
         ("white", po::value<int>(&opts.whitepoint), "white")
-        ("crop", po::value<std::vector<int>>(&opts.crop)->multitoken(), "crop")
+        ("crop", fourIntegers(&opts.crop), "crop")
         ("output,o", po::value<std::string>(&opts.outputPath), "output")
         ("input-files", po::value<std::vector<std::string>>(&opts.inputs), "input files");
 
@@ -4177,7 +4202,8 @@ void warnIfTargetRadiusIsNotHalfCrop(double targetRadius, int cropWidth) {
 void validateRunOptions(const RunOptions &opts) {
     if (opts.inputs.empty())
         throw std::runtime_error("No input files were given.");
-    if (opts.cropOverride && opts.crop.size() != 4)
+    // A crop from the profile is not marked as an override but is used the same way (#22, #30).
+    if ((opts.cropOverride || !opts.crop.empty()) && opts.crop.size() != 4)
         throw std::runtime_error("Crop expects four integers: left top width height.");
     std::string demosaic = canonicalDemosaic(opts.demosaic);
     if (demosaic != "ahd" && demosaic != "dht")
@@ -4537,6 +4563,8 @@ std::string extractHelp(const std::string &command) {
     oss << "Usage:\n";
     oss << "  mergehdr " << command << " [ -v LEFT BOTTOM WIDTH HEIGHT ]\n";
     oss << "                     [ -h LEFT BOTTOM WIDTH HEIGHT ]\n";
+    oss << "                     [ -vr LEFT BOTTOM WIDTH HEIGHT ]\n";
+    oss << "                     [ -hr LEFT BOTTOM WIDTH HEIGHT ]\n";
     oss << "                     [ -r LEFT BOTTOM WIDTH HEIGHT ]\n";
     oss << "                     [ -c X Y RadiusDegrees ]\n";
     oss << "                     [ -i ] [ -rgb ] [ -o output ] input.hdr\n\n";
@@ -4544,6 +4572,8 @@ std::string extractHelp(const std::string &command) {
     oss << "Modes:\n";
     oss << "  -v                 Average rows across the rectangle, ordered top -> bottom.\n";
     oss << "  -h                 Average columns across the rectangle, ordered left -> right.\n";
+    oss << "  -vr, -hr           As -v and -h, but pixels outside the 180-degree circle of an\n";
+    oss << "                     angular fisheye are left out of the means.\n";
     oss << "  -r                 Rank rectangle pixels highest -> lowest.\n";
     oss << "  -c                 Rank circular region pixels highest -> lowest.\n";
     oss << "                     X/Y use the legacy bottom-origin pixel convention.\n";
@@ -4868,7 +4898,7 @@ HdrCropOptions parseHdrCropOptions(const std::vector<std::string> &args) {
         ("config,c", po::value<std::string>(), "config")
         ("profile,p", po::value<std::string>(), "profile")
         ("output,o", po::value<std::string>(&opts.outputPath), "output")
-        ("crop", po::value<std::vector<int>>(&opts.crop)->multitoken(), "crop")
+        ("crop", fourIntegers(&opts.crop), "crop")
         ("input-files", po::value<std::vector<std::string>>(), "input");
 
     po::positional_options_description positional;
@@ -5037,20 +5067,22 @@ ExtractOptions parseExtractOptions(const std::vector<std::string> &args) {
             opts.outputPath = normalizedArgs[++i];
             continue;
         }
-        if (token == "-v" || token == "--vertical-section") {
+        if (token == "-v" || token == "--vertical-section" || token == "-vr" || token == "--vr") {
             if (i + 4 >= normalizedArgs.size())
                 throw std::runtime_error("-v expects: left bottom width height");
             opts.mode = ExtractOptions::AverageOfRows;
+            opts.insideCircleOnly = token == "-vr" || token == "--vr";
             opts.left = std::stoi(normalizedArgs[++i]);
             opts.bottom = std::stoi(normalizedArgs[++i]);
             opts.width = std::stoi(normalizedArgs[++i]);
             opts.height = std::stoi(normalizedArgs[++i]);
             continue;
         }
-        if (token == "-h" || token == "--horizontal-section") {
+        if (token == "-h" || token == "--horizontal-section" || token == "-hr" || token == "--hr") {
             if (i + 4 >= normalizedArgs.size())
                 throw std::runtime_error("-h expects: left bottom width height");
             opts.mode = ExtractOptions::AverageOfColumns;
+            opts.insideCircleOnly = token == "-hr" || token == "--hr";
             opts.left = std::stoi(normalizedArgs[++i]);
             opts.bottom = std::stoi(normalizedArgs[++i]);
             opts.width = std::stoi(normalizedArgs[++i]);
@@ -5624,6 +5656,8 @@ CalibrationSampleResult runCalibrationSample(const CalibrationCommonOptions &opt
         const std::string &channel) {
     if (inputs.empty())
         throw std::runtime_error("Calibration sample requires at least one input file.");
+    if (!crop.empty() && crop.size() != 4)
+        throw std::runtime_error("Crop expects four integers: left top width height.");
 
     ResolvedRawLevels levels = resolveRawLevels(opts.blackOverride, opts.blacklevel,
         opts.whiteOverride, opts.whitepoint, inputs);
@@ -6070,12 +6104,22 @@ fs::path viewVosPythonPath(const fs::path &runtimeRoot) {
         throw std::runtime_error(
             "HDRSPACE_DA3_PYTHON does not point to a file: " + candidate.string());
     }
+#if defined(_WIN32)
+    // A Windows virtual environment keeps its interpreter in Scripts\\python.exe (#29).
+    const fs::path candidate = runtimeRoot / ".venv" / "Scripts" / "python.exe";
+    if (isRegularFilePath(candidate))
+        return fs::absolute(candidate).lexically_normal();
+    throw std::runtime_error(
+        "DA3 Python runtime is not installed at " + candidate.string() +
+        ". The DA3 installer is for Apple-Silicon macOS; on Windows set HDRSPACE_DA3_PYTHON to a Python with Depth Anything 3.");
+#else
     const fs::path candidate = runtimeRoot / ".venv" / "bin" / "python3";
     if (isRegularFilePath(candidate))
         return fs::absolute(candidate).lexically_normal();
     throw std::runtime_error(
         "DA3 Python runtime is not installed at " + candidate.string() +
         ". Install it with mergehdr-image-vos install or from hdrspace's Image VOS setup.");
+#endif
 }
 
 fs::path viewVosHelperPath(const fs::path &runtimeRoot) {

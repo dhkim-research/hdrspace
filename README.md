@@ -10,8 +10,8 @@ curves and white balance, so their output can't be used for luminance. hdrspace 
 whole chain linear and writes every step into the file header, so each result can be traced
 back to the RAW files and settings that made it.
 
-The app is developed and tested on Apple Silicon Macs (macOS 26). A 64-bit Windows build is
-also available, with a few tools missing; see [Windows](#windows).
+The app is developed and tested on Apple Silicon Macs and needs macOS 26 or newer. A 64-bit
+Windows build is also available, with a few tools missing; see [Windows](#windows).
 
 **Download:** [hdrspace 1.01](https://github.com/dhkim-research/hdrspace/releases/tag/v1.01).
 On a Mac, unzip `hdrspace-macos-arm64.zip` and move `hdrspace.app` to Applications. The app

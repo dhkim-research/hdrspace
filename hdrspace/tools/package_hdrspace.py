@@ -281,7 +281,8 @@ def package(args: argparse.Namespace) -> Path:
             "CFBundleIconFile": "hdrspace.icns",
             "CFBundleVersion": built_info["CFBundleVersion"],
             "CFBundleShortVersionString": built_info["CFBundleShortVersionString"],
-            "LSMinimumSystemVersion": "13.3",
+            # The bundled mergehdr helpers are built for macOS 26 (#128).
+            "LSMinimumSystemVersion": "26.0",
             # Offered under Finder "Open With" for HDR images; never claims to be the default app.
             "CFBundleDocumentTypes": [
                 {

@@ -3935,6 +3935,10 @@ VisibilityPyramid buildVisibilityPyramid(
     VisibilityPyramid pyramid;
     if (signal.empty() || width == 0 || height == 0)
         return pyramid;
+    // The 9x9 hi0 and 7x7 lo0 filters always run at full size. matlabPyrTools (corrDn, upConv)
+    // refuses a filter larger than the picture; these ports would read and write past the buffers.
+    if (width < 9 || height < 9)
+        throw std::runtime_error("HDR-VDP visibility needs a picture of at least 9 x 9 pixels.");
 
     const auto &lo0filt = sp0Lo0Filter();
     const auto &hi0filt = sp0Hi0Filter();

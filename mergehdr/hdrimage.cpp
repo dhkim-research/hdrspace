@@ -375,6 +375,15 @@ void writeRadianceHDRInternal(const std::string &path,
     }
 
     for (size_t y = 0; y < image.height; ++y) {
+        if (image.width < 8 || image.width > 0x7fff) {
+            // Radiance fwritecolrs(): scanlines outside [MINELEN, MAXELEN] are written flat.
+            const size_t row = y * image.width;
+            for (size_t x = 0; x < image.width; ++x) {
+                const Trgbe flat[4] = {scanlineR[row + x], scanlineG[row + x], scanlineB[row + x], scanlineE[row + x]};
+                std::fwrite(flat, sizeof(Trgbe), 4, file);
+            }
+            continue;
+        }
         unsigned char header[4];
         header[0] = 2;
         header[1] = 2;

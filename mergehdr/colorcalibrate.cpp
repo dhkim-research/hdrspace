@@ -763,6 +763,16 @@ CalibrationBundle calibrateColor(const ColorCalibrateOptions &opts) {
     std::map<std::string, std::string> testHeader;
     Eigen::MatrixXd refd = loadSampledData(opts.referencePath, opts.referenceCellsPath, &refHeader);
     Eigen::MatrixXd testd = loadSampledData(opts.testPath, opts.testCellsPath, &testHeader);
+    // The charts are paired patch by patch (#109): the same number of patches, the test with three
+    // channels, the reference with three or one (luminance only).
+    if (testd.rows() != 3)
+        throw std::runtime_error("Test data must have three channels per patch; it has " + std::to_string(testd.rows()) + ".");
+    if (refd.rows() != 1 && refd.rows() != 3)
+        throw std::runtime_error("Reference data must have one (luminance) or three channels per patch; it has " +
+                                 std::to_string(refd.rows()) + ".");
+    if (refd.cols() != testd.cols())
+        throw std::runtime_error("Reference has " + std::to_string(refd.cols()) + " patches and test has " +
+                                 std::to_string(testd.cols()) + "; they must match.");
 
     Eigen::Matrix3d rgbXYZ = parseReferenceColor(opts.referenceColor);
     Eigen::Matrix3d xyzRGB = rgbXYZ.inverse();

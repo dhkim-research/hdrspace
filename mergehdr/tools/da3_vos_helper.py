@@ -25,6 +25,9 @@ from typing import Iterable
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+# PyTorch reads this when it is imported, so it is set before any torch import (#119).
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 
 MODEL_ID = "depth-anything/DA3METRIC-LARGE"
 METRIC_FOCAL_NORMALIZER = 300.0
@@ -683,8 +686,6 @@ def infer_tile_depths(
     import torch
     from depth_anything_3.api import DepthAnything3
 
-    if device == "mps":
-        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     model = DepthAnything3.from_pretrained(model_id)
     model = model.to(torch.device(device))
     model.eval()
@@ -804,8 +805,6 @@ def infer_perspective_depth(
     import torch
     from depth_anything_3.api import DepthAnything3
 
-    if device == "mps":
-        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     model = DepthAnything3.from_pretrained(model_id)
     model = model.to(torch.device(device))
     model.eval()

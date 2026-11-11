@@ -97,6 +97,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+extern char** environ;
 #endif
 #include <thread>
 #include <utility>
@@ -726,11 +727,21 @@ std::map<std::string, std::string> parseProfileFile(const fs::path& path) {
         return values;
     }
 
+    // Read like mergehdr's loadConfigValues: only lines before any section or inside [globals], keys
+    // in lower case, so the app shows what `mergehdr -profile` uses (#139).
     std::ifstream input{path};
     std::string line;
+    bool inGlobals = true;
     while (std::getline(input, line)) {
         line = trim(line);
-        if (line.empty() || line.front() == '#' || line.front() == '[') {
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']') {
+            inGlobals = tev::toLower(line.substr(1, line.size() - 2)) == "globals";
+            continue;
+        }
+        if (!inGlobals) {
             continue;
         }
 
@@ -739,7 +750,7 @@ std::map<std::string, std::string> parseProfileFile(const fs::path& path) {
             continue;
         }
 
-        values[trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
+        values[tev::toLower(trim(line.substr(0, eq)))] = trim(line.substr(eq + 1));
     }
 
     return values;
@@ -4278,48 +4289,10 @@ static void createViewFillCircle(std::vector<uint8_t>& rgba, int width, int heig
     }
 }
 
-static float createViewTriangleEdge(const Vector2f& a, const Vector2f& b, const Vector2f& c) {
-    return (c.x() - a.x()) * (b.y() - a.y()) - (c.y() - a.y()) * (b.x() - a.x());
-}
-
-static void createViewFillTriangle(
-    std::vector<uint8_t>& rgba,
-    int width,
-    int height,
-    const Vector2f& a,
-    const Vector2f& b,
-    const Vector2f& c,
-    const std::array<uint8_t, 4>& color
-) {
-    const float minX = std::floor(std::min({a.x(), b.x(), c.x()}));
-    const float maxX = std::ceil(std::max({a.x(), b.x(), c.x()}));
-    const float minY = std::floor(std::min({a.y(), b.y(), c.y()}));
-    const float maxY = std::ceil(std::max({a.y(), b.y(), c.y()}));
-    const float area = createViewTriangleEdge(a, b, c);
-    if (std::abs(area) < 1e-6f) {
-        return;
-    }
-
-    const int x0 = std::max(0, static_cast<int>(minX));
-    const int x1 = std::min(width - 1, static_cast<int>(maxX));
-    const int y0 = std::max(0, static_cast<int>(minY));
-    const int y1 = std::min(height - 1, static_cast<int>(maxY));
-    for (int y = y0; y <= y1; ++y) {
-        for (int x = x0; x <= x1; ++x) {
-            const Vector2f p{static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f};
-            const float w0 = createViewTriangleEdge(b, c, p);
-            const float w1 = createViewTriangleEdge(c, a, p);
-            const float w2 = createViewTriangleEdge(a, b, p);
-            const bool insidePositive = w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f;
-            const bool insideNegative = w0 <= 0.0f && w1 <= 0.0f && w2 <= 0.0f;
-            if (insidePositive || insideNegative) {
-                createViewBlendPixel(rgba, width, height, x, y, color);
-            }
-        }
-    }
-}
-
-static void createViewFillPolygonFan(
+// Fills a polygon with the non-zero winding rule, like the NanoVG path of the on-screen preview, so
+// concave outlines and seam polygons (a wall around its window hole) look as Radiance means them; a
+// fan from vertex 0 painted outside concave outlines and filled the holes (#52).
+static void createViewFillPolygon(
     std::vector<uint8_t>& rgba,
     int width,
     int height,
@@ -4329,8 +4302,41 @@ static void createViewFillPolygonFan(
     if (polygon.size() < 3) {
         return;
     }
-    for (size_t i = 1; i + 1 < polygon.size(); ++i) {
-        createViewFillTriangle(rgba, width, height, polygon[0], polygon[i], polygon[i + 1], color);
+    float minY = polygon.front().y();
+    float maxY = polygon.front().y();
+    for (const Vector2f& point : polygon) {
+        minY = std::min(minY, point.y());
+        maxY = std::max(maxY, point.y());
+    }
+    const int y0 = std::max(0, static_cast<int>(std::floor(minY)));
+    const int y1 = std::min(height - 1, static_cast<int>(std::ceil(maxY)));
+    std::vector<std::pair<float, int>> crossings;
+    for (int y = y0; y <= y1; ++y) {
+        const float sampleY = static_cast<float>(y) + 0.5f;
+        crossings.clear();
+        for (size_t i = 0; i < polygon.size(); ++i) {
+            const Vector2f& a = polygon[i];
+            const Vector2f& b = polygon[(i + 1) % polygon.size()];
+            if ((a.y() <= sampleY) == (b.y() <= sampleY)) {
+                continue;  // the edge does not cross the centre line of this row
+            }
+            const float t = (sampleY - a.y()) / (b.y() - a.y());
+            crossings.emplace_back(a.x() + t * (b.x() - a.x()), b.y() > a.y() ? 1 : -1);
+        }
+        std::sort(crossings.begin(), crossings.end());
+        int winding = 0;
+        for (size_t k = 0; k + 1 < crossings.size(); ++k) {
+            winding += crossings[k].second;
+            if (winding == 0) {
+                continue;
+            }
+            // pixel centres x + 0.5 in [crossing k, crossing k + 1)
+            const int xStart = std::max(0, static_cast<int>(std::ceil(crossings[k].first - 0.5f)));
+            const int xEnd = std::min(width - 1, static_cast<int>(std::ceil(crossings[k + 1].first - 0.5f)) - 1);
+            for (int x = xStart; x <= xEnd; ++x) {
+                createViewBlendPixel(rgba, width, height, x, y, color);
+            }
+        }
     }
 }
 
@@ -4471,7 +4477,7 @@ static std::vector<uint8_t> renderCreateViewTurntableFrameToRgba(
     std::sort(faces.begin(), faces.end(), [](const auto& a, const auto& b) { return a.depth > b.depth; });
 
     for (const auto& face : faces) {
-        createViewFillPolygonFan(
+        createViewFillPolygon(
             rgba,
             width,
             height,
@@ -4905,7 +4911,9 @@ public:
             nvgIntersectScissor(ctx, content.x, content.y, content.w, content.h);
             NVGpaint paint = nvgImagePattern(ctx, drawX, drawY, drawW, drawH, 0.0f, imageHandle_, 1.0f);
             nvgBeginPath(ctx);
-            nvgRect(ctx, content.x, content.y, content.w, content.h);
+            // Only the picture: the sampler clamps to the edge, so a fill of the whole content
+            // smeared the first and last rows or columns over the letterbox bars (#53).
+            nvgRect(ctx, drawX, drawY, drawW, drawH);
             nvgFillPaint(ctx, paint);
             nvgFill(ctx);
             nvgRestore(ctx);
@@ -9563,19 +9571,28 @@ private:
         startToneMappingPfsRender(false);
     }
 
+    // Source HDR of a pfstools preview shown in this session (each preview has its own cache file).
+    std::optional<fs::path> toneMappingPfsPreviewSource(const fs::path& path) const {
+        if (path.empty() || toneMappingPfsPreviewSources_.empty()) {
+            return std::nullopt;
+        }
+        std::error_code ec;
+        const fs::path canonical = fs::weakly_canonical(path, ec);
+        const auto it = toneMappingPfsPreviewSources_.find(ec ? path : canonical);
+        if (it == toneMappingPfsPreviewSources_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
     fs::path currentToneMappingPfsInputPath() const {
         if (!viewer_ || !viewer_->currentImage()) {
             return toneMappingPfsInputPath_;
         }
         const fs::path currentPath = viewer_->currentImage()->path();
-        if (!toneMappingPfsOutputPath_.empty()) {
-            std::error_code ec;
-            const fs::path currentCanonical = fs::weakly_canonical(currentPath, ec);
-            ec.clear();
-            const fs::path outputCanonical = fs::weakly_canonical(toneMappingPfsOutputPath_, ec);
-            if (!ec && currentCanonical == outputCanonical && !toneMappingPfsInputPath_.empty()) {
-                return toneMappingPfsInputPath_;
-            }
+        // Any earlier preview, not only the latest, stands for its own source HDR (#57).
+        if (const auto source = toneMappingPfsPreviewSource(currentPath)) {
+            return *source;
         }
         return currentPath;
     }
@@ -9639,6 +9656,11 @@ private:
     void showToneMappingPfsPreview(const fs::path& inputPath, const fs::path& outputPath) {
         toneMappingPfsInputPath_ = inputPath;
         toneMappingPfsOutputPath_ = outputPath;
+        {
+            std::error_code ec;
+            const fs::path canonical = fs::weakly_canonical(outputPath, ec);
+            toneMappingPfsPreviewSources_[ec ? outputPath : canonical] = inputPath;
+        }
         if (viewer_) {
             viewer_->setAiMaskPickMode(tev::ImageViewer::EAiMaskPickMode::None);
             viewer_->clearAiMaskPromptPoints();
@@ -9909,7 +9931,11 @@ private:
             return std::nullopt;
         }
         double value = std::numeric_limits<double>::quiet_NaN();
-        tryParseFloating(text, value);
+        // A partly read number ('1,79e2' read as 1) must not become the scale: anything that is not a
+        // whole number gives NaN, which resolveLuminance reports as an invalid scale (#56).
+        if (!tryParseFloating(text, value)) {
+            value = std::numeric_limits<double>::quiet_NaN();
+        }
         return value;
     }
 
@@ -10804,12 +10830,12 @@ private:
             if (viewer_ && viewer_->currentImage()) {
                 const fs::path currentPath = viewer_->currentImage()->path();
                 bool isPreview = false;
-                if (!toneMappingPfsOutputPath_.empty()) {
-                    std::error_code ec;
-                    const fs::path currentCanonical = fs::weakly_canonical(currentPath, ec);
-                    ec.clear();
-                    const fs::path outputCanonical = fs::weakly_canonical(toneMappingPfsOutputPath_, ec);
-                    isPreview = !ec && currentCanonical == outputCanonical;
+                // An earlier preview picked in the image list stands for its own source, so Render and
+                // Restore use that HDR and not the 8-bit preview (#57).
+                if (const auto source = toneMappingPfsPreviewSource(currentPath)) {
+                    isPreview = true;
+                    toneMappingPfsInputPath_ = *source;
+                    toneMappingPfsOutputPath_ = currentPath;
                 }
                 if (!isPreview && !currentPath.empty() && fs::exists(currentPath)) {
                     toneMappingPfsInputPath_ = currentPath;
@@ -14710,7 +14736,8 @@ private:
             parsedView.vv = static_cast<double>(image.height) / manualPpdY;
             info.viewInfo = parsedView;
 
-            if (parsedView.vh <= 0.0 || parsedView.vv <= 0.0) {
+            // A perspective view spans less than 180°: tan(vh/2) changes sign beyond it (#65).
+            if (parsedView.vh <= 0.0 || parsedView.vv <= 0.0 || parsedView.vh >= 180.0 || parsedView.vv >= 180.0) {
                 info.note = "Blur ready. Manual PPD must produce a valid perspective FoV.";
                 return info;
             }
@@ -14761,7 +14788,7 @@ private:
             info.note = "Blur ready. FoV / PPD / solid-angle metrics currently support perspective views only.";
             return info;
         }
-        if (parsedView.vh <= 0.0 || parsedView.vv <= 0.0) {
+        if (parsedView.vh <= 0.0 || parsedView.vv <= 0.0 || parsedView.vh >= 180.0 || parsedView.vv >= 180.0) {
             info.note = "Blur ready. Perspective metrics need valid -vh and -vv values.";
             return info;
         }
@@ -15308,7 +15335,12 @@ private:
             return std::nullopt;
         }
         CreateViewViewInfo parsed;
-        if (!parseCreateViewViewTokens(splitWhitespace(viewLine), parsed)) {
+        const auto viewTokens = splitWhitespace(viewLine);
+        const bool completeView = parseCreateViewViewTokens(viewTokens, parsed);
+        // -vp and -vd are not needed for pixels per degree: a line such as 'VIEW= -vta -vh 180 -vv 180'
+        // (as evalglare-prepared fisheyes carry it) gives them from the projection and -vh (#66).
+        const bool hasViewWidth = std::find(viewTokens.begin(), viewTokens.end(), "-vh") != viewTokens.end();
+        if (!completeView && (parsed.projectionToken.empty() || !hasViewWidth)) {
             if (description) *description = "VIEW could not be read";
             return std::nullopt;
         }
@@ -16299,7 +16331,10 @@ private:
             currentPath = viewer_->currentImage()->path();
         }
 
-        const bool preserveResults = !currentPath.empty() && (currentPath == blurInputPath_ || currentPath == blurResultPath_);
+        // blurResultsJustStored_: the finished run loads its output asynchronously, and the sync that
+        // loadImageIntoViewer runs at once still sees the previous image (#71).
+        const bool preserveResults = blurResultsJustStored_ ||
+            (!currentPath.empty() && (currentPath == blurInputPath_ || currentPath == blurResultPath_));
         if (!preserveResults) {
             clearBlurResults();
         }
@@ -16425,7 +16460,15 @@ private:
             blurProgressBar_->set_value(0.08f);
         }
 
-        std::thread([this, inputPath, outputPath, mode, mmPerPixel, fwhmMm, threshold, hasThreshold]() {
+        // The worker must not read the widgets: PPD and projection are read here, on the UI thread (#69).
+        double manualPpdX = 0.0;
+        double manualPpdY = 0.0;
+        bool hasManualPpd = false;
+        std::string manualPpdError;
+        const bool manualPpdOk = currentBlurManualPpd(manualPpdX, manualPpdY, hasManualPpd, &manualPpdError);
+        const std::string projectionToken = blurProjectionOverrideToken(blurProjectionCombo_ ? blurProjectionCombo_->selected_index() : 0);
+        std::thread([this, inputPath, outputPath, mode, mmPerPixel, fwhmMm, threshold, hasThreshold, manualPpdOk, manualPpdX, manualPpdY,
+                     hasManualPpd, manualPpdError, projectionToken]() {
             BlurRunResult result;
             result.inputPath = inputPath;
             result.outputPath = outputPath;
@@ -16436,17 +16479,13 @@ private:
             try {
                 const HdrImage inputImage = readRadianceHDR(inputPath.string());
                 result.beforeImage = std::make_shared<HdrImage>(inputImage);
-                double manualPpdX = 0.0;
-                double manualPpdY = 0.0;
-                bool hasManualPpd = false;
-                std::string manualPpdError;
-                if (!currentBlurManualPpd(manualPpdX, manualPpdY, hasManualPpd, &manualPpdError)) {
+                if (!manualPpdOk) {
                     throw std::runtime_error(manualPpdError);
                 }
                 result.imageInfo = parseBlurPerspectiveImageInfo(
                     inputImage,
                     inputPath,
-                    blurProjectionOverrideToken(blurProjectionCombo_ ? blurProjectionCombo_->selected_index() : 0),
+                    projectionToken,
                     hasManualPpd ? manualPpdX : 0.0,
                     hasManualPpd ? manualPpdY : 0.0
                 );
@@ -16564,7 +16603,9 @@ private:
 
                 refreshBlurUi();
                 rememberRecentHdr(result.outputPath, false, true);
+                blurResultsJustStored_ = true;
                 loadImageIntoViewer(result.outputPath);
+                blurResultsJustStored_ = false;
             });
         }).detach();
     }
@@ -16884,7 +16925,9 @@ private:
 
         std::ostringstream command;
         command << "set -euo pipefail && ";
-        command << "rm -f " << shellQuote(rawPreviewPath.string()) << " " << shellQuote(outputPath.string()) << " " << shellQuote(logPath.string()) << " && ";
+        // Not the log: the shell already writes into it (spawnShellJob truncates it), and removing it
+        // hid every failure message (#73).
+        command << "rm -f " << shellQuote(rawPreviewPath.string()) << " " << shellQuote(outputPath.string()) << " && ";
         command << "cd " << shellQuote(roomPath.parent_path().string()) << " && ";
         command << createViewShellEnvironmentPrefix();
         command << "oconv ";
@@ -16934,7 +16977,28 @@ private:
 
         jobStarted = true;
         std::thread([this, commandText = command.str(), logPath, outputPath]() {
-            const pid_t pid = spawnShellJob(commandText, logPath);
+            pid_t pid = -1;
+            try {
+                pid = spawnShellJob(commandText, logPath);
+            } catch (const std::exception& e) {
+                // spawnShellJob throws when fork() fails (on Windows also when the shell or the log
+                // cannot be opened); an exception leaving this thread would end the app.
+                const std::string message = std::string("Create View preview could not start: ") + e.what();
+                {
+                    std::lock_guard<std::mutex> lock{createViewQuickPreviewState_.mutex};
+                    createViewQuickPreviewState_.active = false;
+                    createViewQuickPreviewState_.cancelRequested = false;
+                    createViewQuickPreviewState_.pid = -1;
+                }
+                viewer_->scheduleToUiThread([this, message]() {
+                    if (createViewCanvasRenderPreview_) {
+                        createViewCanvasRenderPreview_->setBusy(false);
+                        createViewCanvasRenderPreview_->setStatusText("Preview failed. Check the log message.");
+                    }
+                    showMessage(message);
+                });
+                return;
+            }
             {
                 std::lock_guard<std::mutex> lock{createViewQuickPreviewState_.mutex};
                 createViewQuickPreviewState_.pid = pid;
@@ -17238,7 +17302,29 @@ private:
                      applyPfiltDownsample, fastDirectMode]() {
             constexpr int kRxpieceTiles = 8;  // rxpiece -X 8 -Y 8 above
             constexpr int kRxpieceTileCount = kRxpieceTiles * kRxpieceTiles;
-            const pid_t pid = spawnShellJob(commandText, logPath);
+            pid_t pid = -1;
+            try {
+                pid = spawnShellJob(commandText, logPath);
+            } catch (const std::exception& e) {
+                // As for the preview: an exception leaving this thread would end the app.
+                const std::string message = std::string("Create View render could not start: ") + e.what();
+                {
+                    std::lock_guard<std::mutex> lock{createViewRenderState_.mutex};
+                    createViewRenderState_.active = false;
+                    createViewRenderState_.cancelRequested = false;
+                    createViewRenderState_.pid = -1;
+                }
+                viewer_->scheduleToUiThread([this, message]() {
+                    if (createViewRenderProgressBar_) {
+                        createViewRenderProgressBar_->set_value(0.0f);
+                    }
+                    if (createViewRenderStatusLabel_) {
+                        createViewRenderStatusLabel_->set_caption("Render failed");
+                    }
+                    showMessage(message);
+                });
+                return;
+            }
             {
                 std::lock_guard<std::mutex> lock{createViewRenderState_.mutex};
                 createViewRenderState_.pid = pid;
@@ -19211,16 +19297,22 @@ private:
 
         auto* toolsHeader = new InspectorSectionHeader(parent, "Tools", false);
         toolsHeader->set_fixed_width(kTabContentWidth);
-        auto* line = new Widget(parent);
-        line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
-        line->set_fixed_width(kTabContentWidth);
-        auto* label = new Label(line, "oiiotool", "sans", 13);
-        label->set_fixed_width(kInspectorRowLabelWidth);
-        label->set_color(hdrspaceMutedInk(215));
-        oiiotoolPathBox_ = smallTextBox(line, "optional");
-        oiiotoolPathBox_->set_font_size(13);
-        oiiotoolPathBox_->set_fixed_size({kTabContentWidth - kInspectorRowLabelWidth - 8, kInspectorRowHeight});
-        oiiotoolPathBox_->set_tooltip("oiiotool path (optional)");
+        const auto pathRow = [&](const char* name, const char* placeholder, const char* tooltip) {
+            auto* line = new Widget(parent);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+            line->set_fixed_width(kTabContentWidth);
+            auto* label = new Label(line, name, "sans", 13);
+            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            TextBox* box = smallTextBox(line, placeholder);
+            box->set_font_size(13);
+            box->set_fixed_size({kTabContentWidth - kInspectorRowLabelWidth - 8, kInspectorRowHeight});
+            box->set_tooltip(tooltip);
+            return box;
+        };
+        // The "Set a valid mergehdr path in Settings." messages point here (#84).
+        mergehdrPathBox_ = pathRow("mergehdr", "bundled", "mergehdr path (leave empty for the bundled mergehdr)");
+        oiiotoolPathBox_ = pathRow("oiiotool", "optional", "oiiotool path (optional)");
         (void)kTabFieldFont;
         (void)kTabActionFont;
 
@@ -20921,6 +21013,11 @@ private:
             throw std::runtime_error("Mask circle center must lie inside the current image.");
         }
 
+        // The circle is placed with the angular-fisheye model, which distorts it on other projections
+        // (#88). Glare itself needs an equidistant picture unless Force is ticked.
+        if (viewer_->currentProjectionLabel() != "equidistant") {
+            throw std::runtime_error("The mask circle needs an equidistant (angular fisheye) image.");
+        }
         EquidistantViewInfo viewInfo = detectEquidistantViewInfo(viewer_->currentImage());
         const Vector3f centerDir = equidistantDirFromViewerPixel(
             centerX,
@@ -21285,7 +21382,9 @@ private:
         }
         updateAiMaskPointUi();
 
-        std::thread([this, python, helper, sourceImagePath, exteriorReferencePath, pairedAnalysis, previewPath, outputDir, buildingCandidates, greeneryCandidates, windowDistanceM]() {
+        const AiRequestSettings aiSettings = currentAiRequestSettings();
+        std::thread([this, python, helper, sourceImagePath, exteriorReferencePath, pairedAnalysis, previewPath, outputDir, buildingCandidates, greeneryCandidates, windowDistanceM,
+                     aiSettings]() {
             ProcessResult result;
             if (pairedAnalysis) {
                 std::ostringstream command;
@@ -21314,7 +21413,8 @@ private:
                     buildingCandidates,
                     "exterior building; outdoor building facade",
                     {},
-                    {}
+                    {},
+                    aiSettings
                 );
                 if (result.exitCode == 0) {
                     result = runPersistentAiPrediction(
@@ -21322,7 +21422,8 @@ private:
                         greeneryCandidates,
                         "tree foliage; outdoor tree; green leaves",
                         {},
-                        {}
+                        {},
+                        aiSettings
                     );
                 }
                 {
@@ -22988,8 +23089,9 @@ private:
 
         setAiStatusCaption("Generating AI candidates...");
 
-        std::thread([this, previewPath, candidateDirPath, prompt, positivePoints, negativePoints, revision]() {
-            ProcessResult result = runPersistentAiPrediction(previewPath, candidateDirPath, prompt, positivePoints, negativePoints);
+        const AiRequestSettings aiSettings = currentAiRequestSettings();
+        std::thread([this, previewPath, candidateDirPath, prompt, positivePoints, negativePoints, revision, aiSettings]() {
+            ProcessResult result = runPersistentAiPrediction(previewPath, candidateDirPath, prompt, positivePoints, negativePoints, aiSettings);
             viewer_->scheduleToUiThread([this, candidateDirPath, prompt, revision, result = std::move(result)]() mutable {
                 {
                     std::lock_guard<std::mutex> lock{glareAiPreviewTask_.mutex};
@@ -23268,6 +23370,32 @@ private:
             return false;
         }
 
+        // The helper's arguments and environment are prepared here: between fork() and exec the
+        // child may only make async-signal-safe calls (no allocation, no setenv) (#123).
+        std::string childPython = pythonPath.string();
+        std::string childHelper = helperPath.string();
+        std::string childServer = "--server";
+        std::string childWeightsFlag = "--weights-dir";
+        std::string childWeights = weightsDir.string();
+        std::array<char*, 6> childArgv = {childPython.data(), childHelper.data(), childServer.data(), childWeightsFlag.data(), childWeights.data(), nullptr};
+        std::vector<std::string> childEnvText;
+        for (char** entry = environ; entry && *entry; ++entry) {
+            const std::string_view text{*entry};
+            if (text.starts_with("HF_HOME=") || text.starts_with("HF_HUB_CACHE=") || text.starts_with("PYTHONPATH=")) {
+                continue;
+            }
+            childEnvText.emplace_back(text);
+        }
+        childEnvText.push_back("HF_HOME=" + paths_.aiHfHomeDir.string());
+        childEnvText.push_back("HF_HUB_CACHE=" + (paths_.aiHfHomeDir / "hub").string());
+        childEnvText.push_back("PYTHONPATH=" + pythonPathEnv);
+        std::vector<char*> childEnv;
+        childEnv.reserve(childEnvText.size() + 1);
+        for (std::string& text : childEnvText) {
+            childEnv.push_back(text.data());
+        }
+        childEnv.push_back(nullptr);
+
         const pid_t pid = fork();
         if (pid < 0) {
             close(stdinPipe[0]);
@@ -23293,19 +23421,7 @@ private:
             close(stdoutPipe[1]);
             close(stderrFd);
 
-            setenv("HF_HOME", paths_.aiHfHomeDir.string().c_str(), 1);
-            setenv("HF_HUB_CACHE", (paths_.aiHfHomeDir / "hub").string().c_str(), 1);
-            setenv("PYTHONPATH", pythonPathEnv.c_str(), 1);
-
-            execl(
-                pythonPath.string().c_str(),
-                pythonPath.string().c_str(),
-                helperPath.string().c_str(),
-                "--server",
-                "--weights-dir",
-                weightsDir.string().c_str(),
-                nullptr
-            );
+            execve(childArgv[0], childArgv.data(), childEnv.data());
             _exit(127);
         }
 
@@ -23333,12 +23449,48 @@ private:
 #endif
     }
 
+    // Read on the UI thread before an AI request goes to a worker thread: the worker must not read
+    // the current image or the Mask fit menu (#91, #101).
+    struct AiRequestSettings {
+        Vector2i targetSize{0, 0};
+        double threshold = 0.50;
+        int boxSide = 22;
+    };
+
+    AiRequestSettings currentAiRequestSettings() const {
+        AiRequestSettings settings;
+        settings.targetSize = viewer_ && viewer_->currentImage() ? viewer_->currentImage()->size() : Vector2i{0, 0};
+        settings.threshold = currentSam3Threshold();
+        settings.boxSide = currentSam3PromptBoxSide();
+        return settings;
+    }
+
+    // Runs on worker threads (AI preview, Image VOS): an exception leaving it would end the app (#100).
     ProcessResult runPersistentAiPrediction(
         const fs::path& previewPath,
         const fs::path& candidateDirPath,
         const std::string& prompt,
         const std::vector<Vector2i>& positivePoints,
-        const std::vector<Vector2i>& negativePoints
+        const std::vector<Vector2i>& negativePoints,
+        const AiRequestSettings& settings
+    ) {
+        try {
+            return runPersistentAiPredictionUnchecked(previewPath, candidateDirPath, prompt, positivePoints, negativePoints, settings);
+        } catch (const std::exception& e) {
+            ProcessResult result;
+            result.exitCode = 1;
+            result.stderrText = std::string("MLX SAM3 request failed: ") + e.what();
+            return result;
+        }
+    }
+
+    ProcessResult runPersistentAiPredictionUnchecked(
+        const fs::path& previewPath,
+        const fs::path& candidateDirPath,
+        const std::string& prompt,
+        const std::vector<Vector2i>& positivePoints,
+        const std::vector<Vector2i>& negativePoints,
+        const AiRequestSettings& settings
     ) {
         ProcessResult result;
         if (positivePoints.empty() && prompt.empty()) {
@@ -23348,8 +23500,8 @@ private:
         }
 
         std::string error;
-        const Vector2i size = viewer_ && viewer_->currentImage() ? viewer_->currentImage()->size() : Vector2i{0, 0};
-        const double threshold = currentSam3Threshold();
+        const Vector2i size = settings.targetSize;
+        const double threshold = settings.threshold;
 
         {
             std::lock_guard<std::mutex> lock{glareAiProcess_.mutex};
@@ -23361,7 +23513,13 @@ private:
 
             std::error_code removeError;
             fs::remove_all(candidateDirPath, removeError);
-            fs::create_directories(candidateDirPath);
+            std::error_code createError;
+            fs::create_directories(candidateDirPath, createError);
+            if (createError) {
+                result.exitCode = 1;
+                result.stderrText = "Could not create the AI candidate folder " + candidateDirPath.string() + ": " + createError.message();
+                return result;
+            }
 
             std::ostringstream request;
             request << "{"
@@ -23371,7 +23529,7 @@ private:
                     << "\"prompt\":\"" << jsonEscape(prompt) << "\","
                     << "\"target_width\":" << size.x() << ","
                     << "\"target_height\":" << size.y() << ","
-                    << "\"box_size\":" << currentSam3PromptBoxSide() << ","
+                    << "\"box_size\":" << settings.boxSide << ","
                     << "\"confidence_threshold\":" << std::fixed << std::setprecision(6) << threshold << ","
                     << "\"positive_points\":[";
 
@@ -23414,13 +23572,20 @@ private:
                 result.exitCode = 1;
                 result.stderrText = responseLine->substr(4);
             } else {
+                // A stray line (a print from inside the model code, say) leaves the real reply in the
+                // pipe, and every later request would read the one before it: restart the helper (#136).
+                stopPersistentAiProcessLocked();
                 result.exitCode = 1;
                 result.stderrText = "Unexpected MLX SAM3 helper response: " + *responseLine;
             }
         }
-        if (result.exitCode == 0 && (!fs::exists(candidateDirPath) || std::distance(fs::directory_iterator(candidateDirPath), fs::directory_iterator{}) == 0)) {
-            result.exitCode = 1;
-            result.stderrText = "MLX SAM3 finished without producing candidate masks.";
+        if (result.exitCode == 0) {
+            std::error_code listError;
+            const fs::directory_iterator first(candidateDirPath, listError);
+            if (listError || first == fs::directory_iterator{}) {
+                result.exitCode = 1;
+                result.stderrText = "MLX SAM3 finished without producing candidate masks.";
+            }
         }
         return result;
     }
@@ -23876,7 +24041,10 @@ private:
 
     void loadSettingsIntoUi() {
         if (mergehdrPathBox_) {
-            mergehdrPathBox_->set_value(paths_.mergehdr.string());
+            // Only the configured override: empty means the bundled mergehdr, so saving the settings
+            // does not pin the path of today's bundle.
+            auto settings = readKeyValueFile(paths_.settingsFile);
+            mergehdrPathBox_->set_value(trim(settings["mergehdrPath"]));
         }
         if (oiiotoolPathBox_) {
             oiiotoolPathBox_->set_value(paths_.oiiotool.string());
@@ -23892,9 +24060,15 @@ private:
     }
 
     void saveSettings() {
-        std::map<std::string, std::string> values;
+        // The file is rewritten as a whole: start from it, so keys this tab does not show are kept (#84).
+        std::map<std::string, std::string> values = readKeyValueFile(paths_.settingsFile);
         if (mergehdrPathBox_) {
-            values["mergehdrPath"] = normalizedTextBoxValue(mergehdrPathBox_->value());
+            const std::string mergehdrPath = normalizedTextBoxValue(mergehdrPathBox_->value());
+            if (mergehdrPath.empty()) {
+                values.erase("mergehdrPath");
+            } else {
+                values["mergehdrPath"] = mergehdrPath;
+            }
         }
         if (oiiotoolPathBox_) {
             values["oiiotoolPath"] = normalizedTextBoxValue(oiiotoolPathBox_->value());
@@ -24106,11 +24280,11 @@ private:
         }
         if (values.contains("fisheye")) {
             std::string lowered = tev::toLower(values["fisheye"]);
-            fisheyeBox_->set_checked(lowered == "true" || lowered == "1" || lowered == "yes");
+            fisheyeBox_->set_checked(lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "on");
         }
         if (values.contains("dual_fisheye")) {
             const std::string lowered = tev::toLower(values["dual_fisheye"]);
-            selectedProfileIsDualFisheye_ = lowered == "true" || lowered == "1" || lowered == "yes";
+            selectedProfileIsDualFisheye_ = lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "on";
         }
         if (selectedProfileIsDualFisheye_) {
             selectedProfileCrop_.clear();
@@ -24208,6 +24382,27 @@ private:
         if (fisheyeBox_->checked() && crop.empty()) {
             showMessage("Fisheye correction needs a crop first.");
             return;
+        }
+        // The crop is part of the /bin/zsh command line: only four whole numbers go through, written
+        // again from the parsed values (#103).
+        if (!crop.empty()) {
+            std::istringstream cropWords{crop};
+            std::vector<int> cropValues;
+            std::string word;
+            bool cropValid = true;
+            while (cropWords >> word) {
+                int value = 0;
+                if (!tryParseInteger(word, value)) {
+                    cropValid = false;
+                    break;
+                }
+                cropValues.push_back(value);
+            }
+            if (!cropValid || cropValues.size() != 4) {
+                showMessage("The merge crop must be four whole numbers: left top width height.");
+                return;
+            }
+            crop = std::format("{} {} {} {}", cropValues[0], cropValues[1], cropValues[2], cropValues[3]);
         }
 
         std::string outputName = normalizedTextBoxValue(outputNameBox_->value());
@@ -24800,7 +24995,9 @@ private:
             << shellQuote(image.string()) << " -o " << shellQuote(cells.string())
             << " -preview " << shellQuote(preview.string()) << " --white-first";
 
-        startWorkerTask(reference ? colorTask_ : shutterTask_, [cmd = cmd.str()]() { return std::pair<std::string, std::string>{cmd, {}}; },
+        // Both chart detections belong to the Color tab: the camera one ran on the Shutter tab's slot,
+        // so it blocked shutter calibration and did not hold back Run color calibration (#105).
+        startWorkerTask(colorTask_, [cmd = cmd.str()]() { return std::pair<std::string, std::string>{cmd, {}}; },
             [this, reference, cells, preview](ProcessResult result) {
                 if (result.exitCode != 0) {
                     showMessage("chartcells failed:\n" + result.stdoutText + result.stderrText);
@@ -24813,6 +25010,10 @@ private:
                 }
                 if (fs::exists(preview)) {
                     loadImageIntoViewer(preview);
+                }
+                // chartcells warns when it fell back to a doubtful grid (#112).
+                if (const std::string warnings = collectWarnings(result.stderrText); !warnings.empty()) {
+                    showMessage("chartcells:\n" + warnings);
                 }
             });
     }
@@ -25121,6 +25322,8 @@ private:
     ToneMappingPfsRunState toneMappingPfsRunState_;
     fs::path toneMappingPfsInputPath_;
     fs::path toneMappingPfsOutputPath_;
+    // Source HDR of each pfstools preview shown in this session, by canonical preview path.
+    std::map<fs::path, fs::path> toneMappingPfsPreviewSources_;
     std::string toneMappingPfsLastCommand_;
 
     ComboBox* toneMappingModeCombo_ = nullptr;
@@ -25537,6 +25740,7 @@ private:
     fs::path blurInputPath_;
     fs::path blurLiveImagePath_;
     fs::path blurResultPath_;
+    bool blurResultsJustStored_ = false;
     fs::path blurSuggestedOutputPath_;
     std::shared_ptr<HdrImage> blurLiveImage_;
     std::shared_ptr<HdrImage> blurBeforeImage_;

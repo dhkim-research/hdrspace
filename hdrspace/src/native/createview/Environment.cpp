@@ -79,15 +79,17 @@ std::vector<CreateViewInlinePrimitive> parseCreateViewInlinePrimitives(const std
         int n1 = 0;
         int n2 = 0;
         int n3 = 0;
-        if (!tryParseInteger(tokens[i++], n1) || i + static_cast<size_t>(n1) > tokens.size()) {
+        // Counts must be non-negative and the words they announce must exist: a negative count
+        // wrapped the size_t bound, and a primitive cut off after its strings read past the end.
+        if (!tryParseInteger(tokens[i++], n1) || n1 < 0 || i + static_cast<size_t>(n1) > tokens.size()) {
             break;
         }
         i += static_cast<size_t>(n1);
-        if (i >= tokens.size() || !tryParseInteger(tokens[i++], n2) || i + static_cast<size_t>(n2) > tokens.size()) {
+        if (i >= tokens.size() || !tryParseInteger(tokens[i++], n2) || n2 < 0 || i + static_cast<size_t>(n2) > tokens.size()) {
             break;
         }
         i += static_cast<size_t>(n2);
-        if (i >= tokens.size() || !tryParseInteger(tokens[i++], n3) || i + static_cast<size_t>(n3) > tokens.size()) {
+        if (i >= tokens.size() || !tryParseInteger(tokens[i++], n3) || n3 < 0 || i + static_cast<size_t>(n3) > tokens.size()) {
             break;
         }
         primitive.numericArgs.reserve(static_cast<size_t>(std::max(0, n3)));
@@ -419,10 +421,13 @@ CreateViewEnvironmentInfo parseCreateViewEnvironment(const std::string& spec, co
     }
 
     fs::path path{value};
+    // error_code overloads: an odd or very long entry must not throw out of the refresh.
+    std::error_code pathError;
     if (path.is_relative()) {
-        path = fs::weakly_canonical(workingDir / path);
+        const fs::path resolved = fs::weakly_canonical(workingDir / path, pathError);
+        path = pathError ? workingDir / path : resolved;
     }
-    if (!fs::exists(path)) {
+    if (!fs::exists(path, pathError)) {
         info.note = "Environment HDR file not found.";
         return info;
     }

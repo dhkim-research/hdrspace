@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Configure/build hdrspace in a separate workspace and stage its verified app."""
+# Annotations such as "Path | None" are not evaluated, so Python 3.9 (the CLT python3) can run it (#129).
+from __future__ import annotations
+
 import argparse
 import hashlib
 import os

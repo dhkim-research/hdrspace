@@ -304,6 +304,14 @@ void writeRGBE(const std::string &filename, size_t w, size_t h, float *data,
     }
 
     for (size_t y=0; y<h; ++y) {
+        if (w < 8 || w > 0x7fff) {
+            // Radiance fwritecolrs(): scanlines outside [MINELEN, MAXELEN] are written flat.
+            for (size_t x = 0; x < w; ++x) {
+                const Trgbe flat[4] = {scanlineR[y * w + x], scanlineG[y * w + x], scanlineB[y * w + x], scanlineE[y * w + x]};
+                fwrite(flat, sizeof(Trgbe), 4, file);
+            }
+            continue;
+        }
         unsigned char header[4];
         header[0] = 2;
         header[1] = 2;

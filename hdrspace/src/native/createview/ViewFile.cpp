@@ -127,10 +127,14 @@ CreateViewViewInfo parseCreateViewView(const std::string& spec, const fs::path& 
     };
 
     fs::path path{value};
+    // The text may be an inline view line rather than a path: error_code overloads, so a long line
+    // (ENAMETOOLONG) does not throw out of the refresh (#64).
+    std::error_code pathError;
     if (path.is_relative()) {
-        path = fs::weakly_canonical(workingDir / path);
+        const fs::path resolved = fs::weakly_canonical(workingDir / path, pathError);
+        path = pathError ? workingDir / path : resolved;
     }
-    if (fs::exists(path) && fs::is_regular_file(path)) {
+    if (fs::is_regular_file(path, pathError)) {
         std::ifstream input(path);
         std::string line;
         while (std::getline(input, line)) {

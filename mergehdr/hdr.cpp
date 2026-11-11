@@ -105,6 +105,8 @@ void ExposureSeries::initTables(float saturation, EMergeMethod method, float und
         size_t percentile = (size_t) (npix*0.999);
         std::nth_element(temp, temp+percentile, temp+npix);
         saturation = (*(temp+percentile)-blacklevel) / (float) (whitepoint-blacklevel);
+        // The weights and the later saturation tests read the member (#125).
+        this->saturation = saturation;
         delete[] temp;
 
         cerr << endl

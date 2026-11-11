@@ -231,19 +231,21 @@ void parseCreateViewPrimitiveTokens(const std::vector<std::string>& tokens, cons
         int n1 = 0;
         int n2 = 0;
         int n3 = 0;
-        if (!tryParseInteger(tokens[i++], n1) || i + static_cast<size_t>(n1) > tokens.size()) {
+        // Counts must be non-negative and the words they announce must exist: a negative count
+        // wrapped the size_t bound, and a primitive cut off after its strings read past the end.
+        if (!tryParseInteger(tokens[i++], n1) || n1 < 0 || i + static_cast<size_t>(n1) > tokens.size()) {
             break;
         }
         std::vector<std::string> sargs1(tokens.begin() + static_cast<std::ptrdiff_t>(i),
                                         tokens.begin() + static_cast<std::ptrdiff_t>(i + static_cast<size_t>(n1)));
         i += static_cast<size_t>(n1);
-        if (!tryParseInteger(tokens[i++], n2) || i + static_cast<size_t>(n2) > tokens.size()) {
+        if (i >= tokens.size() || !tryParseInteger(tokens[i++], n2) || n2 < 0 || i + static_cast<size_t>(n2) > tokens.size()) {
             break;
         }
         std::vector<std::string> sargs2(tokens.begin() + static_cast<std::ptrdiff_t>(i),
                                         tokens.begin() + static_cast<std::ptrdiff_t>(i + static_cast<size_t>(n2)));
         i += static_cast<size_t>(n2);
-        if (!tryParseInteger(tokens[i++], n3) || i + static_cast<size_t>(n3) > tokens.size()) {
+        if (i >= tokens.size() || !tryParseInteger(tokens[i++], n3) || n3 < 0 || i + static_cast<size_t>(n3) > tokens.size()) {
             break;
         }
 
@@ -414,10 +416,14 @@ void parseCreateViewPrimitiveTokens(const std::vector<std::string>& tokens, cons
 }
 
 void parseCreateViewRoomRecursive(const fs::path& path, const CreateViewTransform& transform, std::set<fs::path>& activePaths, CreateViewRoomInfo& info) {
-    if (!fs::exists(path) || !fs::is_regular_file(path)) {
+    std::error_code pathError;
+    if (!fs::is_regular_file(path, pathError)) {
         return;
     }
-    const fs::path resolved = fs::weakly_canonical(path);
+    fs::path resolved = fs::weakly_canonical(path, pathError);
+    if (pathError) {
+        resolved = path;
+    }
     if (!activePaths.insert(resolved).second) {
         return;
     }
@@ -771,10 +777,13 @@ CreateViewRoomInfo parseCreateViewRoom(const std::string& spec, const fs::path& 
     }
 
     fs::path path{value};
+    // error_code overloads: an odd or very long entry must not throw out of the refresh.
+    std::error_code pathError;
     if (path.is_relative()) {
-        path = fs::weakly_canonical(workingDir / path);
+        const fs::path resolved = fs::weakly_canonical(workingDir / path, pathError);
+        path = pathError ? workingDir / path : resolved;
     }
-    if (!fs::exists(path)) {
+    if (!fs::exists(path, pathError)) {
         info.note = "Room file not found.";
         return info;
     }

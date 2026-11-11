@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -283,7 +284,39 @@ double evaluateBandSelection(const std::vector<Segment> &bands, int axisLength, 
            2.0 * std::max(0.0, maxRatio - 1.45);
 }
 
-std::vector<Segment> selectRegularBands(const std::vector<Segment> &candidates, int expectedBandCount, int axisLength) {
+// C(n, k): how many selections the exhaustive search below evaluates.
+double bandSelectionCount(size_t n, int k) {
+    if (k < 0 || static_cast<size_t>(k) > n)
+        return 0.0;
+    double count = 1.0;
+    for (int i = 1; i <= k; ++i)
+        count = count * static_cast<double>(n - static_cast<size_t>(k) + static_cast<size_t>(i)) / static_cast<double>(i);
+    return count;
+}
+
+std::vector<Segment> selectRegularBands(const std::vector<Segment> &allCandidates, int expectedBandCount, int axisLength) {
+    // Every increasing subset is tried: on a cluttered picture with many dark valleys that took
+    // minutes. Only the darkest candidates are kept then, in their order along the axis (#111).
+    constexpr double kMaxSelections = 2.0e6;
+    std::vector<Segment> candidates = allCandidates;
+    if (bandSelectionCount(candidates.size(), expectedBandCount) > kMaxSelections) {
+        std::vector<size_t> order(candidates.size());
+        std::iota(order.begin(), order.end(), size_t{0});
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return candidates[a].score > candidates[b].score; });
+        size_t keep = candidates.size();
+        while (keep > static_cast<size_t>(expectedBandCount) && bandSelectionCount(keep, expectedBandCount) > kMaxSelections)
+            --keep;
+        std::vector<size_t> kept(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(keep));
+        std::sort(kept.begin(), kept.end());
+        std::vector<Segment> pruned;
+        pruned.reserve(kept.size());
+        for (size_t index : kept)
+            pruned.push_back(candidates[index]);
+        std::cerr << "Warning: " << candidates.size() << " candidate chart bands; the grid search keeps the "
+                  << keep << " darkest. Crop the image closer to the chart if the grid is wrong.\n";
+        candidates = std::move(pruned);
+    }
+
     double bestScore = -std::numeric_limits<double>::infinity();
     std::vector<Segment> best;
     std::vector<Segment> current;
@@ -315,6 +348,10 @@ std::vector<Segment> selectRegularBands(const std::vector<Segment> &candidates, 
     if (best.empty()) {
         if (static_cast<int>(candidates.size()) < expectedBandCount)
             throw std::runtime_error("Could not detect the full chart grid.");
+        // Every selection was rejected (a cell too small): the first bands are still used, but no
+        // longer without a word, since they may give a wrong grid (#112).
+        std::cerr << "Warning: no regular chart grid was found (every set of bands leaves a cell that is too small); "
+                     "the first detected bands are used. Check the preview, or crop the image closer to the chart.\n";
         best.assign(candidates.begin(), candidates.begin() + expectedBandCount);
     }
     return best;

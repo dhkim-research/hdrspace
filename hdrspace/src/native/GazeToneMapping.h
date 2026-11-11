@@ -23,6 +23,8 @@ enum class EGazeProjection {
     AngularFisheye,
     HemisphericalFisheye,
     Perspective,
+    // Equal-area fisheye (MERGEHDR_PROJECTION=equisolid): theta = 2 asin(r / 2) (#137).
+    EquisolidFisheye,
 };
 
 enum class EGazeInputEncoding {

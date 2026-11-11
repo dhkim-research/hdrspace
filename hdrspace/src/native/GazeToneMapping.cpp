@@ -307,9 +307,12 @@ GazeProjectionInfo detectProjection(const tev::Image& image, EGazeProjection pro
                 name.find("angular") != std::string::npos) {
                 info.projection = EGazeProjection::AngularFisheye;
                 info.source = "MERGEHDR_PROJECTION";
+            } else if (name.find("equisolid") != std::string::npos) {
+                // Equal-area, not Radiance's orthographic -vth (#137).
+                info.projection = EGazeProjection::EquisolidFisheye;
+                info.source = "MERGEHDR_PROJECTION";
             } else if (name.find("hemispherical") != std::string::npos ||
                        name.find("orthographic") != std::string::npos ||
-                       name.find("equisolid") != std::string::npos ||
                        name == "vth") {
                 info.projection = EGazeProjection::HemisphericalFisheye;
                 info.source = "MERGEHDR_PROJECTION";
@@ -676,6 +679,7 @@ std::string_view gazeProjectionLabel(EGazeProjection projection) {
         case EGazeProjection::AngularFisheye: return "Angular fisheye (-vta)";
         case EGazeProjection::HemisphericalFisheye: return "Hemispherical fisheye (-vth)";
         case EGazeProjection::Perspective: return "Perspective / flat";
+        case EGazeProjection::EquisolidFisheye: return "Equisolid fisheye";
     }
     return "Unknown";
 }
@@ -737,6 +741,23 @@ bool GazeAdaptationSampler::directionForPixel(
                 static_cast<float>(u),
                 static_cast<float>(std::sqrt(zSquared)),
                 static_cast<float>(v),
+            };
+            return true;
+        }
+        case EGazeProjection::EquisolidFisheye: {
+            // r = 2 sin(theta / 2); the image half-width holds half the horizontal view angle.
+            const double u = x * 4.0 * std::sin(horizontalRadians * 0.25);
+            const double v = y * 4.0 * std::sin(verticalRadians * 0.25);
+            const double radius = std::sqrt(u * u + v * v);
+            if (radius > 2.0) {
+                return false;
+            }
+            const double theta = 2.0 * std::asin(radius * 0.5);
+            const double scale = radius <= 1e-12 ? 1.0 : std::sin(theta) / radius;
+            direction = {
+                static_cast<float>(u * scale),
+                static_cast<float>(std::cos(theta)),
+                static_cast<float>(v * scale),
             };
             return true;
         }
@@ -926,7 +947,8 @@ LuminanceDistributionResult computeLuminanceDistribution(
 
     const bool fisheyeProjection =
         result.projection.projection == EGazeProjection::AngularFisheye ||
-        result.projection.projection == EGazeProjection::HemisphericalFisheye;
+        result.projection.projection == EGazeProjection::HemisphericalFisheye ||
+        result.projection.projection == EGazeProjection::EquisolidFisheye;
     result.excludedOutsideFisheye =
         options.excludeOutsideFisheye &&
         cropWidth == cropHeight &&
