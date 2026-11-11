@@ -710,6 +710,13 @@ std::vector<std::string> normalizeOptionSpellings(const std::vector<std::string>
     normalized.reserve(args.size() + 4);
     for (size_t i = 0; i < args.size(); ++i) {
         std::string arg = args[i];
+        // Option values are not option names: the value after --view ("-vta -vd 0 1 0 ...") and any
+        // token with whitespace are passed on unchanged (they were rewritten to "--vta ...", which
+        // broke the VIEW header that convertprojection writes).
+        if ((!normalized.empty() && normalized.back() == "--view") || arg.find_first_of(" \t") != std::string::npos) {
+            normalized.push_back(arg);
+            continue;
+        }
         if (arg == "-ds") {
             normalized.push_back("-d");
             normalized.push_back("-S");
@@ -4472,7 +4479,9 @@ std::string shadowbandHelp(const std::string &command) {
     oss << "  --rawext TEXT              Raw extension for directory inputs. Default: CR2.\n";
     oss << "  --bandcfg TEXT             Profile or .cfg for H/V raw merge. Required for raw inputs.\n";
     oss << "  --ndcfg TEXT               Profile or .cfg for ND raw merge. Required for raw inputs.\n";
-    oss << "  --sunloc X Y               Override sun pixel location in the ND image.\n";
+    oss << "  --sunloc X Y               Override the sun pixel: x from the left, y from the top, in the\n";
+    oss << "                             180-degree picture after the margin crop and the fisheye\n";
+    oss << "                             reprojection (the frame pylinearhdr uses too).\n";
     oss << "  --check PREFIX             Write debug mask/intermediate HDR files.\n";
     oss << "  --help                     Show this help.\n";
     return oss.str();

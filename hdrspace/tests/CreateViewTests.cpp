@@ -189,6 +189,14 @@ TEST_CASE("view files: only Radiance's six projections are accepted") {
     CHECK_NEAR(fisheye.vh, 180.0, 0.0);
 }
 
+TEST_CASE("view files: a view without -vt is rendered and analysed as Radiance's default -vtv") {
+    CreateViewViewInfo view;
+    parseCreateViewViewTokens({"-vp", "0", "0", "1", "-vd", "0", "1", "0", "-vh", "60", "-vv", "45"}, view);
+    CHECK(view.projectionToken.empty());
+    CHECK(createViewIsPerspectiveProjection(view));
+    CHECK(buildCreateViewRenderViewArgs(view).rfind("-vtv ", 0) == 0);
+}
+
 TEST_CASE("environment: header source text with '!' is not copied into the scene") {
     const fs::path folder = makeTemporaryFolder("environment");
     const fs::path file = folder / "sky.hdr";

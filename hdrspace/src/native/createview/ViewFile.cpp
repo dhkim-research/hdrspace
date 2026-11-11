@@ -161,7 +161,8 @@ bool parseCreateViewRenderResolution(const std::string& text, int& value) {
 
 std::string buildCreateViewRenderViewArgs(const CreateViewViewInfo& viewInfo) {
     std::ostringstream args;
-    const std::string projection = viewInfo.projectionToken.empty() ? "-vta" : viewInfo.projectionToken;
+    // A view without -vt is perspective in Radiance (-vtv); the window analysis treats it the same way.
+    const std::string projection = viewInfo.projectionToken.empty() ? "-vtv" : viewInfo.projectionToken;
     args << projection
          << " -vp " << viewInfo.position[0] << " " << viewInfo.position[1] << " " << viewInfo.position[2]
          << " -vd " << viewInfo.direction[0] << " " << viewInfo.direction[1] << " " << viewInfo.direction[2]

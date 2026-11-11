@@ -487,10 +487,19 @@ def collect_category_mask(
     instance_min_score: float,
 ) -> tuple[np.ndarray | None, list[str]]:
     paths = [Path(path).expanduser() for path in explicit_paths]
+    # A mask file given by name must exist: it was dropped silently before, and the category became
+    # an all-zero mask (V = 0 with quality "ok").
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError("Category mask file not found: " + ", ".join(missing))
     for directory in candidate_dirs:
+        folder = Path(directory).expanduser()
+        if not folder.is_dir():
+            print(f"Warning: candidate mask folder not found: {folder}", file=sys.stderr)
+            continue
         paths.extend(
             candidate_mask_paths(
-                Path(directory).expanduser(),
+                folder,
                 include_instances,
                 candidate_policy,
                 instance_min_score,
@@ -924,7 +933,8 @@ def window_radial_distance(
 
 
 def inferred_window_distance(path: Path) -> float:
-    match = re.search(r"(?:^|_)view_(\d+(?:\.\d+)?)m(?:_|$)", path.name, flags=re.IGNORECASE)
+    # The stem, so that "office_view_3m.hdr" matches the end-of-name alternative.
+    match = re.search(r"(?:^|_)view_(\d+(?:\.\d+)?)m(?:_|$)", path.stem, flags=re.IGNORECASE)
     return float(match.group(1)) if match else 0.0
 
 
@@ -1436,11 +1446,13 @@ def command_analyze(args: argparse.Namespace) -> int:
         common_metadata["VIEW"] = radiance_view.strip()
     depth_rgb = np.repeat(depth[..., None], 3, axis=-1)
     write_radiance_hdr(output_dir / "depth_m.hdr", depth_rgb, {**common_metadata, "MERGEHDR_CHANNELS": "depth_m depth_m depth_m"})
-    packed = np.stack((building_vos_map, greenery_vos_map, depth), axis=-1)
+    # B stays 0: RGBE shares one exponent per pixel, and the radial depth in B (up to 100 m) left the
+    # per-pixel VOS (often below 0.1 m3) with a zero mantissa. The depth is in depth_m.hdr.
+    packed = np.stack((building_vos_map, greenery_vos_map, np.zeros_like(building_vos_map)), axis=-1)
     write_radiance_hdr(
         output_dir / "image_vos.hdr",
         packed,
-        {**common_metadata, "MERGEHDR_CHANNELS": "building_vos greenery_vos radial_depth_m"},
+        {**common_metadata, "MERGEHDR_CHANNELS": "building_vos greenery_vos zero"},
     )
 
     clear_reference = getattr(args, "clear_reference", None)
@@ -1756,6 +1768,15 @@ def aligned_external_reference(
     )
     target_basis, target_has_pose = view_basis_from_result(internal_result)
     source_basis, source_has_pose = view_basis_from_result(external_result)
+    if target_has_pose != source_has_pose:
+        # With a pose (-vd/-vu) on one side only, rotating by it against the other side's identity
+        # frame samples the external picture in an arbitrary direction: both views are taken as aligned.
+        print(
+            "Warning: only one of the two pictures has -vd/-vu in its VIEW; the two views are assumed to be aligned.",
+            file=sys.stderr,
+        )
+        target_basis = np.eye(3, dtype=np.float32)
+        source_basis = np.eye(3, dtype=np.float32)
     world_rays = np.einsum("...j,ij->...i", target_local_rays, target_basis)
     source_local_rays = np.einsum("...j,ji->...i", world_rays, source_basis)
     source_x, source_y, source_valid = project_local_rays(
@@ -1895,18 +1916,22 @@ def estimate_window_distance_from_pair(
         -external[paired_valid] * cosine[paired_valid]
         + np.sqrt(np.maximum(discriminant[paired_valid], 0.0))
     )
-    paired_candidates = paired_candidates[
-        np.isfinite(paired_candidates) & (paired_candidates >= 0.10) & (paired_candidates <= 20.0)
-    ]
+    # The trimmed median is taken over all finite candidates and only the estimate is checked against
+    # [0.10, 20] m: cutting the candidates to that range first removed noise on one side only and moved
+    # the median up (about 2.5 m for candidates around 1 m with 3 m of noise).
+    paired_candidates = paired_candidates[np.isfinite(paired_candidates)]
+    paired_median_out_of_range = None
     if paired_candidates.size >= 256:
         lower, upper = np.percentile(paired_candidates, (10.0, 90.0))
         trimmed = paired_candidates[(paired_candidates >= lower) & (paired_candidates <= upper)]
         estimate = float(np.median(trimmed))
-        return estimate, {
-            "method": "paired DA3 ray-translation median",
-            "candidate_pixels": int(paired_candidates.size),
-            "trimmed_pixels": int(trimmed.size),
-        }
+        if 0.10 <= estimate <= 20.0:
+            return estimate, {
+                "method": "paired DA3 ray-translation median",
+                "candidate_pixels": int(paired_candidates.size),
+                "trimmed_pixels": int(trimmed.size),
+            }
+        paired_median_out_of_range = estimate
 
     axial_depth = internal * cosine
     valid_internal = np.isfinite(axial_depth) & (axial_depth >= 0.10) & (axial_depth <= 20.0)
@@ -1951,12 +1976,15 @@ def estimate_window_distance_from_pair(
         raise RuntimeError(
             "DA3 produced an invalid observer-to-window distance estimate. Supply --window-distance explicitly."
         )
-    return estimate, {
+    details = {
         "method": method,
         "candidate_pixels": int(values.size),
         "trimmed_pixels": int(trimmed.size),
         "warning": "This is an image-based DA3 estimate; a measured perpendicular distance is preferred.",
     }
+    if paired_median_out_of_range is not None:
+        details["paired_median_out_of_range_m"] = paired_median_out_of_range
+    return estimate, details
 
 
 def command_pair(args: argparse.Namespace) -> int:
@@ -2176,8 +2204,9 @@ def command_pair(args: argparse.Namespace) -> int:
         corrected_depth_rgb,
         {**corrected_metadata, "MERGEHDR_CHANNELS": "depth_m depth_m depth_m"},
     )
+    # B stays 0 for the same reason as image_vos.hdr; the depth is in corrected_depth_m.hdr.
     corrected_packed = np.stack(
-        (corrected_building_vos, corrected_greenery_vos, external_corrected_depth),
+        (corrected_building_vos, corrected_greenery_vos, np.zeros_like(corrected_building_vos)),
         axis=-1,
     )
     write_radiance_hdr(
@@ -2185,7 +2214,7 @@ def command_pair(args: argparse.Namespace) -> int:
         corrected_packed,
         {
             **corrected_metadata,
-            "MERGEHDR_CHANNELS": "building_vos greenery_vos radial_depth_m",
+            "MERGEHDR_CHANNELS": "building_vos greenery_vos zero",
         },
     )
     result = {

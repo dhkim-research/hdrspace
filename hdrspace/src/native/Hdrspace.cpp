@@ -7667,10 +7667,11 @@ private:
                 : "hdrvdp3";
         const std::string inputColorSuffix = viewVisibilityInputColorKey(
             viewVisibilityInputColorCombo_ ? viewVisibilityInputColorCombo_->selected_index() : 0);
-        const std::string stem = sanitizeStem(
-            (referencePath.empty() ? std::string("reference") : referencePath.stem().string()) + "_" +
-            (testPath.empty() ? std::string("test") : testPath.stem().string()) + "_" + modeSuffix + "_" + inputColorSuffix
-        );
+        // Each stem is sanitised on its own: sanitizeStem() takes path.stem(), which cut the joined name
+        // at a '.' in a stem ("office.v2") and dropped the mode and colour suffixes.
+        const std::string stem =
+            (referencePath.empty() ? std::string("reference") : sanitizeStem(referencePath)) + "_" +
+            (testPath.empty() ? std::string("test") : sanitizeStem(testPath)) + "_" + modeSuffix + "_" + inputColorSuffix;
         return paths_.cacheDir / (stem + "_view_visibility_result.hdr");
     }
 
@@ -19235,26 +19236,42 @@ private:
             }
         }
 
+        // Every field must be a whole number: std::stod/std::stoi alone read '2,000' as 2 and
+        // '10,5' as 10 without an error.
+        const auto wholeDouble = [](const std::string& text) {
+            double value = 0.0;
+            if (!tryParseFloating(text, value)) {
+                throw std::invalid_argument(text);
+            }
+            return value;
+        };
+        const auto wholeInt = [](const std::string& text) {
+            int value = 0;
+            if (!tryParseInteger(text, value)) {
+                throw std::invalid_argument(text);
+            }
+            return value;
+        };
         try {
             // An empty box is evalglare without -b (2000 cd/m², or 5 x task luminance with -t).
             const std::string text = normalizedTextBoxValue(glareThresholdBox_ ? glareThresholdBox_->value() : "");
-            opts.lumThreshold = text.empty() ? 2000.0 : std::stod(text);
+            opts.lumThreshold = text.empty() ? 2000.0 : wholeDouble(text);
             opts.thresholdExplicit = !text.empty();
         } catch (...) {
-            if (error) *error = "Threshold must be a valid number.";
+            if (error) *error = "Threshold must be a number such as 2000 (no thousands separators).";
             return std::nullopt;
         }
         try {
             // The box shows evalglare's default radius, 0.2 rad, rounded to 11.46°; keep it exact.
             const std::string text = normalizedTextBoxValue(glareRadiusBox_ ? glareRadiusBox_->value() : "");
-            opts.maxAngle = text.empty() || text == "11.46" ? 0.2 : std::stod(text) * M_PI / 180.0;
+            opts.maxAngle = text.empty() || text == "11.46" ? 0.2 : wholeDouble(text) * M_PI / 180.0;
         } catch (...) {
-            if (error) *error = "Radius must be a valid number.";
+            if (error) *error = "Radius must be a number such as 10.5 ('.' for decimals).";
             return std::nullopt;
         }
         try {
             const std::string text = normalizedTextBoxValue(glareBandBox_ ? glareBandBox_->value() : "");
-            const double degrees = text.empty() ? 0.0 : std::stod(text);
+            const double degrees = text.empty() ? 0.0 : wholeDouble(text);
             opts.bandAngle = degrees * M_PI / 180.0;
         } catch (...) {
             if (error) *error = "Band must be a valid number.";
@@ -19271,9 +19288,9 @@ private:
                 }
                 opts.taskActive = true;
                 opts.taskColor = glareTaskColorCheck_ && glareTaskColorCheck_->checked();
-                opts.taskX = std::stoi(xText);
-                opts.taskY = std::stoi(yText);
-                opts.taskAngle = std::stod(taskAngleText) * M_PI / 180.0;
+                opts.taskX = wholeInt(xText);
+                opts.taskY = wholeInt(yText);
+                opts.taskAngle = wholeDouble(taskAngleText) * M_PI / 180.0;
             } else if (glareTaskColorCheck_ && glareTaskColorCheck_->checked()) {
                 if (error) *error = "Task color (-T) needs a task area.";
                 return std::nullopt;
@@ -19284,7 +19301,7 @@ private:
         }
         try {
             const std::string splitText = normalizedTextBoxValue(glareSplitLimitBox_ ? glareSplitLimitBox_->value() : "");
-            opts.splitLimit = splitText.empty() ? 50000.0 : std::stod(splitText);
+            opts.splitLimit = splitText.empty() ? 50000.0 : wholeDouble(splitText);
         } catch (...) {
             if (error) *error = "Split limit must be a valid number.";
             return std::nullopt;
@@ -19301,15 +19318,15 @@ private:
                     if (error) *error = "Zone X and Zone Y are required when zone analysis is enabled.";
                     return std::nullopt;
                 }
-                opts.zoneCenterX = std::stoi(xText);
-                opts.zoneCenterY = std::stoi(yText);
+                opts.zoneCenterX = wholeInt(xText);
+                opts.zoneCenterY = wholeInt(yText);
                 if (hasZone1) {
                     opts.zoneCount = 1;
-                    opts.zoneAngle1 = std::stod(zone1Text) * M_PI / 180.0;
+                    opts.zoneAngle1 = wholeDouble(zone1Text) * M_PI / 180.0;
                 }
                 if (hasZone2) {
                     opts.zoneCount = 2;
-                    opts.zoneAngle2 = std::stod(zone2Text) * M_PI / 180.0;
+                    opts.zoneAngle2 = wholeDouble(zone2Text) * M_PI / 180.0;
                 }
             }
         } catch (...) {
@@ -19854,10 +19871,10 @@ private:
             const bool selected = glareAiCandidates_[i].selected;
             const auto color = aiCandidatePaletteColor(i);
             button->set_pushed(selected);
-            button->set_background_color(Color(
-                static_cast<int>(color.r()),
-                static_cast<int>(color.g()),
-                static_cast<int>(color.b()),
+            button->set_background_color(Color(  // Color holds 0..1 floats
+                static_cast<int>(color.r() * 255.0f),
+                static_cast<int>(color.g() * 255.0f),
+                static_cast<int>(color.b() * 255.0f),
                 selected ? 122 : 38
             ));
             button->set_text_color(selected ? Color(255, 255) : Color(238, 239, 240, 235));
@@ -21160,7 +21177,8 @@ private:
             }
         }
         std::smatch distanceMatch;
-        const std::string sourceFilename = sourceImagePath.filename().string();
+        // The stem, so that "office_view_3m.hdr" matches the end-of-name alternative.
+        const std::string sourceFilename = sourceImagePath.stem().string();
         if (!explicitWindowDistance && std::regex_search(
                 sourceFilename,
                 distanceMatch,
@@ -21301,7 +21319,7 @@ private:
                         }
                     } else if (const auto totals = imageVosTotalsFromJson(resultJson)) {
                         imageVosSummaryLabel_->set_caption(std::format(
-                            "V_built: {:.4g} m³\nV_greenery: {:.4g} m³\nView satisfaction: pending calibrated a, b, c.\nR/G = category VOS; B = radial depth (m).",
+                            "V_built: {:.4g} m³\nV_greenery: {:.4g} m³\nView satisfaction: pending calibrated a, b, c.\nR/G = category VOS per pixel (m³); depth: depth_m.hdr.",
                             totals->first,
                             totals->second
                         ));
@@ -21514,9 +21532,17 @@ private:
             return options;
         }
 
+        // Whole numbers only: std::stoi threw on text such as 'abc' (the UI refresh then stopped and
+        // could close the app) and read '7,5' as 7. Invalid text leaves the circle unset.
+        int centerX = 0;
+        int centerY = 0;
+        double radiusDegrees = 0.0;
+        if (!tryParseInteger(xText, centerX) || !tryParseInteger(yText, centerY) || !tryParseFloating(rText, radiusDegrees)) {
+            return options;
+        }
         native::CircleStatisticsRegion circle;
-        circle.center = {std::stoi(xText), std::stoi(yText)};
-        circle.radiusDegrees = std::stod(rText);
+        circle.center = {centerX, centerY};
+        circle.radiusDegrees = radiusDegrees;
         options.circleRegion = circle;
         return options;
     }
@@ -21934,10 +21960,16 @@ private:
             const std::string xText = normalizedTextBoxValue(imageStatsCircleXBox_ ? imageStatsCircleXBox_->value() : "");
             const std::string yText = normalizedTextBoxValue(imageStatsCircleYBox_ ? imageStatsCircleYBox_->value() : "");
             const std::string rText = normalizedTextBoxValue(imageStatsCircleRadiusBox_ ? imageStatsCircleRadiusBox_->value() : "");
+            int circleX = 0;
+            int circleY = 0;
+            double circleR = 0.0;
+            const bool circleNumbers = tryParseInteger(xText, circleX) && tryParseInteger(yText, circleY) &&
+                                       tryParseFloating(rText, circleR);
             imageStatsRegionSummaryLabel_->set_caption(
                 xText.empty() || yText.empty() || rText.empty()
                     ? "Set the circle X, Y and R°"
-                    : std::format("Center {}, {} · radius {}°", xText, yText, rText)
+                    : (!circleNumbers ? std::string("Circle X, Y must be whole pixels and R° a number such as 7.5")
+                                      : std::format("Center {}, {} · radius {}°", xText, yText, rText))
             );
         }
 
@@ -22731,9 +22763,10 @@ private:
 
             const auto color = aiCandidatePaletteColor(candidateIndex);
             const auto* src = candidate.pixels->data<float>();
-            const float r = color.r() / 255.0f;
-            const float g = color.g() / 255.0f;
-            const float b = color.b() / 255.0f;
+            // nanogui Color(int, int, int, int) already stores r/255: r() is 0..1.
+            const float r = color.r();
+            const float g = color.g();
+            const float b = color.b();
             constexpr float alpha = 0.68f;
 
             for (size_t i = 0; i < width * height; ++i) {
@@ -22791,9 +22824,9 @@ private:
                 if (src[i * 3] <= 0.5f) {
                     continue;
                 }
-                image.rgb[i * 3 + 0] = color.r() / 255.0f;
-                image.rgb[i * 3 + 1] = color.g() / 255.0f;
-                image.rgb[i * 3 + 2] = color.b() / 255.0f;
+                image.rgb[i * 3 + 0] = color.r();  // 0..1 (Color already divided by 255)
+                image.rgb[i * 3 + 1] = color.g();
+                image.rgb[i * 3 + 2] = color.b();
             }
         }
 

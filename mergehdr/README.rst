@@ -156,8 +156,9 @@ exported by SAM3::
 For hdrspace candidate folders, replace the mask arguments with
 ``--building-candidates`` and ``--greenery-candidates``. The helper uses five
 overlapping rectilinear tiles rather than sending the distorted fisheye image
-directly to DA3. ``image_vos.hdr`` packs building VOS, greenery VOS, and radial
-depth in its R, G, and B channels; ``result.json`` contains the totals and
+directly to DA3. ``image_vos.hdr`` holds the per-pixel building and greenery VOS
+in its R and G channels (B is 0, because an RGBE pixel shares one exponent);
+the radial depth is in ``depth_m.hdr``. ``result.json`` contains the totals and
 model/runtime provenance.
 
 The implemented per-pixel calculation is
