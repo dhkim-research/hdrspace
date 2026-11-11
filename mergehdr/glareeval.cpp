@@ -14,8 +14,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -59,6 +61,57 @@ extern "C" {
 #include <unsupported/Eigen/FFT>
 
 namespace {
+
+// ---- bounded caches ----
+// The HDR-VDP caches hold full-resolution data (pictures, prepared channels, FFT kernels, result maps)
+// and were never emptied, so every picture and setting stayed in memory until the program ended. Each
+// top-level analysis (perceptual map, view visibility, debug dump) now first trims them to their most
+// recently used entries. Trimming happens only there, while no analysis holds references into them.
+std::uint64_t &hdrvdpCacheUseCounter() {
+    static std::uint64_t counter = 0;
+    return counter;
+}
+
+std::vector<std::function<void(bool)>> &hdrvdpCacheTrimmers() {
+    static std::vector<std::function<void(bool)>> trimmers;
+    return trimmers;
+}
+
+// The trimmer is called with true to empty the cache (clearEvalGlareCaches()).
+bool registerHdrvdpCacheTrimmer(std::function<void(bool)> trimmer) {
+    hdrvdpCacheTrimmers().push_back(std::move(trimmer));
+    return true;
+}
+
+void trimHdrvdpCaches(bool clearAll) {
+    for (const auto &trimmer : hdrvdpCacheTrimmers())
+        trimmer(clearAll);
+}
+
+template <typename Value>
+struct BoundedCache {
+    std::map<std::string, Value> entries;
+    std::map<std::string, std::uint64_t> lastUse;
+
+    void touch(const std::string &key) {
+        lastUse[key] = ++hdrvdpCacheUseCounter();
+    }
+
+    void trim(size_t keep) {
+        for (auto it = lastUse.begin(); it != lastUse.end();) {
+            if (entries.find(it->first) == entries.end())
+                it = lastUse.erase(it);
+            else
+                ++it;
+        }
+        while (entries.size() > keep && !lastUse.empty()) {
+            const auto oldest = std::min_element(lastUse.begin(), lastUse.end(),
+                [](const auto &a, const auto &b) { return a.second < b.second; });
+            entries.erase(oldest->first);
+            lastUse.erase(oldest);
+        }
+    }
+};
 
 const double kPi = std::acos(-1.0);
 const double kWhiteEfficacy = 179.0;
@@ -1720,7 +1773,12 @@ std::vector<double> fastGauss(
     if (sigma >= 4.3) {
         const size_t paddedWidth = width * 2;
         const size_t paddedHeight = height * 2;
-        static std::map<std::string, std::vector<double> > sKernelFreqCache;
+        static BoundedCache<std::vector<double>> sKernelFreqStore;
+        static const bool sKernelTrimRegistered = registerHdrvdpCacheTrimmer([](bool clearAll) {
+            sKernelFreqStore.trim(clearAll ? 0 : 4);
+        });
+        (void)sKernelTrimRegistered;
+        auto &sKernelFreqCache = sKernelFreqStore.entries;
         const std::string kernelKey =
             std::to_string(paddedWidth) + "x" + std::to_string(paddedHeight) +
             "|sigma=" + sigmaKey +
@@ -1750,6 +1808,7 @@ std::vector<double> fastGauss(
             }
             kernelIt = sKernelFreqCache.emplace(kernelKey, std::move(kernelFreq)).first;
         }
+        sKernelFreqStore.touch(kernelKey);
         const std::vector<double> &kernelFreq = kernelIt->second;
 
 #if defined(MERGEHDR_HAS_FFTW)
@@ -2984,7 +3043,10 @@ std::string formatCacheDouble(double value) {
 
 const HdrImage &readRadianceHDRCached(const std::string &path, bool addHalfStep = true, bool flipY = true) {
     namespace fs = std::filesystem;
-    static std::map<std::string, CachedHdrImageEntry> sCache;
+    static BoundedCache<CachedHdrImageEntry> sStore;
+    static const bool sTrimRegistered = registerHdrvdpCacheTrimmer([](bool clearAll) { sStore.trim(clearAll ? 0 : 4); });
+    (void)sTrimRegistered;
+    auto &sCache = sStore.entries;
 
     const fs::file_time_type mtime = fs::last_write_time(fs::path(path));
     const std::string key =
@@ -2998,6 +3060,7 @@ const HdrImage &readRadianceHDRCached(const std::string &path, bool addHalfStep 
         entry.image = readRadianceHDR(path, addHalfStep, flipY);
         it = sCache.insert_or_assign(key, std::move(entry)).first;
     }
+    sStore.touch(key);
     return it->second.image;
 }
 
@@ -3540,7 +3603,10 @@ const std::vector<double> &getHdrvdpMtfFilterCached(
     double pixelsPerDegree,
     const HdrvdpParams &params
 ) {
-    static std::map<std::string, std::vector<double> > sCache;
+    static BoundedCache<std::vector<double>> sStore;
+    static const bool sTrimRegistered = registerHdrvdpCacheTrimmer([](bool clearAll) { sStore.trim(clearAll ? 0 : 2); });
+    (void)sTrimRegistered;
+    auto &sCache = sStore.entries;
     const size_t paddedWidth = width * 2;
     const size_t paddedHeight = height * 2;
     const std::string key =
@@ -3554,6 +3620,7 @@ const std::vector<double> &getHdrvdpMtfFilterCached(
             mtfFilter[i] = hdrvdpMtf(rho2[i], params);
         it = sCache.emplace(key, std::move(mtfFilter)).first;
     }
+    sStore.touch(key);
     return it->second;
 }
 
@@ -3805,7 +3872,10 @@ const HdrvdpPreparedImage &getPreparedHdrvdpImageCached(
         ViewVisibilitySummaryOptions::InputColor::Rad
 ) {
     namespace fs = std::filesystem;
-    static std::map<std::string, CachedPreparedHdrvdpImageEntry> sCache;
+    static BoundedCache<CachedPreparedHdrvdpImageEntry> sStore;
+    static const bool sTrimRegistered = registerHdrvdpCacheTrimmer([](bool clearAll) { sStore.trim(clearAll ? 0 : 4); });
+    (void)sTrimRegistered;
+    auto &sCache = sStore.entries;
 
     const fs::file_time_type mtime = fs::last_write_time(fs::path(imagePath));
     const std::string key =
@@ -3852,6 +3922,7 @@ const HdrvdpPreparedImage &getPreparedHdrvdpImageCached(
         previous = HdrvdpPreparedImage();
         it = sCache.insert_or_assign(key, std::move(entry)).first;
     }
+    sStore.touch(key);
     return it->second.prepared;
 }
 
@@ -9336,6 +9407,7 @@ void runEvalGlareInto(const EvalGlareOptions &opts, EvalGlareAnalysisResult &res
 
 void clearEvalGlareCaches() {
     eg::clearGeometryCache();
+    trimHdrvdpCaches(true);
 }
 
 EvalGlareAnalysisResult analyzeEvalGlare(const EvalGlareOptions &opts) {
@@ -9359,7 +9431,11 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
         throw std::runtime_error("Choose an input HDR image first.");
 
     namespace fs = std::filesystem;
-    static std::map<std::string, CachedPerceptualMapResultEntry> sResultCache;
+    trimHdrvdpCaches(false);
+    static BoundedCache<CachedPerceptualMapResultEntry> sResultStore;
+    static const bool sTrimRegistered = registerHdrvdpCacheTrimmer([](bool clearAll) { sResultStore.trim(clearAll ? 0 : 6); });
+    (void)sTrimRegistered;
+    auto &sResultCache = sResultStore.entries;
     const fs::file_time_type inputMtime = fs::last_write_time(fs::path(opts.inputPath));
     const std::string resultKey =
         opts.inputPath +
@@ -9370,8 +9446,10 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
         "|input_color=" + std::string(viewVisibilityInputColorLabel(opts.inputColor));
 
     std::map<std::string, CachedPerceptualMapResultEntry>::iterator cachedIt = sResultCache.find(resultKey);
-    if (cachedIt != sResultCache.end() && cachedIt->second.inputMtime == inputMtime)
+    if (cachedIt != sResultCache.end() && cachedIt->second.inputMtime == inputMtime) {
+        sResultStore.touch(resultKey);
         return cachedIt->second.result;
+    }
 
     const HdrImage &image = readRadianceHDRCached(opts.inputPath, false, false);
     if (image.width == 0 || image.height == 0)
@@ -9436,6 +9514,7 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
     cacheEntry.inputMtime = inputMtime;
     cacheEntry.result = result;
     sResultCache.insert_or_assign(resultKey, std::move(cacheEntry));
+    sResultStore.touch(resultKey);
     return result;
 }
 
@@ -9446,7 +9525,11 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
         throw std::runtime_error("Choose a white mask HDR first.");
 
     namespace fs = std::filesystem;
-    static std::map<std::string, CachedViewVisibilityResultEntry> sResultCache;
+    trimHdrvdpCaches(false);
+    static BoundedCache<CachedViewVisibilityResultEntry> sResultStore;
+    static const bool sTrimRegistered = registerHdrvdpCacheTrimmer([](bool clearAll) { sResultStore.trim(clearAll ? 0 : 2); });
+    (void)sTrimRegistered;
+    auto &sResultCache = sResultStore.entries;
     const fs::file_time_type referenceMtime = fs::last_write_time(fs::path(opts.referencePath));
     const fs::file_time_type testMtime = fs::last_write_time(fs::path(opts.testPath));
     const fs::file_time_type maskMtime = fs::last_write_time(fs::path(opts.maskPath));
@@ -9464,6 +9547,7 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
         cachedResultIt->second.referenceMtime == referenceMtime &&
         cachedResultIt->second.testMtime == testMtime &&
         cachedResultIt->second.maskMtime == maskMtime) {
+        sResultStore.touch(resultKey);
         return cachedResultIt->second.result;
     }
 
@@ -9739,6 +9823,7 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
     cacheEntry.maskMtime = maskMtime;
     cacheEntry.result = result;
     sResultCache.insert_or_assign(resultKey, std::move(cacheEntry));
+    sResultStore.touch(resultKey);
     return result;
 }
 
@@ -9925,6 +10010,7 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
     if (opts.detailMode != ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset) {
         throw std::runtime_error("Debug dump currently supports only HDR-VDP3 detail mode.");
     }
+    trimHdrvdpCaches(false);
     namespace fs = std::filesystem;
     fs::create_directories(outDir);
 

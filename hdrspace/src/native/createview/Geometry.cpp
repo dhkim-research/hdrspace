@@ -367,6 +367,17 @@ CreateViewWindowFovInfo computeCreateViewWindowFov(const CreateViewRoomInfo& roo
         if (surface.semanticLabel != "Windows" || surface.vertices.size() < 3) {
             continue;
         }
+        {
+            // Frames and shades are left out, as in the window-mask render.
+            std::string materialType;
+            if (const auto materialIt = roomInfo.materials.find(surface.modifier); materialIt != roomInfo.materials.end()) {
+                materialType = materialIt->second.type;
+            }
+            const std::string lowerText = createViewLower(surface.identifier + " " + surface.modifier + " " + materialType);
+            if (createViewNameLooksFrame(lowerText) || createViewNameLooksShade(lowerText)) {
+                continue;
+            }
+        }
         ++info.totalSurfaceCount;
         std::vector<std::array<double, 3>> cameraPolygon;
         cameraPolygon.reserve(surface.vertices.size());
@@ -504,6 +515,35 @@ bool createViewContainsAnyToken(const std::string& lowerText, std::initializer_l
     return false;
 }
 
+namespace {
+
+// "pane" or "panes", but not "panel" (wall_panel and ceiling_panel were taken for glazing)
+bool createViewNameHasPane(const std::string& lowerText) {
+    for (size_t pos = lowerText.find("pane"); pos != std::string::npos; pos = lowerText.find("pane", pos + 1)) {
+        const size_t after = pos + 4;
+        if (after >= lowerText.size() || lowerText[after] != 'l') {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+bool createViewNameLooksGlazing(const std::string& lowerText) {
+    return createViewContainsAnyToken(lowerText, {"window", "glass", "glaz", "skylight"}) || createViewNameHasPane(lowerText);
+}
+
+bool createViewNameLooksFrame(const std::string& lowerText) {
+    return createViewContainsAnyToken(lowerText, {"frame", "mullion", "transom", "jamb", "sill", "header"});
+}
+
+bool createViewNameLooksShade(const std::string& lowerText) {
+    return createViewContainsAnyToken(lowerText, {
+        "blind", "shade", "roller", "fabric", "screen", "slat", "louver", "curtain", "drape"
+    });
+}
+
 bool createViewSurfaceCountsAsMaskWindow(const CreateViewPreviewState::Surface& surface, const CreateViewRoomInfo& roomInfo) {
     if (createViewLower(surface.type) != "polygon" || surface.vertices.size() < 3) {
         return false;
@@ -517,15 +557,9 @@ bool createViewSurfaceCountsAsMaskWindow(const CreateViewPreviewState::Surface& 
 
     const std::string lowerText = createViewLower(surface.identifier + " " + surface.modifier + " " + materialType);
     const bool transparentType = createViewMaterialTypeIsTransparent(materialType);
-    const bool looksWindow = createViewContainsAnyToken(lowerText, {
-        "window", "glass", "glaz", "glazing", "pane", "skylight", "vision"
-    });
-    const bool looksFrame = createViewContainsAnyToken(lowerText, {
-        "frame", "mullion", "transom", "jamb", "sill", "header"
-    });
-    const bool looksShade = createViewContainsAnyToken(lowerText, {
-        "blind", "shade", "roller", "fabric", "screen", "slat", "louver", "curtain", "drape"
-    });
+    const bool looksWindow = createViewNameLooksGlazing(lowerText) || createViewContainsAnyToken(lowerText, {"vision"});
+    const bool looksFrame = createViewNameLooksFrame(lowerText);
+    const bool looksShade = createViewNameLooksShade(lowerText);
 
     if (looksFrame || looksShade) {
         return false;

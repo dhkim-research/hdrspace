@@ -557,7 +557,73 @@ std::string buildCreateViewEnvironmentRadText(const CreateViewEnvironmentInfo& e
     if (!environmentInfo.valid) {
         return {};
     }
-    const std::string fisheyeCal = fisheyeCalPath.empty() ? std::string("fisheye.cal") : fisheyeCalPath.string();
+    // A path is one word in a scene file: Radiance's fgetword() reads a quoted word, so a path with
+    // spaces is quoted (unquoted, "/Users/me/Lighting Study/sky.hdr" split the colorpict arguments).
+    const auto radianceWord = [](const std::string& word) {
+        if (word.find_first_of(" \t") == std::string::npos) {
+            return word;
+        }
+        return word.find('"') == std::string::npos ? "\"" + word + "\"" : "'" + word + "'";
+    };
+    const std::string fisheyeCal = radianceWord(fisheyeCalPath.empty() ? std::string("fisheye.cal") : fisheyeCalPath.string());
+
+    // A .rad environment keeps its lines (commands and comments end at the line end), and its relative
+    // file names are made absolute from the .rad's folder, as oconv runs in the room folder. Before,
+    // the file was joined into one line and its first .hdr name was replaced by the .rad file itself.
+    if (createViewLower(environmentInfo.sourcePath.extension().string()) == ".rad") {
+        const fs::path radFolder = environmentInfo.sourcePath.parent_path();
+        std::ostringstream out;
+        std::istringstream in(environmentInfo.rawSkySource);
+        std::string line;
+        while (std::getline(in, line)) {
+            const std::string trimmed = trim(line);
+            if (trimmed.empty() || trimmed.front() == '!' || trimmed.front() == '#') {
+                out << line << "\n";
+                continue;
+            }
+            std::vector<std::string> words;
+            {
+                std::string word;
+                char quote = '\0';
+                bool inWord = false;
+                for (const char c : trimmed) {
+                    if (quote != '\0' && c == quote) {
+                        quote = '\0';
+                    } else if (quote == '\0' && (c == '"' || c == '\'')) {
+                        quote = c;
+                        inWord = true;
+                    } else if (quote == '\0' && std::isspace(static_cast<unsigned char>(c))) {
+                        if (inWord) {
+                            words.push_back(word);
+                            word.clear();
+                            inWord = false;
+                        }
+                    } else {
+                        word += c;
+                        inWord = true;
+                    }
+                }
+                if (inWord) {
+                    words.push_back(word);
+                }
+            }
+            for (size_t i = 0; i < words.size(); ++i) {
+                std::string word = words[i];
+                const fs::path wordPath{word};
+                std::error_code existsError;
+                if (!word.empty() && word.front() != '-' && wordPath.has_extension() && wordPath.is_relative() &&
+                    fs::exists(radFolder / wordPath, existsError)) {
+                    word = (radFolder / wordPath).lexically_normal().string();
+                } else if (word == "fisheye.cal") {
+                    out << (i > 0 ? " " : "") << fisheyeCal;
+                    continue;
+                }
+                out << (i > 0 ? " " : "") << radianceWord(word);
+            }
+            out << "\n";
+        }
+        return out.str();
+    }
 
     auto rewriteInlineSource = [&](const std::string& text) {
         auto tokens = splitWhitespace(text);
@@ -565,7 +631,7 @@ std::string buildCreateViewEnvironmentRadText(const CreateViewEnvironmentInfo& e
         for (auto& token : tokens) {
             const auto lower = createViewLower(token);
             if (!replacedHdr && lower.size() >= 4 && lower.substr(lower.size() - 4) == ".hdr") {
-                token = environmentInfo.sourcePath.string();
+                token = radianceWord(environmentInfo.sourcePath.string());
                 replacedHdr = true;
             } else if (token == "fisheye.cal") {
                 token = fisheyeCal;
@@ -593,7 +659,7 @@ std::string buildCreateViewEnvironmentRadText(const CreateViewEnvironmentInfo& e
             ? environmentInfo.skyDirection
             : environmentInfo.direction;
         out << "void colorpict imgfunc\n";
-        out << "9 red green blue " << environmentInfo.sourcePath.string() << " " << fisheyeCal << " fish_u fish_v -rz 180\n";
+        out << "9 red green blue " << radianceWord(environmentInfo.sourcePath.string()) << " " << fisheyeCal << " fish_u fish_v -rz 180\n";
         out << "0\n";
         out << "0\n\n";
         out << "imgfunc glow imgglow\n";

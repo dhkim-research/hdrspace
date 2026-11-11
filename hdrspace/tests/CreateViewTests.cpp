@@ -140,6 +140,94 @@ TEST_CASE("room: files the room loads through !xform are not given to oconv agai
     fs::remove_all(folder);
 }
 
+TEST_CASE("room: a comment after a primitive and an alias do not end the reading") {
+    const fs::path folder = makeTemporaryFolder("comments");
+    writeText(folder / "room.rad",
+        "void plastic white 0 0 5 .8 .8 .8 0 0 # paint\n"
+        "void alias wall_paint white\n"
+        "wall_paint polygon floor\n0\n0\n12 0 0 0  1 0 0  1 1 0  0 1 0\n"
+        "void glass clear 0 0 3 .9 .9 .9\n"
+        "clear polygon win1 0 0 12 0 1 0  1 1 0  1 1 1  0 1 1\n");
+    const auto room = parseCreateViewRoom((folder / "room.rad").string(), folder);
+    CHECK(room.polygonCount == 2);
+    CHECK(room.parseWarnings.empty());
+    CHECK(room.materials.contains("clear"));
+    CHECK(room.materials.contains("wall_paint") && room.materials.at("wall_paint").aliasOf == "white");
+    CHECK(room.note.find("not found") == std::string::npos);
+    fs::remove_all(folder);
+}
+
+TEST_CASE("room: a missing material is reported as a stand-in") {
+    const fs::path folder = makeTemporaryFolder("standin");
+    writeText(folder / "room.rad", "brick polygon wall1\n0\n0\n12 0 0 0  1 0 0  1 0 1  0 0 1\n");
+    const auto room = parseCreateViewRoom((folder / "room.rad").string(), folder);
+    CHECK(room.materials.contains("brick") && room.materials.at("brick").synthesized);
+    CHECK(room.note.find("1 material(s) not found (brick)") != std::string::npos);
+    fs::remove_all(folder);
+}
+
+TEST_CASE("room: frames and panels are not windows; brackets in folder names are not patterns") {
+    CHECK(inferCreateViewSemanticLabel("window_frame", "alu", "metal") == "Structure");
+    CHECK(inferCreateViewSemanticLabel("wall_panel", "paint", "plastic") == "Walls");
+    CHECK(inferCreateViewSemanticLabel("ceiling_panel", "paint", "plastic") == "Ceilings");
+    CHECK(inferCreateViewSemanticLabel("south_pane", "clear", "glass") == "Windows");
+    CHECK(inferCreateViewSemanticLabel("win1", "clear_glass", "glass") == "Windows");
+    const fs::path folder = makeTemporaryFolder("brackets") / "Office [v2]";
+    fs::create_directories(folder);
+    writeText(folder / "desk.rad", "\n");
+    const auto paths = expandCreateViewPaths(folder, "desk.rad");
+    CHECK(paths.size() == 1 && fs::exists(paths.front()));
+    fs::remove_all(folder.parent_path());
+}
+
+TEST_CASE("Write to source puts a missing definition before the first primitive using it") {
+    const fs::path folder = makeTemporaryFolder("insert");
+    const fs::path file = folder / "room.rad";
+    writeText(file, "void plastic grey\n0\n0\n5 .2 .2 .2 0 0\n\nbrick polygon wall1\n0\n0\n12 0 0 0  1 0 0  1 0 1  0 0 1\n");
+    CreateViewMaterialInfo brick;
+    brick.name = "brick";
+    brick.modifier = "void";
+    brick.type = "plastic";
+    brick.synthesized = true;
+    CreateViewMaterialOverride edit;
+    edit.radianceType = "plastic";
+    edit.numericArgs = {0.6, 0.3, 0.2, 0.0, 0.0};
+    std::string error;
+    CHECK(rewriteCreateViewMaterialDefinition(file, brick, edit, error));
+    const std::string text = readText(file);
+    const size_t definition = text.find("void plastic brick");
+    const size_t use = text.find("brick polygon wall1");
+    CHECK(definition != std::string::npos && use != std::string::npos && definition < use);
+    CreateViewMaterialInfo alias;
+    alias.name = "wall_paint";
+    alias.type = "plastic";
+    alias.aliasOf = "grey";
+    CHECK(!rewriteCreateViewMaterialDefinition(file, alias, edit, error));
+    fs::remove_all(folder);
+}
+
+TEST_CASE("environment: a .rad environment keeps its lines and gets absolute, quoted file names") {
+    const fs::path folder = makeTemporaryFolder("radenv") / "Lighting Study";
+    fs::create_directories(folder);
+    HdrImage sky;
+    sky.width = 4;
+    sky.height = 4;
+    sky.rgb.assign(4 * 4 * 3, 1.0f);
+    writeRadianceHDR((folder / "sky.hdr").string(), sky);
+    writeText(folder / "env.rad",
+        "void colorpict skymap\n7 red green blue sky.hdr fisheye.cal fish_u fish_v\n0\n0\n\n"
+        "skymap glow skyglow\n0\n0\n4 1 1 1 0\n\n"
+        "skyglow source sky\n0\n0\n4 0 -1 0 180\n");
+    const auto env = parseCreateViewEnvironment((folder / "env.rad").string(), folder);
+    CHECK(env.valid);
+    const std::string text = buildCreateViewEnvironmentRadText(env, "/opt/hdrspace lib/fisheye.cal");
+    CHECK(text.find("\"" + (folder / "sky.hdr").lexically_normal().string() + "\"") != std::string::npos);
+    CHECK(text.find("\"/opt/hdrspace lib/fisheye.cal\"") != std::string::npos);
+    CHECK(text.find("env.rad") == std::string::npos);
+    CHECK(std::count(text.begin(), text.end(), '\n') >= 10);
+    fs::remove_all(folder.parent_path());
+}
+
 TEST_CASE("Write to source replaces one material and keeps the next one") {
     const fs::path folder = makeTemporaryFolder("materials");
     const fs::path file = folder / "materials.rad";

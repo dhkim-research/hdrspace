@@ -42,9 +42,9 @@ bool isCreateViewGeometryType(const std::string& type) {
 
 std::string inferCreateViewSemanticLabel(const std::string& identifier, const std::string& modifier, const std::string& materialType) {
     const std::string combined = createViewLower(identifier + " " + modifier + " " + materialType);
-    if (combined.find("window") != std::string::npos || combined.find("glass") != std::string::npos ||
-        combined.find("glaz") != std::string::npos || combined.find("pane") != std::string::npos ||
-        combined.find("skylight") != std::string::npos) {
+    // A frame or sill next to a window is not glazing, and "panel" is not a "pane" (window_frame,
+    // wall_panel and ceiling_panel were labelled Windows and counted in the window FoV).
+    if (createViewNameLooksGlazing(combined) && !createViewNameLooksFrame(combined)) {
         return "Windows";
     }
     if (combined.find("door") != std::string::npos) {
@@ -182,13 +182,31 @@ std::vector<fs::path> expandCreateViewPaths(const fs::path& baseDir, const std::
     if (candidate.is_relative()) {
         candidate = baseDir / candidate;
     }
-    const std::string globPattern = candidate.string();
-    if (globPattern.find_first_of("*?[") != std::string::npos) {
+    // A path that exists is used as it is, and only the include argument decides on a pattern:
+    // brackets in a folder above the scene ("Office [v2]") were read as a glob class.
+    std::error_code existsError;
+    if (fs::exists(candidate, existsError)) {
+        out.push_back(candidate);
+        return out;
+    }
+    if (pattern.find_first_of("*?[") != std::string::npos) {
 #if defined(_WIN32)
         for (const fs::path& match : hdrspaceWildcardPaths(candidate)) {
             out.push_back(match);
         }
 #else
+        std::string globPattern;
+        if (fs::path(pattern).is_relative()) {
+            for (const char ch : baseDir.string()) {
+                if (ch == '*' || ch == '?' || ch == '[' || ch == ']' || ch == '\\') {
+                    globPattern += '\\';
+                }
+                globPattern += ch;
+            }
+            globPattern += "/" + pattern;
+        } else {
+            globPattern = pattern;
+        }
         glob_t matches{};
         if (glob(globPattern.c_str(), GLOB_TILDE, nullptr, &matches) == 0) {
             for (size_t i = 0; i < matches.gl_pathc; ++i) {
@@ -411,18 +429,97 @@ void parseCreateViewRoomRecursive(const fs::path& path, const CreateViewTransfor
     }
     info.parsedPaths.insert(resolved);
 
+    // Read like Radiance readobj(): at each object boundary a '#' starts a comment to the end of the
+    // line and a '!' a command line; an object is modifier, type, identifier and three counted argument
+    // lists, except "alias", which has one reference word. Words are read like fgetword() (quotes).
+    // The previous reader skipped only lines starting with '#', so a comment after a primitive ended
+    // the reading of the file without a note.
+    std::ostringstream fileText;
+    fileText << input.rdbuf();
+    const std::string text = fileText.str();
+    size_t pos = 0;
+    const auto nextWord = [&text, &pos](std::string& word) -> bool {
+        word.clear();
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) {
+            ++pos;
+        }
+        if (pos >= text.size()) {
+            return false;
+        }
+        char quote = '\0';
+        while (pos < text.size()) {
+            const char c = text[pos];
+            if (quote != '\0' && c == quote) {
+                quote = '\0';
+            } else if (quote == '\0' && (c == '"' || c == '\'')) {
+                quote = c;
+            } else if (quote == '\0' && std::isspace(static_cast<unsigned char>(c))) {
+                break;
+            } else {
+                word += c;
+            }
+            ++pos;
+        }
+        return true;
+    };
+
     std::vector<std::string> primitiveTokens;
-    std::string line;
-    while (std::getline(input, line)) {
-        line = trim(line);
-        if (line.empty() || line[0] == '#') {
+    std::vector<std::pair<std::string, std::string>> aliases;
+    size_t objectIndex = 0;
+    while (true) {
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) {
+            ++pos;
+        }
+        if (pos >= text.size()) {
+            break;
+        }
+        if (text[pos] == '#') {
+            const size_t end = text.find('\n', pos);
+            pos = end == std::string::npos ? text.size() : end;
             continue;
         }
-        if (line[0] != '!') {
-            const auto lineTokens = splitWhitespace(line);
-            primitiveTokens.insert(primitiveTokens.end(), lineTokens.begin(), lineTokens.end());
+        if (text[pos] != '!') {
+            std::vector<std::string> objectTokens(3);
+            if (!nextWord(objectTokens[0]) || !nextWord(objectTokens[1]) || !nextWord(objectTokens[2])) {
+                info.parseWarnings.push_back(std::format("{}: incomplete primitive at the end of the file", resolved.filename().string()));
+                break;
+            }
+            ++objectIndex;
+            if (objectTokens[1] == "alias") {
+                std::string reference;
+                if (!nextWord(reference)) {
+                    info.parseWarnings.push_back(std::format("{}: alias {} has no reference", resolved.filename().string(), objectTokens[2]));
+                    break;
+                }
+                aliases.emplace_back(objectTokens[2], reference);
+                continue;
+            }
+            bool complete = true;
+            for (int list = 0; list < 3 && complete; ++list) {
+                std::string countWord;
+                int count = 0;
+                if (!nextWord(countWord) || !tryParseInteger(countWord, count) || count < 0) {
+                    complete = false;
+                    break;
+                }
+                objectTokens.push_back(countWord);
+                for (int k = 0; k < count && complete; ++k) {
+                    std::string word;
+                    complete = nextWord(word);
+                    objectTokens.push_back(word);
+                }
+            }
+            if (!complete) {
+                info.parseWarnings.push_back(std::format("{}: stopped at primitive {} ({} {} {}): its argument counts could not be read",
+                                                         resolved.filename().string(), objectIndex, objectTokens[0], objectTokens[1], objectTokens[2]));
+                break;
+            }
+            primitiveTokens.insert(primitiveTokens.end(), objectTokens.begin(), objectTokens.end());
             continue;
         }
+        const size_t lineEnd = text.find('\n', pos);
+        const std::string line = trim(text.substr(pos, lineEnd == std::string::npos ? std::string::npos : lineEnd - pos));
+        pos = lineEnd == std::string::npos ? text.size() : lineEnd;
 
         ++info.commandCount;
         const auto commandTokens = splitShellLike(line.substr(1));
@@ -510,6 +607,20 @@ void parseCreateViewRoomRecursive(const fs::path& path, const CreateViewTransfor
     }
 
     parseCreateViewPrimitiveTokens(primitiveTokens, resolved, transform, info);
+    // An alias names the material it refers to (after this file's definitions, as Radiance reads them
+    // in order; a reference that is not known is left to the synthesis of missing materials).
+    for (const auto& [name, reference] : aliases) {
+        const auto referenceIt = info.materials.find(reference);
+        if (referenceIt == info.materials.end()) {
+            continue;
+        }
+        CreateViewMaterialInfo alias = referenceIt->second;
+        alias.name = name;
+        alias.sourcePath = resolved;
+        alias.synthesized = false;
+        alias.aliasOf = reference;
+        info.materials[name] = std::move(alias);
+    }
     activePaths.erase(resolved);
 }
 
@@ -676,22 +787,38 @@ CreateViewRoomInfo parseCreateViewRoom(const std::string& spec, const fs::path& 
         std::set<fs::path> materialActivePaths;
         parseCreateViewRoomRecursive(materialFile, CreateViewTransform{}, materialActivePaths, info);
     }
+    // Collected before the synthesis, which defines every missing material (afterwards the set was
+    // always empty and the stand-ins were never reported).
+    const auto unresolvedBeforeSynthesis = collectCreateViewUnresolvedModifiers(info);
     synthesizeCreateViewReferencedMaterials(info);
     refreshCreateViewSurfaceStyles(info);
 
     info.valid = info.hasBounds || info.primitiveCount > 0 || info.commandCount > 0;
-    const auto unresolvedAfterSupplemental = collectCreateViewUnresolvedModifiers(info);
     if (!supplementalMaterialFiles.empty()) {
         info.note = std::format("Preview auto-loaded {} nearby material file(s).", supplementalMaterialFiles.size());
-        if (!unresolvedAfterSupplemental.empty()) {
-            info.note += " Some modifiers still had to be synthesized.";
-        }
     } else if (info.includeCount > 0 || info.xformCount > 0) {
         info.note = "Preview applied direct !xform / !include paths. Other generator commands are still skipped.";
     } else if (!info.hasBounds) {
         info.note = "No directly bounded geometry found in this .rad file.";
     } else {
         info.note = "Room extents were estimated from direct Radiance primitives.";
+    }
+    if (!unresolvedBeforeSynthesis.empty()) {
+        std::string names;
+        size_t listed = 0;
+        for (const auto& name : unresolvedBeforeSynthesis) {
+            if (listed == 5) {
+                names += ", ...";
+                break;
+            }
+            names += (listed == 0 ? "" : ", ") + name;
+            ++listed;
+        }
+        info.note += std::format(" {} material(s) not found ({}): grey or glass stand-ins are used in the preview and render.",
+                                 unresolvedBeforeSynthesis.size(), names);
+    }
+    for (const auto& warning : info.parseWarnings) {
+        info.note += " Reading stopped early: " + warning + ".";
     }
     return info;
 }
@@ -991,6 +1118,46 @@ bool rewriteCreateViewMaterialDefinition(const fs::path& filePath, const CreateV
     while (std::getline(input, line)) {
         lines.push_back(line);
     }
+    input.close();
+
+    if (!material.aliasOf.empty()) {
+        error = std::format("{} is an alias of {} in {}; edit {} instead.", material.name, material.aliasOf,
+                            filePath.string(), material.aliasOf);
+        return false;
+    }
+
+    // Write a sibling file first and rename it over the original, so a failed write never leaves the
+    // scene file cut short.
+    auto writeLinesAtomically = [&](const std::vector<std::string>& outputLines) -> bool {
+        fs::path temporaryPath = filePath;
+        temporaryPath += ".hdrspace-tmp";
+        {
+            std::ofstream output(temporaryPath, std::ios::trunc);
+            if (!output) {
+                error = std::format("Could not write {}.", filePath.string());
+                return false;
+            }
+            for (const std::string& outputLine : outputLines) {
+                output << outputLine << "\n";
+            }
+            output.close();
+            if (!output) {
+                std::error_code removeError;
+                fs::remove(temporaryPath, removeError);
+                error = std::format("Could not write {}.", filePath.string());
+                return false;
+            }
+        }
+        std::error_code renameError;
+        fs::rename(temporaryPath, filePath, renameError);
+        if (renameError) {
+            std::error_code removeError;
+            fs::remove(temporaryPath, removeError);
+            error = std::format("Could not replace {}: {}", filePath.string(), renameError.message());
+            return false;
+        }
+        return true;
+    };
 
     auto buildBlock = [&]() {
         std::ostringstream block;
@@ -1084,46 +1251,30 @@ bool rewriteCreateViewMaterialDefinition(const fs::path& filePath, const CreateV
         lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(start), lines.begin() + static_cast<std::ptrdiff_t>(pos));
         lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(start), replacementLines.begin(), replacementLines.end());
 
-        // Write a sibling file first and rename it over the original, so a failed write never
-        // leaves the scene file cut short.
-        fs::path temporaryPath = filePath;
-        temporaryPath += ".hdrspace-tmp";
-        {
-            std::ofstream output(temporaryPath, std::ios::trunc);
-            if (!output) {
-                error = std::format("Could not write {}.", filePath.string());
-                return false;
-            }
-            for (const std::string& outputLine : lines) {
-                output << outputLine << "\n";
-            }
-            output.close();
-            if (!output) {
-                std::error_code removeError;
-                fs::remove(temporaryPath, removeError);
-                error = std::format("Could not write {}.", filePath.string());
-                return false;
-            }
-        }
-        std::error_code renameError;
-        fs::rename(temporaryPath, filePath, renameError);
-        if (renameError) {
-            std::error_code removeError;
-            fs::remove(temporaryPath, removeError);
-            error = std::format("Could not replace {}: {}", filePath.string(), renameError.message());
-            return false;
-        }
-        return true;
+        return writeLinesAtomically(lines);
     }
 
-    std::ofstream output(filePath, std::ios::app);
-    if (!output) {
-        error = std::format("Could not append {}.", filePath.string());
-        return false;
+    // No definition in this file (a material that had to be stood in for): it is inserted before the
+    // first primitive that uses it, because Radiance needs a modifier defined before its use. Appended
+    // at the end of the file it came after the surfaces, and the old material stayed in effect.
+    for (size_t index = 0; index < lines.size(); ++index) {
+        const auto head = splitWhitespace(trim(lines[index]));
+        if (head.size() < 3 || head[0] != material.name) {
+            continue;
+        }
+        std::vector<std::string> blockLines;
+        std::istringstream blockStream(buildBlock());
+        std::string blockLine;
+        while (std::getline(blockStream, blockLine)) {
+            blockLines.push_back(blockLine);
+        }
+        blockLines.emplace_back();
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index), blockLines.begin(), blockLines.end());
+        return writeLinesAtomically(lines);
     }
-    output << "\n\n";
-    output << buildBlock();
-    return true;
+    error = std::format("Neither a definition of {} nor a primitive using it was found in {}; nothing was written.",
+                        material.name, filePath.string());
+    return false;
 }
 
 } // namespace hdrspace::createview

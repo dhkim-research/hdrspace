@@ -68,6 +68,7 @@ struct CreateViewMaterialInfo {
     std::vector<double> numericArgs;
     fs::path sourcePath;
     bool synthesized = false;
+    std::string aliasOf;  // set for "mod alias name reference": the material it names
 };
 
 struct CreateViewMaterialOverride {
@@ -98,6 +99,7 @@ struct CreateViewRoomInfo {
     std::vector<CreateViewPreviewState::Surface> surfaces;
     std::vector<CreateViewPreviewState::PointSample> pointCloud;
     std::map<std::string, size_t> semanticCounts;
+    std::vector<std::string> parseWarnings;  // files the reader could not read to the end
     std::string note;
 };
 

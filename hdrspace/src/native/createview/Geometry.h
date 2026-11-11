@@ -101,6 +101,13 @@ bool createViewMaterialTypeIsTransparent(const std::string& materialType);
 
 bool createViewContainsAnyToken(const std::string& lowerText, std::initializer_list<std::string_view> tokens);
 
+// Name tests on lower-case "identifier modifier type" text. Glazing: window, glass, glaz..., skylight,
+// pane(s) but not panel. Frame: frame, mullion, transom, jamb, sill, header. Shade: blinds, shades,
+// screens and the like.
+bool createViewNameLooksGlazing(const std::string& lowerText);
+bool createViewNameLooksFrame(const std::string& lowerText);
+bool createViewNameLooksShade(const std::string& lowerText);
+
 bool createViewSurfaceCountsAsMaskWindow(const CreateViewPreviewState::Surface& surface, const CreateViewRoomInfo& roomInfo);
 
 CreateViewWindowMaskFovInfo computeCreateViewWindowMaskFov(

@@ -15261,7 +15261,7 @@ private:
         perceptualStatsLabel_ = new InspectorKeyValueSummary(content, "Min: --\nMedian: --\nMean: --\nMax: --");
         perceptualStatsLabel_->setHeadlineKeys({});
         perceptualStatsLabel_->set_fixed_width(kInspectorContentWidth);
-        auto* statsNote = new Label(content, "Whole picture. The colour ramp spans the 1st to 99th percentile of the non-zero values.", "sans", 11);
+        auto* statsNote = new Label(content, "Whole picture. The colour ramp spans the 1st to 99th percentile of the non-zero values (log scale: at most four decades).", "sans", 11);
         statsNote->set_fixed_width(kInspectorContentWidth);
         statsNote->set_color(hdrspaceMutedInk(160));
 
@@ -15440,7 +15440,8 @@ private:
             perceptualStatsLabel_->set_caption(std::format("Min: {}{}\nMedian: {}{}\nMean: {}{}\nMax: {}{}",
                 formatPerceptualValue(st.min), unit, formatPerceptualValue(st.median), unit,
                 formatPerceptualValue(st.mean), unit, formatPerceptualValue(st.max), unit));
-            perceptualLegend_->setRange(st.p01, st.p99, info.unit, perceptualLog_, perceptualFalseColor_);
+            const auto [rampLo, rampHi] = perceptualRampRange(st.p01, st.p99);
+            perceptualLegend_->setRange(rampLo, rampHi, info.unit, perceptualLog_, perceptualFalseColor_);
         } else {
             perceptualStatsLabel_->set_caption("Min: --\nMedian: --\nMean: --\nMax: --");
             perceptualLegend_->setRange(0.0, 0.0, info.unit, perceptualLog_, perceptualFalseColor_);
@@ -15568,6 +15569,16 @@ private:
         refreshPerceptualMapsUi();
     }
 
+    // The false-colour ramp: the 1st to 99th percentile, and in log scale at most four decades below the
+    // 99th. The legend shows this same range (in log scale it showed the 1st percentile, below the ramp).
+    std::pair<double, double> perceptualRampRange(double p01, double p99) const {
+        double lo = p01;
+        double hi = p99;
+        if (perceptualLog_) lo = std::max(lo, hi * 1e-4);
+        if (!(hi > lo)) hi = lo + 1.0;
+        return {lo, hi};
+    }
+
     void applyPerceptualDisplay() {
         if (viewer_ && viewer_->perceptualMapShown()) {
             if (!perceptualSavedTonemap_) perceptualSavedTonemap_ = viewer_->tonemap();
@@ -15579,10 +15590,7 @@ private:
                     viewer_->setExposure(0.0f);
                     viewer_->setOffset(0.0f);
                 }
-                double lo = perceptualStats_->p01;
-                double hi = perceptualStats_->p99;
-                if (perceptualLog_) lo = std::max(lo, hi * 1e-4); // at most four decades
-                if (!(hi > lo)) hi = lo + 1.0;
+                const auto [lo, hi] = perceptualRampRange(perceptualStats_->p01, perceptualStats_->p99);
                 viewer_->setFalseColorDisplay(true, perceptualLog_, static_cast<float>(lo), static_cast<float>(hi));
             } else {
                 restorePerceptualExposure();
@@ -16378,13 +16386,17 @@ private:
         if (outputPath.extension().empty()) {
             outputPath += ".hdr";
         }
+        // Both paths are made canonical, and an existing output is also tested with fs::equivalent:
+        // an absolute output typed as /tmp/scene.hdr for /private/tmp/scene.hdr (or in another letter
+        // case on a case-insensitive disk) passed the check and the blur overwrote the original.
         std::error_code samePathError;
         const fs::path normalizedInput = fs::weakly_canonical(inputPath, samePathError);
-        samePathError.clear();
-        const fs::path normalizedOutput = outputPath.is_absolute()
-            ? outputPath
-            : fs::absolute(outputPath, samePathError);
-        if (!samePathError && normalizedInput == normalizedOutput) {
+        std::error_code outputPathError;
+        const fs::path normalizedOutput = fs::weakly_canonical(outputPath, outputPathError);
+        std::error_code equivalentError;
+        const bool sameFile = (!samePathError && !outputPathError && normalizedInput == normalizedOutput) ||
+                              (fs::exists(outputPath, equivalentError) && fs::equivalent(inputPath, outputPath, equivalentError));
+        if (sameFile) {
             showMessage("Choose a different output path so the original HDR is not overwritten.");
             return;
         }
@@ -16787,6 +16799,14 @@ private:
     }
 
     void startCreateViewQuickPreview() {
+        try {
+            setUpAndStartCreateViewQuickPreview();
+        } catch (const std::exception& e) {
+            showMessage(std::string("Create View preview could not start: ") + e.what());
+        }
+    }
+
+    void setUpAndStartCreateViewQuickPreview() {
         if (!createViewRoomInfo_.hasBounds || normalizedTextBoxValue(createViewRoomBox_ ? createViewRoomBox_->value() : "").empty()) {
             showMessage("Choose a room .rad file first.");
             return;
@@ -16810,6 +16830,18 @@ private:
             createViewQuickPreviewState_.cancelRequested = false;
             createViewQuickPreviewState_.pid = -1;
         }
+
+        // Until the job is started, an exception (an unwritable room folder, a failing file system
+        // call) must not leave it marked as running: nanogui only printed the error, and Preview and
+        // Render stayed refused until restart. The wrapper shows the message.
+        bool jobStarted = false;
+        auto resetUnlessStarted = [this, &jobStarted](void*) {
+            if (!jobStarted) {
+                std::lock_guard<std::mutex> lock{createViewQuickPreviewState_.mutex};
+                createViewQuickPreviewState_.active = false;
+            }
+        };
+        std::unique_ptr<void, decltype(resetUnlessStarted)> activeGuard(reinterpret_cast<void*>(1), resetUnlessStarted);
 
         fs::path roomPath = normalizedTextBoxValue(createViewRoomBox_ ? createViewRoomBox_->value() : "");
         if (roomPath.is_relative()) {
@@ -16900,6 +16932,7 @@ private:
         createViewCanvasTab_ = 2;
         refreshCreateViewViewportVisibility();
 
+        jobStarted = true;
         std::thread([this, commandText = command.str(), logPath, outputPath]() {
             const pid_t pid = spawnShellJob(commandText, logPath);
             {
@@ -16955,6 +16988,14 @@ private:
     }
 
     void startCreateViewRender() {
+        try {
+            setUpAndStartCreateViewRender();
+        } catch (const std::exception& e) {
+            showMessage(std::string("Create View render could not start: ") + e.what());
+        }
+    }
+
+    void setUpAndStartCreateViewRender() {
         if (!createViewRoomInfo_.hasBounds || normalizedTextBoxValue(createViewRoomBox_ ? createViewRoomBox_->value() : "").empty()) {
             showMessage("Choose a room .rad file first.");
             return;
@@ -16992,6 +17033,18 @@ private:
             createViewRenderState_.cancelRequested = false;
             createViewRenderState_.pid = -1;
         }
+
+        // Until the job is started, an exception (an unwritable room folder, a failing file system
+        // call) must not leave it marked as running: nanogui only printed the error, and Preview and
+        // Render stayed refused until restart. The wrapper shows the message.
+        bool jobStarted = false;
+        auto resetUnlessStarted = [this, &jobStarted](void*) {
+            if (!jobStarted) {
+                std::lock_guard<std::mutex> lock{createViewRenderState_.mutex};
+                createViewRenderState_.active = false;
+            }
+        };
+        std::unique_ptr<void, decltype(resetUnlessStarted)> activeGuard(reinterpret_cast<void*>(1), resetUnlessStarted);
 
         fs::path roomPath = normalizedTextBoxValue(createViewRoomBox_ ? createViewRoomBox_->value() : "");
         if (roomPath.is_relative()) {
@@ -17180,6 +17233,7 @@ private:
             createViewRenderProgressBar_->set_value(0.0f);
         }
 
+        jobStarted = true;
         std::thread([this, commandText = command.str(), logPath, outputPath, smallOutputPath, rawOutputPath, ambPath,
                      applyPfiltDownsample, fastDirectMode]() {
             constexpr int kRxpieceTiles = 8;  // rxpiece -X 8 -Y 8 above
@@ -19807,6 +19861,10 @@ private:
     }
 
     void clearAiCandidateMasks() {
+        // Whatever cleared the candidates (another picture, Clear points, a new prompt, new points), a
+        // SAM3 result still running for the old state is stale: it was loaded and resampled onto the
+        // new picture before.
+        ++glareAiPreviewRevision_;
         glareAiCandidates_.clear();
         glareAiCandidateButtons_.clear();
         glareAiCandidateSignature_.clear();
@@ -19916,11 +19974,13 @@ private:
             auto* button = new Button(glareAiCandidatesPanel_, caption.str());
             button->set_font_size(13);
             button->set_flags(Button::ToggleButton);
-            button->set_callback([this, index = static_cast<int>(i)] {
+            // The selection follows the button's state: a toggle button calls set_callback only when
+            // it ends up pushed, so the first click on a selected candidate did not deselect it.
+            button->set_change_callback([this, index = static_cast<int>(i)](bool pushed) {
                 if (index < 0 || index >= static_cast<int>(glareAiCandidates_.size())) {
                     return;
                 }
-                glareAiCandidates_[static_cast<size_t>(index)].selected = !glareAiCandidates_[static_cast<size_t>(index)].selected;
+                glareAiCandidates_[static_cast<size_t>(index)].selected = pushed;
                 updateAiCandidateSelectionUi();
                 updateAiCandidatePreviewOverlay();
                 updateAiMaskPointUi();
@@ -23177,8 +23237,14 @@ private:
 
         const std::string launchKey = pythonPath.string() + "|" + helperPath.string() + "|" + runtimeRoot.string() + "|" + paths_.aiHfHomeDir.string() + "|" + weightsDir.string();
 
-        if (glareAiProcess_.pid > 0 && glareAiProcess_.launchKey == launchKey && kill(glareAiProcess_.pid, 0) == 0) {
-            return true;
+        if (glareAiProcess_.pid > 0 && glareAiProcess_.launchKey == launchKey) {
+            // kill(pid, 0) also succeeds for a helper that exited but was not reaped; the next write
+            // to its pipe then raised SIGPIPE. waitpid() tells a running helper from an exited one.
+            int status = 0;
+            if (waitpid(glareAiProcess_.pid, &status, WNOHANG) == 0) {
+                return true;
+            }
+            glareAiProcess_.pid = -1;  // exited and reaped: nothing to stop
         }
 
         stopPersistentAiProcessLocked();
@@ -23858,7 +23924,9 @@ private:
         if (auto* canvas = viewer_->imageCanvas()) {
             canvas->setCrop(std::nullopt);
         }
-        cropBox_->set_value("");
+        // The merge crop goes back to the selected profile's sensor crop: cleared, the next fisheye
+        // merge of the session stopped with "Fisheye correction needs a crop first".
+        cropBox_->set_value(selectedProfileCrop_);
         viewer_->setCropUi(std::nullopt);
         auto existing = viewer_->imageByPath(path);
         imagesLoader_->enqueue(path, "", true, existing);
@@ -23983,6 +24051,7 @@ private:
 
     void applyProfileFromSelection(int index) {
         selectedProfileIsDualFisheye_ = false;
+        selectedProfileCrop_.clear();
         blackBox_->set_value("");
         whiteBox_->set_value("");
         saturationBox_->set_value("");
@@ -24033,6 +24102,7 @@ private:
         if (values.contains("crop")) {
             cropBox_->set_value(values["crop"]);
             viewer_->setCropUi(parseCropString(values["crop"]));
+            selectedProfileCrop_ = values["crop"];
         }
         if (values.contains("fisheye")) {
             std::string lowered = tev::toLower(values["fisheye"]);
@@ -24043,6 +24113,7 @@ private:
             selectedProfileIsDualFisheye_ = lowered == "true" || lowered == "1" || lowered == "yes";
         }
         if (selectedProfileIsDualFisheye_) {
+            selectedProfileCrop_.clear();
             cropBox_->set_value("");
             cropBox_->set_enabled(false);
             viewer_->setCropUi(std::nullopt);
@@ -24979,6 +25050,7 @@ private:
     TextBox* rawMultipliersBox_ = nullptr;
     TextBox* xyzcamBox_ = nullptr;
     TextBox* cropBox_ = nullptr;
+    std::string selectedProfileCrop_;  // the sensor crop of the selected merge profile
     TextBox* extraArgsBox_ = nullptr;
     Button* runMergeButton_ = nullptr;
     Button* copyCommandButton_ = nullptr;
