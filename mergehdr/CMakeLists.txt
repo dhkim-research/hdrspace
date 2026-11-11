@@ -135,25 +135,6 @@ add_executable(mergehdr
   third_party/nlopt_slsqp/stop.c
   third_party/nlopt_slsqp/timer.c)
 
-option(MERGEHDR_BUILD_LOCAL_VISIBILITY_COMPARISON
-  "Build the machine-specific visibility comparison utility" OFF)
-if(MERGEHDR_BUILD_LOCAL_VISIBILITY_COMPARISON)
-  add_executable(compare_visibility_result
-    build-mergehdr/compare_visibility_result.cpp
-    camera_detect.cpp
-    colorcalibrate.cpp
-    chartcells.cpp
-    glareeval.cpp
-    hdrimage.cpp
-    "${MERGEHDR_MEX_DIR}/convolve.c"
-    "${MERGEHDR_MEX_DIR}/edges.c"
-    output.cpp
-    misc.cpp
-    third_party/nlopt_slsqp/slsqp.c
-    third_party/nlopt_slsqp/stop.c
-    third_party/nlopt_slsqp/timer.c)
-endif()
-
 target_link_libraries(mergehdrcore ${CORESERVICES_LIBRARY}
   JPEG::JPEG Exiv2::exiv2lib
   Boost::headers Boost::filesystem Boost::program_options
@@ -169,76 +150,39 @@ target_link_libraries(mergehdr
   Eigen3::Eigen ${LIBRAW_LINK_LIBRARIES})
 target_include_directories(mergehdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlopt_slsqp)
 
-if(TARGET compare_visibility_result)
-  target_link_libraries(compare_visibility_result
-    ${CORESERVICES_LIBRARY}
-    ${ACCELERATE_FRAMEWORK}
-    ${FFTW3_LIBRARY}
-    JPEG::JPEG
-    Exiv2::exiv2lib
-    Boost::headers Boost::filesystem Boost::program_options
-    Eigen3::Eigen ${LIBRAW_LINK_LIBRARIES})
-  target_include_directories(compare_visibility_result PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlopt_slsqp)
-endif()
-
 if(MERGEHDR_ENABLE_OPENEXR)
   target_link_libraries(mergehdrcore Imath::Imath OpenEXR::OpenEXR)
   target_link_libraries(mergehdr Imath::Imath OpenEXR::OpenEXR)
-  if(TARGET compare_visibility_result)
-    target_link_libraries(compare_visibility_result Imath::Imath OpenEXR::OpenEXR)
-  endif()
 endif()
 
 if(MERGEHDR_ENABLE_OPENEXR)
   target_compile_definitions(mergehdrcore PRIVATE MERGEHDR_ENABLE_OPENEXR=1)
   target_compile_definitions(mergehdr PRIVATE MERGEHDR_ENABLE_OPENEXR=1)
-  if(TARGET compare_visibility_result)
-    target_compile_definitions(compare_visibility_result PRIVATE MERGEHDR_ENABLE_OPENEXR=1)
-  endif()
 else()
   target_compile_definitions(mergehdrcore PRIVATE MERGEHDR_ENABLE_OPENEXR=0)
   target_compile_definitions(mergehdr PRIVATE MERGEHDR_ENABLE_OPENEXR=0)
-  if(TARGET compare_visibility_result)
-    target_compile_definitions(compare_visibility_result PRIVATE MERGEHDR_ENABLE_OPENEXR=0)
-  endif()
 endif()
 
 if(MERGEHDR_ENABLE_OPENMP)
   target_compile_definitions(mergehdrcore PRIVATE MERGEHDR_ENABLE_OPENMP=1)
   target_compile_definitions(mergehdr PRIVATE MERGEHDR_ENABLE_OPENMP=1)
-  if(TARGET compare_visibility_result)
-    target_compile_definitions(compare_visibility_result PRIVATE MERGEHDR_ENABLE_OPENMP=1)
-  endif()
 else()
   target_compile_definitions(mergehdrcore PRIVATE MERGEHDR_ENABLE_OPENMP=0)
   target_compile_definitions(mergehdr PRIVATE MERGEHDR_ENABLE_OPENMP=0)
-  if(TARGET compare_visibility_result)
-    target_compile_definitions(compare_visibility_result PRIVATE MERGEHDR_ENABLE_OPENMP=0)
-  endif()
 endif()
 
 if(MERGEHDR_ENABLE_OPENMP AND FFTW3_OMP_LIBRARY)
 	target_link_libraries(mergehdr ${FFTW3_OMP_LIBRARY})
-	if(TARGET compare_visibility_result)
-		target_link_libraries(compare_visibility_result ${FFTW3_OMP_LIBRARY})
-	endif()
 endif()
 
 if (MERGEHDR_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
 	target_link_libraries(mergehdrcore OpenMP::OpenMP_CXX)
 	target_link_libraries(mergehdr OpenMP::OpenMP_CXX)
-	if(TARGET compare_visibility_result)
-		target_link_libraries(compare_visibility_result OpenMP::OpenMP_CXX)
-	endif()
 elseif(MERGEHDR_ENABLE_OPENMP AND APPLE AND LIBOMP_LIBRARY AND LIBOMP_INCLUDE_DIR)
 	target_compile_options(mergehdrcore PRIVATE -Xpreprocessor -fopenmp)
 	target_link_libraries(mergehdrcore ${LIBOMP_LIBRARY})
 	target_compile_options(mergehdr PRIVATE -Xpreprocessor -fopenmp)
 	target_link_libraries(mergehdr ${LIBOMP_LIBRARY})
-	if(TARGET compare_visibility_result)
-		target_compile_options(compare_visibility_result PRIVATE -Xpreprocessor -fopenmp)
-		target_link_libraries(compare_visibility_result ${LIBOMP_LIBRARY})
-	endif()
 endif()
 
 if((MERGEHDR_ENABLE_OPENEXR OR MERGEHDR_ENABLE_OPENMP) AND APPLE AND MERGEHDR_HOMEBREW_PREFIX AND EXISTS "${MERGEHDR_HOMEBREW_PREFIX}/lib")
@@ -248,9 +192,4 @@ if((MERGEHDR_ENABLE_OPENEXR OR MERGEHDR_ENABLE_OPENMP) AND APPLE AND MERGEHDR_HO
 	set_target_properties(mergehdr PROPERTIES
 		BUILD_RPATH "${MERGEHDR_HOMEBREW_PREFIX}/lib"
 		INSTALL_RPATH "${MERGEHDR_HOMEBREW_PREFIX}/lib")
-	if(TARGET compare_visibility_result)
-		set_target_properties(compare_visibility_result PROPERTIES
-			BUILD_RPATH "${MERGEHDR_HOMEBREW_PREFIX}/lib"
-			INSTALL_RPATH "${MERGEHDR_HOMEBREW_PREFIX}/lib")
-	endif()
 endif()
