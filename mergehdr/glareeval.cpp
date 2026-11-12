@@ -88,6 +88,14 @@ void trimHdrvdpCaches(bool clearAll) {
         trimmer(clearAll);
 }
 
+// The HDR-VDP caches (pictures, prepared pyramids, results) are plain maps. hdrspace computes
+// View Visibility and perceptual maps on background threads, so the entry points that use them
+// run one at a time.
+std::recursive_mutex &hdrvdpEngineMutex() {
+    static std::recursive_mutex mutex;
+    return mutex;
+}
+
 template <typename Value>
 struct BoundedCache {
     std::map<std::string, Value> entries;
@@ -9431,6 +9439,7 @@ void runEvalGlareInto(const EvalGlareOptions &opts, EvalGlareAnalysisResult &res
 
 void clearEvalGlareCaches() {
     eg::clearGeometryCache();
+    std::lock_guard<std::recursive_mutex> lock(hdrvdpEngineMutex());
     trimHdrvdpCaches(true);
 }
 
@@ -9453,6 +9462,7 @@ EvalGlareAnalysisResult analyzeEvalGlare(const EvalGlareOptions &opts) {
 PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, PerceptualMapKind kind) {
     if (opts.inputPath.empty())
         throw std::runtime_error("Choose an input HDR image first.");
+    std::lock_guard<std::recursive_mutex> engineLock(hdrvdpEngineMutex());
 
     namespace fs = std::filesystem;
     trimHdrvdpCaches(false);
@@ -9543,6 +9553,7 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
 }
 
 ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySummaryOptions &opts) {
+    std::lock_guard<std::recursive_mutex> engineLock(hdrvdpEngineMutex());
     if (opts.referencePath.empty() || opts.testPath.empty())
         throw std::runtime_error("Choose both reference and test HDR images first.");
     if (opts.maskPath.empty())
@@ -10031,6 +10042,7 @@ PerceptualResponseComponentMaps computePerceptualResponseComponents(
 }
 
 void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, const std::string &outDir) {
+    std::lock_guard<std::recursive_mutex> engineLock(hdrvdpEngineMutex());
     if (opts.detailMode != ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset) {
         throw std::runtime_error("Debug dump currently supports only HDR-VDP3 detail mode.");
     }

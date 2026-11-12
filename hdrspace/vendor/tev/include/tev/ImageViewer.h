@@ -251,8 +251,11 @@ public:
 
     void requestLayoutUpdate() { mRequiresLayoutUpdate = true; }
     void setCropUi(const std::optional<Box2i>& crop);
-    void setCropSaveHandler(std::function<void(const fs::path&, const fs::path&, const Box2i&)> handler) { mCropSaveHandler = std::move(handler); }
-    void setProjectionSaveHandler(std::function<void(const fs::path&, const fs::path&, const std::string&, const std::string&)> handler) {
+    // The save handlers may finish later: they call `done` on the UI thread with an error message,
+    // or with an empty one once the file is written (hdrspace runs mergehdr on a background job).
+    using SaveDone = std::function<void(const std::string&)>;
+    void setCropSaveHandler(std::function<void(const fs::path&, const fs::path&, const Box2i&, SaveDone)> handler) { mCropSaveHandler = std::move(handler); }
+    void setProjectionSaveHandler(std::function<void(const fs::path&, const fs::path&, const std::string&, const std::string&, SaveDone)> handler) {
         mProjectionSaveHandler = std::move(handler);
     }
     void setImageInsertedCallback(std::function<void(const std::shared_ptr<Image>&)> callback) { mImageInsertedCallback = std::move(callback); }
@@ -401,8 +404,8 @@ private:
     void updateCurrentMonitorSize();
 
     SharedQueue<std::function<void(void)>> mTaskQueue;
-    std::function<void(const fs::path&, const fs::path&, const Box2i&)> mCropSaveHandler;
-    std::function<void(const fs::path&, const fs::path&, const std::string&, const std::string&)> mProjectionSaveHandler;
+    std::function<void(const fs::path&, const fs::path&, const Box2i&, SaveDone)> mCropSaveHandler;
+    std::function<void(const fs::path&, const fs::path&, const std::string&, const std::string&, SaveDone)> mProjectionSaveHandler;
     std::function<void(const std::shared_ptr<Image>&)> mImageInsertedCallback;
     std::function<void(const std::shared_ptr<Image>&)> mImageSelectedCallback;
     std::function<void(const nanogui::Vector2i&, bool)> mAiMaskPickHandler;
@@ -462,9 +465,13 @@ private:
     nanogui::FloatBox<float>* mHighlightMaxBox = nullptr;
     nanogui::ComboBox* mHighlightModeComboBox = nullptr;
     nanogui::Button* mHighlightEnableButton = nullptr;
+    nanogui::Button* mHighlightClearButton = nullptr;
     int mHighlightModeSelection = 0;
     nanogui::Label* mRoiStatsLabel = nullptr;
     nanogui::Button* mRoiClearButton = nullptr;
+    // hdrspace Region row: "Image" or "ROI", then the region's corner and size.
+    nanogui::Label* mRoiRegionNameLabel = nullptr;
+    nanogui::Label* mRoiRegionValueLabel = nullptr;
     std::unordered_set<std::shared_ptr<Image>> mToBump;
 
     nanogui::TextBox* mFilter = nullptr;

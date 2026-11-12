@@ -230,14 +230,19 @@ public:
 // tool-rail group titles and the other inspector panels.
 class SidebarSectionHeader final : public Widget {
 public:
-    SidebarSectionHeader(Widget* parent, string title) : Widget(parent) {
+    // inset: where the line and the title start inside the widget, so that every heading starts
+    // 12 px from the inspector edge whatever its container's margin (hdrspace).
+    SidebarSectionHeader(Widget* parent, string title, int inset = 0) : Widget(parent), mInset(inset) {
         for (auto& c : title) c = (char)std::toupper((unsigned char)c);
         mTitle = std::move(title);
         set_fixed_height(30);
     }
 
+    // Grey text at the right end of the heading line, e.g. how to use the section.
+    void setDetail(string detail) { mDetail = std::move(detail); }
+
     void draw(NVGcontext* ctx) override {
-        const float x = (float)m_pos.x(), y = (float)m_pos.y(), w = (float)m_size.x(), h = (float)m_size.y();
+        const float x = (float)(m_pos.x() + mInset), y = (float)m_pos.y(), w = (float)(m_size.x() - mInset), h = (float)m_size.y();
         nvgSave(ctx);
         nvgBeginPath(ctx);
         nvgMoveTo(ctx, x, y + 4.5f);
@@ -252,12 +257,107 @@ public:
         nvgFillColor(ctx, Color(170, 174, 179, 210));
         nvgText(ctx, x, y + h - 2.0f, mTitle.c_str(), nullptr);
         nvgTextLetterSpacing(ctx, 0.0f);
+        if (!mDetail.empty()) {
+            nvgFontFace(ctx, "sans");
+            nvgFontSize(ctx, 12.0f);
+            nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_BOTTOM);
+            nvgFillColor(ctx, Color(170, 174, 179, 170));
+            nvgText(ctx, x + w, y + h - 2.0f, mDetail.c_str(), nullptr);
+        }
         nvgRestore(ctx);
     }
 
 private:
     string mTitle;
+    string mDetail;
+    int mInset = 0;
 };
+
+// hdrspace Region statistics: a caption of tab-separated cells is drawn as a table (a header
+// row of column names, then one row per channel with its letter in the channel colour), in the
+// app font with right-aligned numbers. Any other caption is drawn as plain text.
+class RoiStatsTable final : public Label {
+public:
+    explicit RoiStatsTable(Widget* parent) : Label(parent, "", "sans", 13) {}
+
+    Vector2i preferred_size_impl(NVGcontext* ctx) const override {
+        if (m_caption.find('\t') == string::npos) {
+            return m_caption.empty() ? Vector2i{std::max(1, fixed_width()), 1} : Label::preferred_size_impl(ctx);
+        }
+        return {std::max(1, fixed_width()), static_cast<int>(rows().size()) * kRowHeight};
+    }
+
+    void draw(NVGcontext* ctx) override {
+        if (m_caption.find('\t') == string::npos) {
+            Label::draw(ctx);
+            return;
+        }
+        const auto table = rows();
+        const float x = (float)m_pos.x(), w = (float)m_size.x();
+        const size_t columns = table.empty() ? 0 : table.front().size() - 1;
+        const float firstColumn = 44.0f;
+        const float columnWidth = columns > 0 ? (w - firstColumn) / (float)columns : 0.0f;
+        nvgSave(ctx);
+        for (size_t r = 0; r < table.size(); ++r) {
+            const auto& cells = table[r];
+            const float cy = (float)m_pos.y() + kRowHeight * ((float)r + 0.5f);
+            const bool header = r == 0;
+            nvgFontFace(ctx, "sans");
+            nvgFontSize(ctx, header ? 11.0f : 13.0f);
+            nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+            if (!cells.empty() && !cells[0].empty()) {
+                const bool colourLetter = cells[0] == "R" || cells[0] == "G" || cells[0] == "B";
+                nvgFillColor(ctx, header ? Color(170, 174, 179, 190) : (colourLetter ? Channel::color(cells[0], true) : Color(170, 174, 179, 215)));
+                nvgText(ctx, x, cy, cells[0].c_str(), nullptr);
+            }
+            nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+            nvgFillColor(ctx, header ? Color(170, 174, 179, 190) : Color(226, 228, 230, 235));
+            for (size_t c = 1; c < cells.size() && c <= columns; ++c) {
+                nvgText(ctx, x + firstColumn + columnWidth * (float)c, cy, cells[c].c_str(), nullptr);
+            }
+        }
+        nvgRestore(ctx);
+    }
+
+private:
+    static constexpr int kRowHeight = 20;
+
+    vector<vector<string>> rows() const {
+        vector<vector<string>> result;
+        istringstream lines{m_caption};
+        string line;
+        while (getline(lines, line)) {
+            vector<string> cells;
+            size_t start = 0;
+            while (true) {
+                const size_t tab = line.find('\t', start);
+                cells.push_back(line.substr(start, tab == string::npos ? string::npos : tab - start));
+                if (tab == string::npos) break;
+                start = tab + 1;
+            }
+            result.push_back(std::move(cells));
+        }
+        return result;
+    }
+};
+
+// hdrspace named rows: a grey 13 name of the shared width, then the control, then a value.
+constexpr int kSidebarNameWidth = 104;
+constexpr int kSidebarValueWidth = 40;
+
+Label* makeSidebarRowName(Widget* row, string_view name) {
+    auto* label = new Label{row, string{name}, "sans", 13};
+    label->set_color(Color(170, 174, 179, 215));
+    label->set_fixed_width(kSidebarNameWidth);
+    return label;
+}
+
+Label* makeSidebarRowValue(Widget* row) {
+    auto* label = new Label{row, "", "sans", 13};
+    label->set_color(Color(214, 217, 220, 230));
+    label->set_fixed_width(kSidebarValueWidth);
+    return label;
+}
 
 class HairlineDivider final : public Widget {
 public:
@@ -1066,8 +1166,9 @@ ImageViewer::ImageViewer(
     });
 
     if (mSidebarOnRight) {
+        // hdrspace: the title sits where the other inspectors have theirs.
         auto* topInset = new Widget{mSidebarRoot};
-        topInset->set_fixed_height(4);
+        topInset->set_fixed_height(25);
     }
 
     mSidebarToolbar = new Widget{mSidebarRoot};
@@ -1080,12 +1181,14 @@ ImageViewer::ImageViewer(
     mHeaderOpenImageButton->set_icon_position(Button::IconPosition::LeftCentered);
     mHeaderOpenImageButton->set_padding({10, 7});
     mHeaderOpenImageButton->set_tooltip(format("Open ({}+O)", HelpWindow::COMMAND));
-    mHeaderOpenImageButton->set_visible(mSidebarOnRight);
+    // hdrspace's app bar has Open and Help, so the docked inspector shows neither.
+    mHeaderOpenImageButton->set_visible(false);
     mHelpButton = new Button{mSidebarToolbar, "", FA_QUESTION};
     mHelpButton->set_change_callback([this](bool) { toggleHelpWindow(); });
     mHelpButton->set_font_size(14);
     mHelpButton->set_tooltip("Keybindings and an overview of the app.");
     mHelpButton->set_flags(Button::ToggleButton);
+    mHelpButton->set_visible(!mSidebarOnRight);
 
     if (mSidebarOnRight) {
         mSidebarTitleHost = new Widget{mSidebarToolbar};
@@ -1128,18 +1231,21 @@ ImageViewer::ImageViewer(
         // Exposure label and slider
         {
             panel = new Widget{mSidebarLayout};
-            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Horizontal, Alignment::Middle, 5, 8}
+            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8}
                                               : (Layout*)new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
 
-            mExposureLabel = new Label{panel, "", "sans", mSidebarOnRight ? 13 : 14};
             if (mSidebarOnRight) {
-                mExposureLabel->set_color(Color(170, 174, 179, 215));
-                mExposureLabel->set_fixed_width(104);
+                makeSidebarRowName(panel, "Exposure");
+            } else {
+                mExposureLabel = new Label{panel, "", "sans", 14};
             }
 
             mExposureSlider = new Slider{panel};
             mExposureSlider->set_range({-5.0f, 5.0f});
             mExposureSlider->set_callback([this](float value) { setExposure(value); });
+            if (mSidebarOnRight) {
+                mExposureLabel = makeSidebarRowValue(panel);
+            }
             setExposure(0);
 
             panel->set_tooltip(
@@ -1151,7 +1257,7 @@ ImageViewer::ImageViewer(
         // Offset/Gamma label and slider
         {
             panel = new Widget{mSidebarLayout};
-            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Vertical, Alignment::Fill, 5, 4}
+            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Vertical, Alignment::Fill, 8, 4}
                                               : (Layout*)new GridLayout{Orientation::Vertical, 2, Alignment::Fill, 5, 0});
             Widget* offsetRow = panel;
             Widget* gammaRow = panel;
@@ -1162,26 +1268,32 @@ ImageViewer::ImageViewer(
                 gammaRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
             }
 
-            mOffsetLabel = new Label{offsetRow, "", "sans", mSidebarOnRight ? 13 : 14};
             if (mSidebarOnRight) {
-                mOffsetLabel->set_color(Color(170, 174, 179, 215));
-                mOffsetLabel->set_fixed_width(104);
+                makeSidebarRowName(offsetRow, "Offset");
+            } else {
+                mOffsetLabel = new Label{offsetRow, "", "sans", 14};
             }
 
             mOffsetSlider = new Slider{offsetRow};
             mOffsetSlider->set_range({-1.0f, 1.0f});
             mOffsetSlider->set_callback([this](float value) { setOffset(value); });
+            if (mSidebarOnRight) {
+                mOffsetLabel = makeSidebarRowValue(offsetRow);
+            }
             setOffset(0);
 
-            mGammaLabel = new Label{gammaRow, "", "sans", mSidebarOnRight ? 13 : 14};
             if (mSidebarOnRight) {
-                mGammaLabel->set_color(Color(170, 174, 179, 215));
-                mGammaLabel->set_fixed_width(104);
+                makeSidebarRowName(gammaRow, "Gamma");
+            } else {
+                mGammaLabel = new Label{gammaRow, "", "sans", 14};
             }
 
             mGammaSlider = new Slider{gammaRow};
             mGammaSlider->set_range({0.01f, 5.0f});
             mGammaSlider->set_callback([this](float value) { setGamma(value); });
+            if (mSidebarOnRight) {
+                mGammaLabel = makeSidebarRowValue(gammaRow);
+            }
             setGamma(2.2f);
 
             panel->set_tooltip(
@@ -1706,7 +1818,7 @@ ImageViewer::ImageViewer(
                 mFalseColorPopupButton->set_caption("False");
             }
             moveChild(displayModeHost, mFloatingToolbarCard, 1);
-            auto* displayHeader = new SidebarSectionHeader{mFloatingToolbarCard, "Display"};
+            auto* displayHeader = new SidebarSectionHeader{mFloatingToolbarCard, "Display", 4};
             moveChild(displayHeader, mFloatingToolbarCard, 1);
         }
         else {
@@ -1788,10 +1900,10 @@ ImageViewer::ImageViewer(
     // Image channel mask
     {
         if (mSidebarOnRight) {
-            new SidebarSectionHeader{mSidebarLayout, "Channels"};
+            new SidebarSectionHeader{mSidebarLayout, "Channels", 8};
         }
         mChannelMaskButtonContainer = new Widget{mSidebarLayout};
-        mChannelMaskButtonContainer->set_layout(new GridLayout{Orientation::Horizontal, 5, Alignment::Fill, 5, 2});
+        mChannelMaskButtonContainer->set_layout(new GridLayout{Orientation::Horizontal, 5, Alignment::Fill, mSidebarOnRight ? 8 : 5, 2});
 
         const auto makeChannelMaskBtn = [&](string_view name, string_view humanReadable, int c) {
             auto button = new Button{mChannelMaskButtonContainer, name};
@@ -1832,7 +1944,7 @@ ImageViewer::ImageViewer(
         if (mSidebarOnRight) {
             auto* panel = new Widget{mSidebarLayout};
             mCropControlsPanel = panel;
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
+            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 8});
 
             auto* cropLabel = new SidebarSectionHeader{panel, "Crop & projection"};
             cropLabel->set_tooltip("Set crop here, or drag a crop in the viewer while holding C.");
@@ -1924,15 +2036,15 @@ ImageViewer::ImageViewer(
         spacer->set_height(6);
 
         if (mSidebarOnRight) {
+            // One row: name, menu, Convert (widths in updateDockedSliderWidths).
             auto* panel = new Widget{mSidebarLayout};
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
+            panel->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
 
-            auto* projectionLabel = new Label{panel, "Projection", "sans", 13};
-            projectionLabel->set_color(Color(170, 174, 179, 215));
+            auto* projectionLabel = makeSidebarRowName(panel, "Projection");
             projectionLabel->set_tooltip("Detected from HDR metadata. Convert and save with mergehdr when supported.");
 
             auto* row = new Widget{panel};
-            row->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 6, 0});
+            row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
 
             mProjectionComboBox = new ComboBox{row, {"Unknown", "Equisolid", "Equidistant"}};
             mProjectionComboBox->set_font_size(14);
@@ -1945,7 +2057,8 @@ ImageViewer::ImageViewer(
             });
 
             mProjectionApplyButton = new Button{row, "Convert"};
-            mProjectionApplyButton->set_font_size(14);
+            mProjectionApplyButton->set_font_size(13);
+            mProjectionComboBox->set_font_size(13);
             mProjectionApplyButton->set_callback([this]() { maybeOfferProjectionSave(); });
         }
     }
@@ -1957,7 +2070,7 @@ ImageViewer::ImageViewer(
 
         {
             auto panel = new Widget{mSidebarLayout};
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
+            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 8 : 5});
             Widget* label = mSidebarOnRight ? (Widget*)new SidebarSectionHeader{panel, "Histogram"} : (Widget*)new Label{panel, "Images", "sans-bold", 25};
             label->set_tooltip(
                 "Select images either by left-clicking on them or by pressing arrow/number keys on your keyboard.\n"
@@ -1969,15 +2082,18 @@ ImageViewer::ImageViewer(
         // Histogram of selected image
         {
             auto controls = new Widget{mSidebarLayout};
-            controls->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
-            auto* label = new Label{controls, "Highlight range", "sans", mSidebarOnRight ? 13 : 14};
-            if (mSidebarOnRight) label->set_color(Color(170, 174, 179, 215));
-            label->set_tooltip("Temporarily overlay pixels in red whose selected channel value falls inside the selected range.");
+            controls->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 8 : 5, mSidebarOnRight ? 6 : 0});
+            const string highlightTooltip = "Temporarily overlay pixels in red whose selected channel value falls inside the selected range.";
+            if (!mSidebarOnRight) {
+                auto* label = new Label{controls, "Highlight range", "sans", 14};
+                label->set_tooltip(highlightTooltip);
+            }
 
+            // hdrspace: named rows, "Channel" and "Highlight" (widths in updateDockedSliderWidths).
             auto* modeRow = new Widget{controls};
-            modeRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 5, 0});
-            auto* modeLabel = new Label{modeRow, "Channel", "sans", mSidebarOnRight ? 13 : 14};
-            if (mSidebarOnRight) modeLabel->set_color(Color(170, 174, 179, 215));
+            modeRow->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8}
+                                                : (Layout*)new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 5, 0});
+            auto* modeLabel = mSidebarOnRight ? makeSidebarRowName(modeRow, "Channel") : new Label{modeRow, "Channel", "sans", 14};
             modeLabel->set_tooltip("Choose which value the highlight range should test.");
             mHighlightModeComboBox = new ComboBox{modeRow, {"RGB", "R", "G", "B"}};
             mHighlightModeComboBox->set_font_size(14);
@@ -1993,8 +2109,18 @@ ImageViewer::ImageViewer(
                 applyHighlightRangeFromUi();
             });
 
-            auto* row = new Widget{controls};
-            row->set_layout(new GridLayout{Orientation::Horizontal, 4, Alignment::Fill, 5, 0});
+            Widget* row = nullptr;
+            if (mSidebarOnRight) {
+                auto* highlightRow = new Widget{controls};
+                highlightRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+                makeSidebarRowName(highlightRow, "Highlight")->set_tooltip(highlightTooltip);
+                row = new Widget{highlightRow};
+                row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 4});
+                row->set_tooltip(highlightTooltip);
+            } else {
+                row = new Widget{controls};
+                row->set_layout(new GridLayout{Orientation::Horizontal, 4, Alignment::Fill, 5, 0});
+            }
             mHighlightMinBox = new FloatBox<float>{row};
             mHighlightMinBox->set_font_size(14);
             mHighlightMinBox->set_editable(true);
@@ -2019,6 +2145,7 @@ ImageViewer::ImageViewer(
             mHighlightEnableButton->set_change_callback([this](bool) { applyHighlightRangeFromUi(); });
             auto* clear = new Button{row, "Clear"};
             clear->set_font_size(14);
+            mHighlightClearButton = clear;
             clear->set_callback([this]() {
                 if (mHighlightEnableButton) {
                     mHighlightEnableButton->set_pushed(false);
@@ -2043,7 +2170,7 @@ ImageViewer::ImageViewer(
             });
 
             auto panel = new Widget{mSidebarLayout};
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
+            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 8 : 5, mSidebarOnRight ? 6 : 0});
 
             mHistogram = new MultiGraph{panel, ""};
             if (mSidebarOnRight) {
@@ -2051,22 +2178,32 @@ ImageViewer::ImageViewer(
             }
 
             if (mSidebarOnRight) {
-                new SidebarSectionHeader{panel, "Region (ROI)"};
+                auto* regionHeader = new SidebarSectionHeader{panel, "Region"};
+                regionHeader->setDetail("Right-drag on image");
+                regionHeader->set_tooltip("Right-drag in the viewer to define a histogram/statistics ROI.");
+                // A named row: "Image" or "ROI", the region, and Clear (widths in updateDockedSliderWidths).
+                auto* roiRow = new Widget{panel};
+                roiRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+                mRoiRegionNameLabel = makeSidebarRowName(roiRow, "Image");
+                mRoiRegionValueLabel = new Label{roiRow, "--", "sans", 13};
+                mRoiRegionValueLabel->set_color(Color(214, 217, 220, 230));
+                mRoiClearButton = new Button{roiRow, "Clear"};
+                mRoiClearButton->set_font_size(13);
+            } else {
+                auto* roiHeader = new Widget{panel};
+                roiHeader->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 5, 0});
+                auto* roiLabel = new Label{roiHeader, "ROI", "sans-bold", 14};
+                roiLabel->set_tooltip("Right-drag in the viewer to define a histogram/statistics ROI.");
+                mRoiClearButton = new Button{roiHeader, "Clear"};
+                mRoiClearButton->set_font_size(14);
             }
-            auto* roiHeader = new Widget{panel};
-            roiHeader->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 5, 0});
-            auto* roiLabel = mSidebarOnRight ? new Label{roiHeader, "Right-drag on image", "sans", 12}
-                                             : new Label{roiHeader, "ROI", "sans-bold", 14};
-            if (mSidebarOnRight) roiLabel->set_color(Color(170, 174, 179, 200));
-            roiLabel->set_tooltip("Right-drag in the viewer to define a histogram/statistics ROI.");
-            mRoiClearButton = new Button{roiHeader, "Clear"};
-            mRoiClearButton->set_font_size(14);
             mRoiClearButton->set_callback([this]() {
                 mImageCanvas->setRoi(std::nullopt);
                 redraw();
             });
 
-            mRoiStatsLabel = new Label{panel, "Right-drag in the viewer to inspect a region.", "sans", 12};
+            mRoiStatsLabel = mSidebarOnRight ? (Label*)new RoiStatsTable{panel}
+                                             : new Label{panel, "Right-drag in the viewer to inspect a region.", "sans", 12};
         }
 
         // Fuzzy filter of open images
@@ -2217,7 +2354,7 @@ ImageViewer::ImageViewer(
         // List of open images
         {
             if (mSidebarOnRight) {
-                new SidebarSectionHeader{mSidebarLayout, "Images"};
+                new SidebarSectionHeader{mSidebarLayout, "Images", 8};
             }
             mImageScrollContainer = new VScrollPanel{mSidebarLayout};
             mImageScrollContainer->set_fixed_width(mSidebarLayout->fixed_width());
@@ -3608,14 +3745,14 @@ void ImageViewer::selectReference(const shared_ptr<Image>& image) {
 void ImageViewer::setExposure(float value) {
     value = round(value, 1.0f);
     mExposureSlider->set_value(value);
-    mExposureLabel->set_caption(format("Exposure: {:+.1f}", value));
+    mExposureLabel->set_caption(mSidebarOnRight ? format("{:+.1f}", value) : format("Exposure: {:+.1f}", value));
 
     mImageCanvas->setExposure(value);
 }
 
 void ImageViewer::setExposurePrecise(float value) {
     mExposureSlider->set_value(value);
-    mExposureLabel->set_caption(format("Exposure: {:+.2f}", value));
+    mExposureLabel->set_caption(mSidebarOnRight ? format("{:+.2f}", value) : format("Exposure: {:+.2f}", value));
     mImageCanvas->setExposure(value);
 }
 
@@ -4178,10 +4315,20 @@ void ImageViewer::saveCurrentCropAsHdr(const fs::path& path) {
 
     const auto crop = mImageCanvas->cropInImageCoords();
     if (mCropSaveHandler && !mCurrentImage->path().empty()) {
-        mCropSaveHandler(mCurrentImage->path(), path, crop);
-    } else {
-        mImageCanvas->saveImage(path);
+        // The handler may write the file later (hdrspace: mergehdr on a background job); the
+        // crop is cleared and the file opened once it is there.
+        mCropSaveHandler(mCurrentImage->path(), path, crop, [this, path](const std::string& error) {
+            if (!error.empty()) {
+                showErrorDialog(format("Failed to save cropped HDR: {}", error));
+                return;
+            }
+            mImageCanvas->setCrop(nullopt);
+            syncCropUiFromCanvas();
+            mImagesLoader->enqueue(path, "", true);
+        });
+        return;
     }
+    mImageCanvas->saveImage(path);
 
     mImageCanvas->setCrop(nullopt);
     syncCropUiFromCanvas();
@@ -4219,8 +4366,15 @@ void ImageViewer::saveCurrentProjectionAsHdr(const fs::path& path, const std::st
         throw runtime_error{"Projection save handler is not configured."};
     }
 
-    mProjectionSaveHandler(mCurrentImage->path(), path, fromProjection, toProjection);
-    mImagesLoader->enqueue(path, "", true);
+    mProjectionSaveHandler(mCurrentImage->path(), path, fromProjection, toProjection, [this, path](const std::string& error) {
+        if (!error.empty()) {
+            showErrorDialog(format("Failed to save projected HDR: {}", error));
+            refreshProjectionUi();
+            return;
+        }
+        mImagesLoader->enqueue(path, "", true);
+        refreshProjectionUi();
+    });
 }
 
 void ImageViewer::maybeOfferProjectionSave() {
@@ -4696,6 +4850,17 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
     }
 
     if (!statistics) {
+        if (mSidebarOnRight) {
+            // hdrspace: the heading says "Right-drag on image"; the row and the table wait.
+            if (mRoiRegionNameLabel) {
+                mRoiRegionNameLabel->set_caption("Image");
+            }
+            if (mRoiRegionValueLabel) {
+                mRoiRegionValueLabel->set_caption("--");
+            }
+            mRoiStatsLabel->set_caption("");
+            return;
+        }
         mRoiStatsLabel->set_font("sans");
         mRoiStatsLabel->set_caption("Right-drag in the viewer to inspect a region");
         return;
@@ -4703,6 +4868,41 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
 
     const auto& region = statistics->region;
     const bool hasRoi = mImageCanvas && mImageCanvas->roi().has_value();
+
+    if (mSidebarOnRight) {
+        // hdrspace: "Image" or "ROI" with the region in its row, then a table (RoiStatsTable):
+        // column names, then one row per channel, cells separated by tabs.
+        if (mRoiRegionNameLabel) {
+            mRoiRegionNameLabel->set_caption(hasRoi ? "ROI" : "Image");
+        }
+        if (mRoiRegionValueLabel) {
+            mRoiRegionValueLabel->set_caption(format("{}, {} \u00b7 {} \u00d7 {}", region.min.x(), region.min.y(), region.size().x(), region.size().y()));
+        }
+        ostringstream table;
+        table << "\tMean\tMin\tMax\tStd";
+        const auto addRow = [&](const string& label, float mean, float minimum, float maximum, float stddev) {
+            table << '\n' << label << format("\t{:.5g}\t{:.5g}\t{:.5g}\t{:.5g}", mean, minimum, maximum, stddev);
+        };
+        if (statistics->channelMean.empty()) {
+            addRow("", statistics->mean, statistics->minimum, statistics->maximum, statistics->stddev);
+        } else if (const auto selection = inspectionChannelSelectionForGroup(mCurrentGroup);
+                   selection.has_value() && *selection >= 1 && statistics->channelMean.size() >= (size_t)*selection) {
+            const size_t i = (size_t)(*selection - 1);
+            addRow(string{inspectionChannelLabel(i)}, statistics->channelMean[i], statistics->channelMinimum[i],
+                   statistics->channelMaximum[i], statistics->channelStdDev[i]);
+        } else if (statistics->channelMean.size() == 1) {
+            addRow(string{inspectionSingleChannelLabel()}, statistics->channelMean[0], statistics->channelMinimum[0],
+                   statistics->channelMaximum[0], statistics->channelStdDev[0]);
+        } else {
+            for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
+                addRow(string{inspectionChannelLabel(i)}, statistics->channelMean[i], statistics->channelMinimum[i],
+                       statistics->channelMaximum[i], statistics->channelStdDev[i]);
+            }
+        }
+        mRoiStatsLabel->set_font("sans");
+        mRoiStatsLabel->set_caption(table.str());
+        return;
+    }
     const string regionLabel = hasRoi
         ? format("ROI {}, {} · {} × {}", region.min.x(), region.min.y(), region.size().x(), region.size().y())
         : format("Image {}, {} · {} × {}", region.min.x(), region.min.y(), region.size().x(), region.size().y());
@@ -4740,36 +4940,6 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
             statistics->channelMaximum[0],
             statistics->channelStdDev[0]
         );
-    } else if (mSidebarOnRight) {
-        // hdrspace: one row per channel under named columns, in the mono face so the columns
-        // line up. The header starts with the channel letters (nanovg drops a row's leading
-        // spaces, so it cannot start blank).
-        string letters;
-        size_t labelWidth = 1;
-        for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
-            const auto label = inspectionChannelLabel(i);
-            letters += label;
-            labelWidth = std::max(labelWidth, label.size());
-        }
-        if (letters.size() > 4) {
-            letters = "Ch";
-        }
-        labelWidth = std::max(labelWidth, letters.size());
-        stream << format("{:<{}}{:>9}{:>9}{:>9}{:>9}", letters, labelWidth, "Mean", "Min", "Max", "Std");
-        for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
-            stream << '\n' << format(
-                "{:<{}}{:>9.5g}{:>9.5g}{:>9.5g}{:>9.5g}",
-                inspectionChannelLabel(i),
-                labelWidth,
-                statistics->channelMean[i],
-                statistics->channelMinimum[i],
-                statistics->channelMaximum[i],
-                statistics->channelStdDev[i]
-            );
-        }
-        mRoiStatsLabel->set_font("mono");
-        mRoiStatsLabel->set_caption(stream.str());
-        return;
     } else {
         for (size_t i = 0; i < statistics->channelMean.size(); ++i) {
             const auto label = inspectionChannelLabel(i);
@@ -4793,12 +4963,14 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
 }
 
 void ImageViewer::updateDockedSliderWidths() {
-    // Docked inspector: grey label (104) + slider on one line; the value field is the
-    // label itself ("Exposure: +0.0").
+    // Docked inspector (hdrspace): named rows 12 px from the edge (an 8 px margin inside the
+    // sidebar's 4): grey name (104), then the control; sliders end with their value.
     if (!mSidebarOnRight || !mSidebarLayout) {
         return;
     }
-    const int sliderWidth = std::max(60, mSidebarLayout->fixed_width() - 2 * 5 - 104 - 8);
+    const int rowWidth = mSidebarLayout->fixed_width() - 2 * 8;
+    const int fieldWidth = std::max(60, rowWidth - kSidebarNameWidth - 8);
+    const int sliderWidth = std::max(40, fieldWidth - 8 - kSidebarValueWidth);
     for (Slider* slider : {mExposureSlider, mOffsetSlider, mGammaSlider}) {
         if (slider) {
             slider->set_fixed_width(sliderWidth);
@@ -4807,16 +4979,37 @@ void ImageViewer::updateDockedSliderWidths() {
     if (mValueModePopupButton) {
         mValueModePopupButton->set_fixed_width(std::max(60, mSidebarLayout->fixed_width() - 2 * 4 - 104 - 8));
     }
+    if (mProjectionComboBox && mProjectionApplyButton) {
+        constexpr int convertWidth = 64;
+        mProjectionApplyButton->set_fixed_width(convertWidth);
+        mProjectionComboBox->set_fixed_width(std::max(40, fieldWidth - 6 - convertWidth));
+    }
+    if (mHighlightModeComboBox) {
+        mHighlightModeComboBox->set_fixed_width(fieldWidth);
+    }
+    if (mHighlightMinBox && mHighlightMaxBox && mHighlightEnableButton && mHighlightClearButton) {
+        constexpr int gap = 4;
+        constexpr int buttonWidth = 44;
+        const int boxWidth = std::max(28, (fieldWidth - 3 * gap - 2 * buttonWidth) / 2);
+        mHighlightMinBox->set_fixed_width(boxWidth);
+        mHighlightMaxBox->set_fixed_width(boxWidth);
+        mHighlightEnableButton->set_fixed_width(buttonWidth);
+        mHighlightClearButton->set_fixed_width(buttonWidth);
+    }
+    if (mRoiRegionValueLabel && mRoiClearButton) {
+        constexpr int clearWidth = 60;
+        mRoiClearButton->set_fixed_width(clearWidth);
+        mRoiRegionValueLabel->set_fixed_width(std::max(40, fieldWidth - 8 - clearWidth));
+    }
     if (mRoiStatsLabel) {
-        // A fixed width makes the label wrap and honour the per-channel line breaks.
-        mRoiStatsLabel->set_fixed_width(std::max(60, mSidebarLayout->fixed_width() - 2 * 5));
+        mRoiStatsLabel->set_fixed_width(std::max(60, rowWidth));
     }
 }
 
 void ImageViewer::setOffset(float value) {
     value = round(value, 2.0f);
     mOffsetSlider->set_value(value);
-    mOffsetLabel->set_caption(format("Offset: {:+.2f}", value));
+    mOffsetLabel->set_caption(mSidebarOnRight ? format("{:+.2f}", value) : format("Offset: {:+.2f}", value));
 
     mImageCanvas->setOffset(value);
 }
@@ -4824,7 +5017,7 @@ void ImageViewer::setOffset(float value) {
 void ImageViewer::setGamma(float value) {
     value = round(value, 2.0f);
     mGammaSlider->set_value(value);
-    mGammaLabel->set_caption(format("Gamma: {:+.2f}", value));
+    mGammaLabel->set_caption(mSidebarOnRight ? format("{:.2f}", value) : format("Gamma: {:+.2f}", value));
 
     mImageCanvas->setGamma(value);
 }

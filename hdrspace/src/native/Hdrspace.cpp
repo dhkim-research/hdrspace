@@ -1343,8 +1343,27 @@ public:
 
     const std::string& text() const { return plainText_; }
 
+    // Shown, muted, while the area is empty: says where the result will appear.
+    void setPlaceholder(std::string text) { placeholder_ = std::move(text); }
+
+    void draw(NVGcontext* ctx) override {
+        TextArea::draw(ctx);
+        if (!plainText_.empty() || placeholder_.empty()) {
+            return;
+        }
+        nvgSave(ctx);
+        nvgFontFace(ctx, "sans");
+        nvgFontSize(ctx, 12.0f);
+        nvgFillColor(ctx, hdrspaceMutedInk(150));
+        nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        const float pad = static_cast<float>(std::max(4, padding()));
+        nvgTextBox(ctx, m_pos.x() + pad, m_pos.y() + pad, std::max(10.0f, m_size.x() - 2.0f * pad), placeholder_.c_str(), nullptr);
+        nvgRestore(ctx);
+    }
+
 private:
     std::string plainText_;
+    std::string placeholder_;
 };
 
 tev::ImageViewer* sImageViewer = nullptr;
@@ -1566,6 +1585,8 @@ public:
     void setSelected(bool selected) { selected_ = selected; }
     bool selected() const { return selected_; }
     void setCompact(bool compact) { compact_ = compact; }
+    // A tool that cannot run in this version: drawn greyed, still clickable (its panel says why).
+    void setUnavailable(bool unavailable) { unavailable_ = unavailable; }
     bool twoLine() const { return twoLine_; }
     void draw(NVGcontext* ctx) override {
         const float x = m_pos.x(), y = m_pos.y(), w = m_size.x(), h = m_size.y();
@@ -1588,19 +1609,20 @@ public:
             nvgFontFace(ctx, "icons");
             nvgFontSize(ctx, 14.0f);
             nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-            nvgFillColor(ctx, selected_ ? hdrspaceAccent() : hdrspaceMutedInk());
+            nvgFillColor(ctx, selected_ ? hdrspaceAccent() : hdrspaceMutedInk(unavailable_ ? 90 : 255));
             nvgText(ctx, compact_ ? x + w * 0.5f : x + 20.0f, lineY, glyph.data(), nullptr);
         }
         if (!compact_) {
             nvgFontFace(ctx, "sans");
             nvgFontSize(ctx, static_cast<float>(font_size()));
             nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-            nvgFillColor(ctx, enabled() ? (selected_ ? hdrspaceInk() : Color(214, 217, 220, 255)) : Color(140, 144, 149, 255));
+            nvgFillColor(ctx, enabled() && !unavailable_ ? (selected_ ? hdrspaceInk() : Color(214, 217, 220, 255))
+                                                         : Color(140, 144, 149, unavailable_ && !selected_ ? 150 : 255));
             const auto name = caption();
             const float nameEnd = nvgText(ctx, x + 38.0f, lineY, name.data(), name.data() + name.size());
             if (!detail_.empty()) {
                 nvgFontSize(ctx, 12.0f);
-                nvgFillColor(ctx, Color(150, 154, 159, 255));
+                nvgFillColor(ctx, Color(150, 154, 159, unavailable_ ? 130 : 255));
                 const float detailX = twoLine_ ? x + 38.0f : nameEnd + 8.0f;
                 const float detailY = twoLine_ ? y + 31.0f : lineY;
                 nvgScissor(ctx, detailX, y, std::max(0.0f, x + w - 8.0f - detailX), h);
@@ -1616,6 +1638,7 @@ private:
     bool twoLine_ = false;
     bool selected_ = false;
     bool compact_ = false;
+    bool unavailable_ = false;
 };
 
 // Header toggle for the tool rail (left) or the inspector (right). The glyph is a
@@ -2039,6 +2062,8 @@ public:
     InspectorKeyValueSummary(Widget* parent, const std::string& caption) : Label(parent, caption, "sans", 13) {}
     // Keys drawn as big numbers above the rows (none: rows only).
     void setHeadlineKeys(std::vector<std::string> keys) { headlineKeys_ = std::move(keys); }
+    // Lines without "Key:" are errors (red) by default; muted for notes that only inform.
+    void setNotesMuted(bool muted) { notesMuted_ = muted; }
 
     nanogui::Vector2i preferred_size_impl(NVGcontext* ctx) const override {
         const Parsed parsed = parse();
@@ -2082,10 +2107,11 @@ public:
             nvgFontSize(ctx, 13.0f);
             nvgFillColor(ctx, hdrspaceMutedInk(200));
             nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-            nvgText(ctx, x, y + 12.0f, key.c_str(), nullptr);
+            const float keyWidth = nvgText(ctx, x, y + 12.0f, key.c_str(), nullptr) - x;
             nvgFillColor(ctx, hdrspaceInk(230));
             nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
-            nvgText(ctx, x + w, y + 12.0f, value.c_str(), nullptr);
+            const std::string shown = fitText(ctx, value, w - keyWidth - 12.0f);
+            nvgText(ctx, x + w, y + 12.0f, shown.c_str(), nullptr);
             nvgBeginPath(ctx);
             nvgMoveTo(ctx, x, y + 23.5f);
             nvgLineTo(ctx, x + w, y + 23.5f);
@@ -2098,7 +2124,7 @@ public:
             nvgFontFace(ctx, "sans");
             nvgFontSize(ctx, 12.0f);
             nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
-            nvgFillColor(ctx, Color(240, 140, 128, 255));
+            nvgFillColor(ctx, notesMuted_ ? hdrspaceMutedInk(190) : Color(240, 140, 128, 255));
             nvgTextBox(ctx, x, y + 8.0f, w, parsed.notes.c_str(), nullptr);
         }
         nvgRestore(ctx);
@@ -2110,6 +2136,27 @@ private:
         std::vector<std::pair<std::string, std::string>> rows;
         std::string notes;
     };
+
+    // The value as wide as the row allows; a longer one ends in "…" (UTF-8 aware).
+    static std::string fitText(NVGcontext* ctx, const std::string& text, float maxWidth) {
+        float bounds[4];
+        if (nvgTextBounds(ctx, 0, 0, text.c_str(), nullptr, bounds) <= maxWidth) {
+            return text;
+        }
+        std::string cut = text;
+        while (!cut.empty()) {
+            size_t end = cut.size() - 1;
+            while (end > 0 && (static_cast<unsigned char>(cut[end]) & 0xC0) == 0x80) {
+                --end;
+            }
+            cut.erase(end);
+            const std::string candidate = cut + "\u2026";
+            if (nvgTextBounds(ctx, 0, 0, candidate.c_str(), nullptr, bounds) <= maxWidth) {
+                return candidate;
+            }
+        }
+        return "\u2026";
+    }
 
     static std::string trimmed(const std::string& text) {
         const auto b = text.find_first_not_of(" \t");
@@ -2151,6 +2198,7 @@ private:
     }
 
     std::vector<std::string> headlineKeys_{"Visibility ratio", "Quality"};
+    bool notesMuted_ = false;
 };
 
 // ---- Floating report window parts (Glare report) -------------------------------------------
@@ -5806,7 +5854,6 @@ public:
         fs::path da3RuntimeRoot;
         fs::path da3HfHomeDir;
         fs::path mergehdr;
-        fs::path oiiotool;
         fs::path profilesDir;
         fs::path hdrvdpDataDir;
         fs::path radianceRoot;
@@ -5829,6 +5876,11 @@ public:
     struct WorkerTask {
         std::mutex mutex;
         bool active = false;
+    };
+
+    // A perceptual map's value statistics (the false-colour ramp and the readouts).
+    struct PerceptualStats {
+        double min = 0.0, max = 0.0, median = 0.0, mean = 0.0, p01 = 0.0, p99 = 0.0;
     };
 
     struct PersistentAiProcess {
@@ -5968,12 +6020,13 @@ public:
         buildRightInspectorToggleUi();
         buildContextStripUi();
         buildRecentHdrBarUi();
-        viewer_->setCropSaveHandler([this](const fs::path& inputPath, const fs::path& outputPath, const tev::Box2i& crop) {
-            saveCropWithMergehdr(inputPath, outputPath, crop);
+        viewer_->setCropSaveHandler([this](const fs::path& inputPath, const fs::path& outputPath, const tev::Box2i& crop,
+                                           tev::ImageViewer::SaveDone done) {
+            saveCropWithMergehdr(inputPath, outputPath, crop, std::move(done));
         });
         viewer_->setProjectionSaveHandler([this](const fs::path& inputPath, const fs::path& outputPath,
-                const std::string& fromProjection, const std::string& toProjection) {
-            saveProjectionWithMergehdr(inputPath, outputPath, fromProjection, toProjection);
+                const std::string& fromProjection, const std::string& toProjection, tev::ImageViewer::SaveDone done) {
+            saveProjectionWithMergehdr(inputPath, outputPath, fromProjection, toProjection, std::move(done));
         });
         viewer_->setImageInsertedCallback([this](const std::shared_ptr<tev::Image>& image) {
             if (!image) {
@@ -6132,23 +6185,6 @@ private:
             }
         }
 
-#if defined(_WIN32)
-        const fs::path bundledOiiotool = out.appRoot / "bin" / "oiiotool.exe";
-#else
-        const fs::path bundledOiiotool = out.appRoot / "MacOS" / "oiiotool";
-#endif
-        if (fs::exists(bundledOiiotool)) {
-            out.oiiotool = fs::weakly_canonical(bundledOiiotool);
-        } else {
-            out.oiiotool = findOnPath("oiiotool");
-            if (out.oiiotool.empty()) {
-                fs::path brew{"/opt/homebrew/bin/oiiotool"};
-                if (fs::exists(brew)) {
-                    out.oiiotool = brew;
-                }
-            }
-        }
-
         const fs::path bundledHdrvdp3DataDir = out.appRoot / "Resources" / "hdrvdp3" / "data";
         if (fs::exists(bundledHdrvdp3DataDir) && fs::is_directory(bundledHdrvdp3DataDir)) {
             out.hdrvdpDataDir = bundledHdrvdp3DataDir;
@@ -6167,12 +6203,6 @@ private:
             fs::path configured = settings["mergehdrPath"];
             if (fs::exists(configured)) {
                 out.mergehdr = fs::weakly_canonical(configured);
-            }
-        }
-        if (!settings["oiiotoolPath"].empty()) {
-            fs::path configured = settings["oiiotoolPath"];
-            if (fs::exists(configured)) {
-                out.oiiotool = fs::weakly_canonical(configured);
             }
         }
 
@@ -6388,8 +6418,11 @@ private:
 
             // Every tool in the rail, plus the states a single click does not show.
             struct Step {
+                Step(std::string stepName, std::function<void()> stepAction, std::function<bool()> stepReady = {})
+                    : name(std::move(stepName)), action(std::move(stepAction)), ready(std::move(stepReady)) {}
                 std::string name;
                 std::function<void()> action;
+                std::function<bool()> ready;  // optional: background work to wait for before the picture
             };
             auto slug = [](const std::string& text) {
                 std::string out;
@@ -6423,6 +6456,12 @@ private:
                 } else if (names[i] == "Calibrate") {
                     steps.push_back({"calibrate-shutter", [this]() { setActiveSection(LeftSection::Shutter); refreshHdrspaceNavigation(); }});
                     steps.push_back({"calibrate-aperture", [this]() { setActiveSection(LeftSection::Aperture); refreshHdrspaceNavigation(); }});
+                } else if (names[i] == "Perceptual maps") {
+                    // A map computed on its background job, pictured once it is shown.
+                    steps.push_back({"perceptual-map", [this]() { computePerceptualMap(); }, [this]() {
+                        std::lock_guard<std::mutex> lock{perceptualTask_.mutex};
+                        return !perceptualTask_.active && perceptualStats_.has_value();
+                    }});
                 } else if (names[i] == "Create View") {
                     steps.push_back({"create-view-top", [this]() {
                         createViewCanvasTab_ = 1;
@@ -6450,6 +6489,9 @@ private:
                     viewer_->cursor_pos_callback_event(-1000.0, -1000.0);  // no hover, no tooltip
                     relayoutDesktopPanelsPreserveViewerUi();
                 });
+                if (steps[s].ready && !waitForUiCondition(steps[s].ready, 120s)) {
+                    throw std::runtime_error(steps[s].name + " did not finish within 2 minutes");
+                }
                 std::this_thread::sleep_for(900ms);  // the inspector slides in
                 auto [rgba, size] = captureGuiTestFrame();
                 if (rgba.empty()) {
@@ -7924,9 +7966,24 @@ private:
             const fs::path outputDir = fs::path(folders.front()) /
                 (sanitizeStem(referencePath) + "_" + sanitizeStem(testPath) + "_view_visibility_steps");
             setViewVisibilityStatusCaption("Exporting native visibility step maps...");
-            writeViewVisibilityDebugDump(opts, outputDir.string());
-            setViewVisibilityStatusCaption("Native visibility step maps exported");
-            showMessage("View visibility step maps saved:\n" + outputDir.string());
+            // As the visibility itself, on a background job.
+            jobs_.start([this, opts, outputDir]() {
+                std::string error;
+                try {
+                    writeViewVisibilityDebugDump(opts, outputDir.string());
+                } catch (const std::exception& e) {
+                    error = e.what();
+                }
+                viewer_->scheduleToUiThread([this, outputDir, error]() {
+                    if (!error.empty()) {
+                        setViewVisibilityStatusCaption("Step map export failed");
+                        showMessage("Failed to export view visibility step maps: " + error);
+                        return;
+                    }
+                    setViewVisibilityStatusCaption("Native visibility step maps exported");
+                    showMessage("View visibility step maps saved:\n" + outputDir.string());
+                });
+            });
         } catch (const std::exception& e) {
             setViewVisibilityStatusCaption("Step map export failed");
             showMessage(std::string("Failed to export view visibility step maps: ") + e.what());
@@ -7987,8 +8044,8 @@ private:
             return;
         }
 
+        ViewVisibilitySummaryOptions opts;
         try {
-            ViewVisibilitySummaryOptions opts;
             opts.referencePath = referencePath.string();
             opts.testPath = testPath.string();
             opts.maskPath = maskPath.string();
@@ -8003,11 +8060,57 @@ private:
                     ? ViewVisibilitySummaryOptions::DetailMode::ContrastProxy
                     : ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset;
             opts.inputColor = selectedViewVisibilityInputColor();
+        } catch (const std::exception& e) {
+            resetViewVisibilityResult();
+            setViewVisibilityStatusCaption("View visibility summary failed");
+            setViewVisibilitySummaryCaption(
+                std::string{"View size: --\nReference baseline: --\nVisibility ratio: --\nQuality: --\nInput color: --\n\nError: "} + e.what()
+            );
+            return;
+        }
 
-            const ViewVisibilitySummaryResult coreResult = analyzeViewVisibilitySummary(opts);
-            const fs::path tempResultPath = viewVisibilityTempResultPath();
-            writeViewVisibilityResultHdr(tempResultPath.string(), coreResult);
+        // HDR-VDP takes seconds to minutes: it runs on a background job, and the result is shown
+        // when it is there, so the window keeps responding.
+        {
+            std::lock_guard<std::mutex> lock{viewVisibilityTask_.mutex};
+            if (viewVisibilityTask_.active) {
+                showMessage("View visibility is already being computed.");
+                return;
+            }
+            viewVisibilityTask_.active = true;
+        }
+        const fs::path tempResultPath = viewVisibilityTempResultPath();
+        setViewVisibilityStatusCaption("Computing view visibility...");
+        jobs_.start([this, opts, tempResultPath]() {
+            auto coreResult = std::make_shared<std::optional<ViewVisibilitySummaryResult>>();
+            std::string error;
+            try {
+                *coreResult = analyzeViewVisibilitySummary(opts);
+                writeViewVisibilityResultHdr(tempResultPath.string(), **coreResult);
+            } catch (const std::exception& e) {
+                error = e.what();
+                coreResult->reset();
+            }
+            viewer_->scheduleToUiThread([this, coreResult, error, tempResultPath]() {
+                {
+                    std::lock_guard<std::mutex> lock{viewVisibilityTask_.mutex};
+                    viewVisibilityTask_.active = false;
+                }
+                if (!error.empty() || !coreResult->has_value()) {
+                    resetViewVisibilityResult();
+                    setViewVisibilityStatusCaption("View visibility summary failed");
+                    setViewVisibilitySummaryCaption(
+                        std::string{"View size: --\nReference baseline: --\nVisibility ratio: --\nQuality: --\nInput color: --\n\nError: "} + error
+                    );
+                    return;
+                }
+                finishViewVisibilitySummary(**coreResult, tempResultPath);
+            });
+        });
+    }
 
+    void finishViewVisibilitySummary(const ViewVisibilitySummaryResult& coreResult, const fs::path& tempResultPath) {
+        {
             ViewVisibilityNativeResult result;
             result.viewSize = coreResult.viewSize;
             result.referenceTotal = coreResult.referenceTotal;
@@ -8034,12 +8137,6 @@ private:
             ));
             applyViewVisibilityResultDisplay(false, true);
             updateContextStripUi();
-        } catch (const std::exception& e) {
-            resetViewVisibilityResult();
-            setViewVisibilityStatusCaption("View visibility summary failed");
-            setViewVisibilitySummaryCaption(
-                std::string{"View size: --\nReference baseline: --\nVisibility ratio: --\nQuality: --\nInput color: --\n\nError: "} + e.what()
-            );
         }
     }
 
@@ -8298,6 +8395,7 @@ private:
         glareThresholdBox_->set_fixed_height(kInspectorRowHeight);
         glareThresholdBox_->set_font_size(13);
         glareThresholdBox_->set_units("cd/m\u00b2");
+        glareThresholdBox_->set_tooltip("Empty: 2000 cd/m\u00b2, or task luminance \u00d7 5 when a task area is set");
         auto* thresholdHelpButton = new Button(thresholdRow, "?");
         thresholdHelpButton->set_fixed_size({22, 22});
         thresholdHelpButton->set_font_size(12);
@@ -8306,10 +8404,6 @@ private:
         thresholdHelpButton->set_text_color(Color(238, 239, 240, 255));
         thresholdHelpButton->set_tooltip("Threshold help");
         thresholdHelpButton->set_padding({3, 0});
-
-        auto* thresholdNote = new Label(thresholdSection, "Blank: 2000, or task luminance \u00d7 5", "sans", 12);
-        thresholdNote->set_color(hdrspaceMutedInk(185));
-        thresholdNote->set_fixed_width(kGlareFullRowWidth);
 
         auto* thresholdHelpBody = new Widget(thresholdSection);
         thresholdHelpBody->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
@@ -8732,7 +8826,7 @@ private:
         reportRow->set_fixed_width(kGlareFullRowWidth);
         glareReportButton_ = new tev::ImageButton(reportRow, "No report yet", false);
         glareReportButton_->set_fixed_size({kGlareFullRowWidth, 22});
-        glareReportButton_->set_font_size(14);
+        glareReportButton_->set_font_size(13);
         glareReportButton_->setId(0);
         glareReportButton_->setCaptionLeftAligned(true);
         glareReportButton_->setSelectedCallback([this] {
@@ -8754,14 +8848,14 @@ private:
 
         auto makeGlareProfileRow = [&](Widget* host, const std::string& title, const std::vector<std::string>& items, ComboBox*& outCombo) {
             auto* row = new Widget(host);
-            row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 4, 0});
+            row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
             row->set_fixed_width(kGlareFullRowWidth);
-            auto* label = new Label(row, title, "sans", 14);
-            label->set_color(Color(210, 255));
+            auto* label = new Label(row, title, "sans", 13);
+            label->set_color(hdrspaceMutedInk(215));
             label->set_fixed_width(kGlareProfileLabelWidth);
             outCombo = new InspectorComboBox(row, items, items);
-            outCombo->set_fixed_width(kGlareFullRowWidth - kGlareProfileLabelWidth - 4);
-            outCombo->set_font_size(14);
+            outCombo->set_fixed_size({kGlareFullRowWidth - kGlareProfileLabelWidth - 8, kInspectorRowHeight});
+            outCombo->set_font_size(13);
             outCombo->set_chevron_icon(0);
             outCombo->set_side(Popup::Side::Left);
         };
@@ -8881,6 +8975,14 @@ private:
             outLabel->set_color(hdrspaceMutedInk(220));
             dot->setSource(outLabel);
         };
+
+        // The panel serves two tools with their own sections: AI Segmentation (status, Generate,
+        // Review, Apply) and View Volume (status, Image VOS). Only the part of the tool that
+        // opened the panel is shown (applyControlsPlacement), each with its status line on top.
+        Widget* const scrollContent = content;
+        aiSegSectionHost_ = new Widget(scrollContent);
+        aiSegSectionHost_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
+        content = aiSegSectionHost_;
 
 #if defined(_WIN32)
         statusLine(aiSegStatusLabel_, "Not available in the Windows version (the AI models run on macOS only)");
@@ -9047,17 +9149,21 @@ private:
         aiSegSavePreviewButton_->set_fixed_width(kFullRowWidth);
         aiSegSavePreviewButton_->set_callback([this] { saveSelectedAiSegmentationPreview(); });
 
+        imageVosSectionHost_ = new Widget(scrollContent);
+        imageVosSectionHost_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
+        imageVosSectionHost_->set_visible(false);
+        content = imageVosSectionHost_;
+#if defined(_WIN32)
+        statusLine(imageVosStatusLabel_, "Not available in the Windows version (Depth Anything 3 runs on macOS only)");
+#else
+        statusLine(imageVosStatusLabel_, "DA3 Metric runtime not checked");
+#endif
         auto* vosHeader = heading(
             "Image VOS",
             "SAM3 separates buildings and greenery; HDR VIEW metadata selects equidistant tiling or direct perspective DA3Metric."
         );
         vosHeader->setDetail("Experimental");
         imageVosSectionAnchor_ = vosHeader;
-#if defined(_WIN32)
-        statusLine(imageVosStatusLabel_, "Not available in the Windows version (Depth Anything 3 runs on macOS only)");
-#else
-        statusLine(imageVosStatusLabel_, "DA3 Metric runtime not checked");
-#endif
 
         auto* exteriorRow = row("Exterior HDR", 6);
         imageVosExteriorReferenceBox_ = smallTextBox(exteriorRow, "optional");
@@ -9118,6 +9224,7 @@ private:
         imageVosAnalyzeButton_->set_callback([this] { startImageVosAnalysis(); });
         imageVosAnalyzeButton_->set_visible(false);
 
+        content = scrollContent;
         applyInspectorTypography(content);
         refreshGlareUi();
     }
@@ -9273,9 +9380,12 @@ private:
             }
         });
 
-        imageStatsAngularLabel_ = new Label(content, "Angular axis: --", "sans", 12);
+        // Shown only when Angle (deg) is chosen but the image has no usable VIEW; otherwise the
+        // Axis menu's tooltip says whether the angle axis is available.
+        imageStatsAngularLabel_ = new Label(content, "", "sans", 12);
         imageStatsAngularLabel_->set_fixed_width(kFullRowWidth);
         imageStatsAngularLabel_->set_color(hdrspaceMutedInk(190));
+        imageStatsAngularLabel_->set_visible(false);
 
         makeCombo("Graph", {"Line + Scatter", "Line", "Scatter"}, imageStatsGraphModeCombo_);
         imageStatsGraphModeCombo_->set_selected_index(0);
@@ -11777,7 +11887,15 @@ private:
 #else
             constexpr const char* kToolShortcut = "Ctrl+Alt";
 #endif
-            button->set_tooltip(shortcutKey != 0 ? std::format("{}  -  {}+{}", label, kToolShortcut, shortcutKey - GLFW_KEY_0) : label);
+            std::string tooltip = shortcutKey != 0 ? std::format("{}  -  {}+{}", label, kToolShortcut, shortcutKey - GLFW_KEY_0) : label;
+#if defined(_WIN32)
+            // SAM 3 and Depth Anything 3 run on macOS only: the two AI tools show greyed and say why.
+            if (plane == RightPlane::AiSegmentation) {
+                button->setUnavailable(true);
+                tooltip += "\nNot available in the Windows version (the AI models run on macOS only)";
+            }
+#endif
+            button->set_tooltip(tooltip);
             const size_t index = hdrspaceRail_.size();
             button->set_callback([this, index] { activateRailItem(index); });
             hdrspaceRail_.push_back({group, name, plane, section, focus, shortcutKey, button});
@@ -11932,7 +12050,7 @@ private:
         switch (item.focus) {
         case RailFocus::Crop: viewer_->focusCropControls(); break;
         case RailFocus::Perceptual: viewer_->openInspectionModeMenu(); break;
-        case RailFocus::Vos: scrollAiPanelTo(imageVosSectionAnchor_); break;
+        case RailFocus::Vos: scrollAiPanelTo(nullptr); break;  // its own sections start at the top
         case RailFocus::Top: scrollAiPanelTo(nullptr); break;
         case RailFocus::None: break;
         }
@@ -13383,6 +13501,15 @@ private:
                     imageVosAnalyzeButton_->set_visible(volume);
                     aiSegActionBar_->perform_layout(viewer_->nvg_context());
                 }
+                // ... and the scroll shows that tool's sections only.
+                if (aiSegSectionHost_ && imageVosSectionHost_ && aiSegSectionHost_->visible() == volume) {
+                    aiSegSectionHost_->set_visible(!volume);
+                    imageVosSectionHost_->set_visible(volume);
+                    if (aiSegScroll_) {
+                        aiSegScroll_->set_scroll(0.0f);
+                    }
+                    aiSegWindow_->perform_layout(viewer_->nvg_context());
+                }
             }
             if (aiSegScroll_) {
                 const Vector2i scrollSize{
@@ -13614,10 +13741,11 @@ private:
         }
     }
 
+    // A caption above a field or text area: grey 13, as the names in the inspector rows.
     Label* panelFieldLabel(Widget* parent, std::string_view text) {
-        auto* label = new Label(parent, text, "sans", 14);
+        auto* label = new Label(parent, text, "sans", 13);
         label->set_fixed_width(kInspectorContentWidth);
-        label->set_color(hdrspaceInk(220));
+        label->set_color(hdrspaceMutedInk(215));
         return label;
     }
 
@@ -15487,9 +15615,15 @@ private:
         else if (perceptualStats_ && perceptualComputedKey_ == perceptualSettingsKey()) status = std::string("Ready: ") + info.name + " shown.";
         else status = "Ready to compute";
         if (!perceptualErrorText_.empty()) status = perceptualErrorText_;
+        bool computing = false;
+        {
+            std::lock_guard<std::mutex> lock{perceptualTask_.mutex};
+            computing = perceptualTask_.active;
+        }
+        if (computing) status = std::string("Computing ") + info.name + "...";
         perceptualStatusLabel_->set_caption(status);
         const bool computable = usable && inputColor >= 0 && !(perceptualKind_ == 6 && viewer_->sourceColorKind() == 4);
-        perceptualComputeButton_->set_enabled(computable);
+        perceptualComputeButton_->set_enabled(computable && !computing);
         perceptualSaveButton_->set_enabled(perceptualStats_.has_value() && perceptualComputedKey_ == perceptualSettingsKey());
 
         const bool mapShown = viewer_ && viewer_->perceptualMapShown();
@@ -15569,19 +15703,56 @@ private:
             : inputColor == 2 ? ViewVisibilitySummaryOptions::InputColor::Xyz
             : inputColor == 3 ? ViewVisibilitySummaryOptions::InputColor::XyzCdm2
                               : ViewVisibilitySummaryOptions::InputColor::Rad;
-        PerceptualMapResult result;
-        try {
-            result = analyzePerceptualMap(opts, static_cast<PerceptualMapKind>(perceptualKind_));
-        } catch (const std::exception& e) {
-            perceptualErrorText_ = std::string("Could not compute the map: ") + e.what();
-            perceptualStats_.reset();
-            refreshPerceptualMapsUi();
-            return;
+        // The map (and its statistics) take seconds: they run on a background job. A request made
+        // meanwhile is remembered and computed with the settings of that moment afterwards.
+        {
+            std::lock_guard<std::mutex> lock{perceptualTask_.mutex};
+            if (perceptualTask_.active) {
+                perceptualRecomputePending_ = true;
+                return;
+            }
+            perceptualTask_.active = true;
         }
+        const int kind = perceptualKind_;
+        const std::string settingsKey = perceptualSettingsKey();
+        jobs_.start([this, opts, kind, settingsKey, ppd, sensitivity, inputColor]() {
+            auto result = std::make_shared<PerceptualMapResult>();
+            PerceptualStats stats;
+            std::string error;
+            try {
+                *result = analyzePerceptualMap(opts, static_cast<PerceptualMapKind>(kind));
+                stats = perceptualStatsOf(result->values);
+            } catch (const std::exception& e) {
+                error = e.what();
+            }
+            viewer_->scheduleToUiThread([this, result, stats, error, opts, kind, settingsKey, ppd, sensitivity, inputColor]() {
+                bool again = false;
+                {
+                    std::lock_guard<std::mutex> lock{perceptualTask_.mutex};
+                    perceptualTask_.active = false;
+                    again = perceptualRecomputePending_;
+                    perceptualRecomputePending_ = false;
+                }
+                if (again && settingsKey != perceptualSettingsKey()) {
+                    computePerceptualMap();  // the settings changed meanwhile: this result is stale
+                    return;
+                }
+                if (!error.empty()) {
+                    perceptualErrorText_ = std::string("Could not compute the map: ") + error;
+                    perceptualStats_.reset();
+                    refreshPerceptualMapsUi();
+                    return;
+                }
+                showComputedPerceptualMap(*result, stats, opts, kind, settingsKey, ppd, sensitivity, inputColor);
+            });
+        });
+        refreshPerceptualMapsUi();
+    }
 
+    static PerceptualStats perceptualStatsOf(const std::vector<float>& values) {
         PerceptualStats stats;
-        if (!result.values.empty()) {
-            std::vector<float> sorted = result.values;
+        if (!values.empty()) {
+            std::vector<float> sorted = values;
             std::sort(sorted.begin(), sorted.end());
             const auto at = [&](double q) { return static_cast<double>(sorted[static_cast<size_t>(q * static_cast<double>(sorted.size() - 1))]); };
             stats.min = sorted.front();
@@ -15603,19 +15774,24 @@ private:
                 stats.p99 = at(0.99);
             }
             double sum = 0.0;
-            for (float v : result.values) sum += v;
-            stats.mean = sum / static_cast<double>(result.values.size());
+            for (float v : values) sum += v;
+            stats.mean = sum / static_cast<double>(values.size());
         }
+        return stats;
+    }
+
+    void showComputedPerceptualMap(const PerceptualMapResult& result, const PerceptualStats& stats, const PerceptualMapOptions& opts,
+                                   int kind, const std::string& settingsKey, double ppd, double sensitivity, int inputColor) {
         perceptualStats_ = stats;
-        perceptualComputedKey_ = perceptualSettingsKey();
+        perceptualComputedKey_ = settingsKey;
         perceptualResultWidth_ = result.width;
         perceptualResultHeight_ = result.height;
-        perceptualResultValues_ = std::move(result.values);
+        perceptualResultValues_ = result.values;
         perceptualResultPpd_ = ppd;
         perceptualResultSensitivity_ = sensitivity;
 
         viewer_->setPerceptualMapSettings(ppd, sensitivity, opts.spectralEmissionPath, inputColor);
-        if (!viewer_->showPerceptualMap(perceptualKind_)) {
+        if (!viewer_->showPerceptualMap(kind)) {
             perceptualErrorText_ = "The map could not be shown on the canvas.";
         }
         applyPerceptualDisplay();
@@ -15792,9 +15968,12 @@ private:
         blurStatusLabel_->set_color(hdrspaceMutedInk(220));
         blurStatusDot->setSource(blurStatusLabel_);
 
-        blurImageSummaryLabel_ = new Label(imageCard, "Image: --", "sans", 12);
-        blurImageSummaryLabel_->set_fixed_width(kInspectorContentWidth);
-        blurImageSummaryLabel_->set_color(hdrspaceMutedInk(214));
+        // One row per value, as Perceptual maps' Image section; a note goes under the rows.
+        auto* imageRows = new InspectorKeyValueSummary(imageCard, "File: --");
+        imageRows->setHeadlineKeys({});
+        imageRows->setNotesMuted(true);
+        imageRows->set_fixed_width(kInspectorContentWidth);
+        blurImageSummaryLabel_ = imageRows;
 
         makeStepHeading("Settings", "Physical blur uses mm/pixel and FWHM(mm). Human-vision modes are perspective-only and use Watson eccentricity fits.");
         auto* settingsCard = new Widget(content);
@@ -15926,17 +16105,19 @@ private:
         makeBlurHeadlineCard(blurHeadlineRow, "Before Ω", blurHeadlineBeforeTitleLabel_, blurHeadlineBeforeValueLabel_);
         makeBlurHeadlineCard(blurHeadlineRow, "After Ω", blurHeadlineAfterTitleLabel_, blurHeadlineAfterValueLabel_);
 
-        blurLiveMetricsLabel_ = new Label(metricsCard, "Current highlight: --", "sans", 12);
-        blurLiveMetricsLabel_->set_fixed_width(kInspectorContentWidth);
-        blurLiveMetricsLabel_->set_color(hdrspaceMutedInk(214));
-
-        blurPreMetricsLabel_ = new Label(metricsCard, "Before blur: --", "sans", 12);
-        blurPreMetricsLabel_->set_fixed_width(kInspectorContentWidth);
-        blurPreMetricsLabel_->set_color(hdrspaceMutedInk(214));
-
-        blurPostMetricsLabel_ = new Label(metricsCard, "After blur: --", "sans", 12);
-        blurPostMetricsLabel_->set_fixed_width(kInspectorContentWidth);
-        blurPostMetricsLabel_->set_color(hdrspaceMutedInk(214));
+        auto metricsBlock = [&](const std::string& title) {
+            auto* caption = new Label(metricsCard, title, "sans-bold", 12);
+            caption->set_fixed_width(kInspectorContentWidth);
+            caption->set_color(hdrspaceMutedInk(205));
+            auto* rows = new InspectorKeyValueSummary(metricsCard, "--");
+            rows->setHeadlineKeys({});
+            rows->setNotesMuted(true);
+            rows->set_fixed_width(kInspectorContentWidth);
+            return rows;
+        };
+        blurLiveMetricsLabel_ = metricsBlock("Current highlight");
+        blurPreMetricsLabel_ = metricsBlock("Before blur");
+        blurPostMetricsLabel_ = metricsBlock("After blur");
 
         blurProfileGraphRows_ = new tev::ProfileGraph(metricsCard, "Selected Rows");
         blurProfileGraphRows_->set_fixed_height(164);
@@ -15959,16 +16140,21 @@ private:
         refreshBlurUi();
     }
 
+    // "Key: value" lines for the Image rows; the note (without the leading "Blur ready.") under them.
     static std::string formatBlurImageSummary(const BlurPerspectiveImageInfo& info) {
         if (!info.valid) {
-            return "Image: --\n" + (info.note.empty() ? std::string("Open a saved HDR image first.") : info.note);
+            return "File: --\n" + (info.note.empty() ? std::string("Open a saved HDR image first.") : info.note);
         }
         const std::string projection = info.metricsAvailable ? info.viewInfo.projectionLabel : "--";
         const std::string fov = info.metricsAvailable ? std::format("{:.1f} x {:.1f}°", info.viewInfo.vh, info.viewInfo.vv) : "--";
         const std::string ppd = info.metricsAvailable ? std::format("{:.2f} x {:.2f}", info.ppdX, info.ppdY) : "--";
         const std::string solidAngle = info.metricsAvailable ? std::format("{:.5f} sr", info.fullViewSolidAngleSteradians) : "--";
+        std::string note = info.note;
+        if (note.rfind("Blur ready. ", 0) == 0) {
+            note.erase(0, 12);
+        }
         return std::format(
-            "Image: {}\nSize: {} × {}\nProjection: {}\nFoV: {}\nPPD: {}\nFull view Ω: {}\nLuminance: {}\n{}",
+            "File: {}\nSize: {} × {}\nProjection: {}\nFoV: {}\nPPD: {}\nFull view Ω: {}\nLuminance: {}\n{}",
             info.sourceLabel,
             info.width,
             info.height,
@@ -15979,7 +16165,7 @@ private:
             info.luminanceEvaluator.valid
                 ? (info.luminanceEvaluator.description.empty() ? std::string("Available") : info.luminanceEvaluator.description)
                 : std::string("Unavailable"),
-            info.note.empty() ? std::string{} : info.note
+            note
         );
     }
 
@@ -15997,13 +16183,17 @@ private:
         );
     }
 
-    static std::string formatBlurMetricsSummary(const std::string& title, const BlurThresholdMetrics& metrics) {
+    // "Key: value" lines for one block of source-metric rows (the block's caption is a label above).
+    static std::string formatBlurMetricsSummary(const BlurThresholdMetrics& metrics) {
         if (!metrics.valid) {
-            return title + ": --\n" + (metrics.note.empty() ? std::string("No thresholded source metrics are available.") : metrics.note);
+            std::string note = metrics.note.empty() ? std::string("No thresholded source metrics yet.") : metrics.note;
+            if (note.rfind("Blur ready. ", 0) == 0) {
+                note.erase(0, 12);
+            }
+            return note;
         }
         return std::format(
-            "{}\nThreshold: {:.3f} cd/m²\nPixels: {}\nΩ: {:.5f} sr ({:.2f}% of view)\nLavg: {:.2f} cd/m²\nRange: {:.2f} to {:.2f} cd/m²\nFoV L/R/U/D: {:.1f} / {:.1f} / {:.1f} / {:.1f}°\nFoV W x H: {:.1f} x {:.1f}°",
-            title,
+            "Threshold: {:.3f} cd/m²\nPixels: {}\nΩ: {:.5f} sr ({:.2f}% of view)\nLavg: {:.2f} cd/m²\nRange: {:.2f} to {:.2f} cd/m²\nFoV L/R/U/D: {:.1f} / {:.1f} / {:.1f} / {:.1f}°\nFoV W × H: {:.1f} × {:.1f}°",
             metrics.threshold,
             metrics.activePixelCount,
             metrics.solidAngleSteradians,
@@ -16305,9 +16495,9 @@ private:
             blurKernelSummaryLabel_->set_caption((mode == BlurRunMode::PhysicalSizeGaussian ? "Kernel: " : "Human vision: ") + parameterError);
         }
 
-        blurLiveMetricsLabel_->set_caption(formatBlurMetricsSummary("Current highlight", blurLivePreview_.metrics));
-        blurPreMetricsLabel_->set_caption(formatBlurMetricsSummary("Before blur", blurPreMetrics_));
-        blurPostMetricsLabel_->set_caption(formatBlurMetricsSummary("After blur", blurPostMetrics_));
+        blurLiveMetricsLabel_->set_caption(formatBlurMetricsSummary(blurLivePreview_.metrics));
+        blurPreMetricsLabel_->set_caption(formatBlurMetricsSummary(blurPreMetrics_));
+        blurPostMetricsLabel_->set_caption(formatBlurMetricsSummary(blurPostMetrics_));
         if (blurHeadlineCurrentValueLabel_) {
             blurHeadlineCurrentValueLabel_->set_caption(formatBlurMetricHeadlineValue(blurLivePreview_.metrics));
         }
@@ -16336,7 +16526,7 @@ private:
             } else if (!blurResultPath_.empty()) {
                 blurStatusLabel_->set_caption(std::format("Blur ready: {}", blurResultPath_.filename().string()));
             } else {
-                blurStatusLabel_->set_caption("Saved HDR ready. Choose a blur mode, then optionally add a threshold for source metrics.");
+                blurStatusLabel_->set_caption("Ready");
             }
         }
 
@@ -18306,6 +18496,12 @@ private:
         refreshCreateViewMaterialChoiceUi();
         refreshCreateViewMaterialEditorUi();
         refreshCreateViewSummaryLabels();
+        // Without a room the empty material editor stays folded; it opens when a room is loaded.
+        if (createViewRoomInfo_.valid != createViewMaterialsRoomLoaded_) {
+            createViewMaterialsRoomLoaded_ = createViewRoomInfo_.valid;
+            createViewMaterialsExpanded_ = createViewRoomInfo_.valid;
+            refreshCreateViewMaterialsVisibility();
+        }
         if (createViewCanvasRenderPreview_) {
             createViewCanvasRenderPreview_->clearPreview(kCreateViewPreviewHint);
         }
@@ -18472,6 +18668,7 @@ private:
         createViewMaterialsToggleButton_ = new InspectorDisclosureButton(content, "Material editor");
         createViewMaterialsToggleButton_->set_fixed_width(kInspectorContentWidth);
         createViewMaterialsToggleButton_->set_pushed(createViewMaterialsExpanded_);
+        createViewMaterialsToggleButton_->set_tooltip("Opens by itself when a room (.rad) is loaded");
         createViewMaterialsToggleButton_->set_change_callback([this](bool open) {
             createViewMaterialsExpanded_ = open;
             refreshCreateViewMaterialsVisibility();
@@ -19154,9 +19351,7 @@ private:
         colorResultArea_->set_selectable(true);
         colorResultArea_->set_font("mono");
         colorResultArea_->set_background_color(Color{14, 180});
-
-        auto* horizontalScrollLabel = new Label(resultHost, "Horizontal scroll", "sans", 12);
-        horizontalScrollLabel->set_color(Color(170, 174, 179, 220));
+        colorResultArea_->setPlaceholder("Run color calibration to see the fit and the recommended xyzcam here");
 
         auto* horizontalScrollRow = new Widget(resultHost);
         horizontalScrollRow->set_fixed_size({kTabContentWidth, 26});
@@ -19278,6 +19473,7 @@ private:
         shutterResultArea_->set_padding(8);
         shutterResultArea_->set_selectable(true);
         shutterResultArea_->set_background_color(Color{14, 180});
+        shutterResultArea_->setPlaceholder("Run shutter calibration to see the result here");
     }
 
     void buildApertureTab(Widget* parent) {
@@ -19324,6 +19520,7 @@ private:
         apertureResultArea_->set_padding(8);
         apertureResultArea_->set_selectable(true);
         apertureResultArea_->set_background_color(Color{14, 180});
+        apertureResultArea_->setPlaceholder("Run aperture calibration to see the result here");
     }
 
     void buildSettingsTab(Widget* parent) {
@@ -19348,7 +19545,6 @@ private:
         };
         // The "Set a valid mergehdr path in Settings." messages point here (#84).
         mergehdrPathBox_ = pathRow("mergehdr", "bundled", "mergehdr path (leave empty for the bundled mergehdr)");
-        oiiotoolPathBox_ = pathRow("oiiotool", "optional", "oiiotool path (optional)");
         (void)kTabFieldFont;
         (void)kTabActionFont;
 
@@ -22125,7 +22321,8 @@ private:
                 imageStatsRegionSummaryLabel_->set_caption("Open an image first");
             }
             if (imageStatsAngularLabel_) {
-                imageStatsAngularLabel_->set_caption("Angular axis: unavailable");
+                imageStatsAngularLabel_->set_caption("Angle axis: open an image first");
+                imageStatsAngularLabel_->set_visible(false);
             }
             clearImageStatisticsResult();
             updateContextStripUi();
@@ -22171,11 +22368,14 @@ private:
         }
 
         const std::string angularMessage = native::imageStatisticsAngularAxisMessage(*viewer_->currentImage());
-        imageStatsAngularLabel_->set_caption(
-            angularMessage.empty()
-                ? "Angular axis: available"
-                : "Angular axis: " + angularMessage
-        );
+        const bool angleChosen = imageStatsAxisModeCombo_ && imageStatsAxisModeCombo_->selected_index() == 1;
+        imageStatsAngularLabel_->set_caption(angularMessage.empty() ? std::string{} : "Angle axis: " + angularMessage);
+        imageStatsAngularLabel_->set_visible(angleChosen && !angularMessage.empty());
+        if (imageStatsAxisModeCombo_) {
+            imageStatsAxisModeCombo_->set_tooltip(angularMessage.empty()
+                ? "Angle (deg) is available for this image (VIEW header)"
+                : "Angle (deg): " + angularMessage);
+        }
 
         if (imageStatsResult_.has_value() && imageStatsResult_->ok) {
             applyImageStatisticsGraph(imageStatsGraphA_, imageStatsResult_->graphs.empty() ? std::nullopt : std::optional{imageStatsResult_->graphs.front()});
@@ -24091,9 +24291,6 @@ private:
             auto settings = readKeyValueFile(paths_.settingsFile);
             mergehdrPathBox_->set_value(trim(settings["mergehdrPath"]));
         }
-        if (oiiotoolPathBox_) {
-            oiiotoolPathBox_->set_value(paths_.oiiotool.string());
-        }
         if (viewVisibilityInputColorCombo_) {
             const auto values = readKeyValueFile(paths_.settingsFile);
             const auto it = values.find("viewVisibilityInputColor");
@@ -24114,9 +24311,6 @@ private:
             } else {
                 values["mergehdrPath"] = mergehdrPath;
             }
-        }
-        if (oiiotoolPathBox_) {
-            values["oiiotoolPath"] = normalizedTextBoxValue(oiiotoolPathBox_->value());
         }
         if (viewVisibilityInputColorCombo_) {
             values["viewVisibilityInputColor"] = viewVisibilityInputColorKey(viewVisibilityInputColorCombo_->selected_index());
@@ -24178,7 +24372,10 @@ private:
         cropBox_->set_value(currentViewerCropString());
     }
 
-    void saveCropWithMergehdr(const fs::path& inputPath, const fs::path& outputPath, const tev::Box2i& crop) {
+    // Checks here (an exception reaches the viewer's message), then mergehdr writes the file on a
+    // background job and `done` reports on the UI thread.
+    void saveCropWithMergehdr(const fs::path& inputPath, const fs::path& outputPath, const tev::Box2i& crop,
+                              tev::ImageViewer::SaveDone done) {
         if (paths_.mergehdr.empty() || !fs::exists(paths_.mergehdr)) {
             throw std::runtime_error("Set a valid mergehdr path in Settings.");
         }
@@ -24200,19 +24397,11 @@ private:
             << size.y()
             << " -o " << shellQuote(outputPath.string()) << " "
             << shellQuote(inputPath.string());
-
-        ProcessResult result = runShellCommandWithCapturedOutput(cmd.str());
-        if (result.exitCode != 0) {
-            throw std::runtime_error(trim(result.stderrText.empty() ? result.stdoutText : result.stderrText));
-        }
-        if (!fs::exists(outputPath)) {
-            throw std::runtime_error("mergehdr hdrcrop finished without writing the cropped HDR.");
-        }
-        rememberRecentHdr(outputPath, false, true);
+        runMergehdrSaveJob(cmd.str(), outputPath, "mergehdr hdrcrop finished without writing the cropped HDR.", std::move(done));
     }
 
     void saveProjectionWithMergehdr(const fs::path& inputPath, const fs::path& outputPath,
-            const std::string& fromProjection, const std::string& toProjection) {
+            const std::string& fromProjection, const std::string& toProjection, tev::ImageViewer::SaveDone done) {
         if (paths_.mergehdr.empty() || !fs::exists(paths_.mergehdr)) {
             throw std::runtime_error("Set a valid mergehdr path in Settings.");
         }
@@ -24228,15 +24417,37 @@ private:
             << " convertprojection --equisolid --equidistant"
             << " -o " << shellQuote(outputPath.string()) << " "
             << shellQuote(inputPath.string());
+        runMergehdrSaveJob(cmd.str(), outputPath, "mergehdr convertprojection finished without writing the projected HDR.", std::move(done));
+    }
 
-        ProcessResult result = runShellCommandWithCapturedOutput(cmd.str());
-        if (result.exitCode != 0) {
-            throw std::runtime_error(trim(result.stderrText.empty() ? result.stdoutText : result.stderrText));
-        }
-        if (!fs::exists(outputPath)) {
-            throw std::runtime_error("mergehdr convertprojection finished without writing the projected HDR.");
-        }
-        rememberRecentHdr(outputPath, false, true);
+    // Runs a mergehdr command that writes outputPath on a background job; `done` gets the error
+    // (empty when the file was written) on the UI thread.
+    void runMergehdrSaveJob(std::string command, fs::path outputPath, std::string missingMessage, tev::ImageViewer::SaveDone done) {
+        jobs_.start([this, command = std::move(command), outputPath, missingMessage = std::move(missingMessage),
+                     done = std::move(done)]() {
+            std::string error;
+            try {
+                const ProcessResult result = runShellCommandWithCapturedOutput(command);
+                if (result.exitCode != 0) {
+                    error = trim(result.stderrText.empty() ? result.stdoutText : result.stderrText);
+                    if (error.empty()) {
+                        error = std::format("mergehdr exited with status {}.", result.exitCode);
+                    }
+                } else if (!fs::exists(outputPath)) {
+                    error = missingMessage;
+                }
+            } catch (const std::exception& e) {
+                error = e.what();
+            }
+            viewer_->scheduleToUiThread([this, outputPath, error, done]() {
+                if (error.empty()) {
+                    rememberRecentHdr(outputPath, false, true);
+                }
+                if (done) {
+                    done(error);
+                }
+            });
+        });
     }
 
     void chooseInputFiles() {
@@ -25160,9 +25371,6 @@ private:
     InspectorKeyValueSummary* perceptualStatsLabel_ = nullptr;
     Button* perceptualComputeButton_ = nullptr;
     Button* perceptualSaveButton_ = nullptr;
-    struct PerceptualStats {
-        double min = 0.0, max = 0.0, median = 0.0, mean = 0.0, p01 = 0.0, p99 = 0.0;
-    };
     int perceptualKind_ = 0;
     bool perceptualLog_ = true;
     bool perceptualFalseColor_ = true;
@@ -25214,6 +25422,8 @@ private:
     Label* workspaceCrumbGroup_ = nullptr;
     Label* workspaceCrumbTool_ = nullptr;
     Widget* imageVosSectionAnchor_ = nullptr;
+    Widget* aiSegSectionHost_ = nullptr;     // AI Segmentation's sections in the shared panel
+    Widget* imageVosSectionHost_ = nullptr;  // View Volume's sections in the shared panel
     std::string hdrspaceFilenameFitKey_;
     std::string hdrspaceFilenameFitValue_;
     std::string hdrspaceStatusFitKey_;
@@ -25459,7 +25669,8 @@ private:
     CreateViewEnvironmentInfo createViewEnvironmentInfo_;
     CreateViewWindowFovInfo createViewWindowFovInfo_;
     CreateViewWindowMaskFovInfo createViewWindowMaskFovInfo_;
-    bool createViewMaterialsExpanded_ = true;
+    bool createViewMaterialsExpanded_ = false;
+    bool createViewMaterialsRoomLoaded_ = false;  // a room was loaded when the editor last opened or folded
     int createViewCanvasTab_ = 0;              // see refreshCreateViewViewportVisibility
     bool createViewPreviewRequested_ = false;  // a quick render ran for the current scene
     static constexpr const char* kCreateViewPreviewHint = "Render a 1000 px preview from the inspector to see it here";
@@ -25520,7 +25731,6 @@ private:
     PlainTextArea* apertureResultArea_ = nullptr;
 
     TextBox* mergehdrPathBox_ = nullptr;
-    TextBox* oiiotoolPathBox_ = nullptr;
 
     TextBox* glareThresholdBox_ = nullptr;
     TextBox* glareRadiusBox_ = nullptr;
@@ -25728,6 +25938,9 @@ private:
     WorkerTask glareAiTask_;
     WorkerTask glareAiPreviewTask_;
     WorkerTask imageVosTask_;
+    WorkerTask viewVisibilityTask_;   // HDR-VDP visibility on a background job
+    WorkerTask perceptualTask_;       // perceptual map on a background job
+    bool perceptualRecomputePending_ = false;  // asked again while a map was being computed
     PersistentAiProcess glareAiProcess_;
     // Every background thread of the tools runs here (see finishBackgroundWork()).
     hdrspace::JobRunner jobs_;

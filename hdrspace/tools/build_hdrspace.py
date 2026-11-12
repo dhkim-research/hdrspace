@@ -261,6 +261,9 @@ def main() -> int:
                         help="Record the baseline payload in tools/baseline_payload_manifest.json and stop")
     args = parser.parse_args()
     source = Path(__file__).resolve().parent.parent
+    if not args.baseline_app.is_dir():
+        raise SystemExit(f"The baseline payload is missing: {args.baseline_app}. Place it at "
+                         "hdrspace-baseline/payload next to hdrspace/, or pass --baseline-app.")
     if args.update_payload_manifest:
         write_payload_manifest(source, args.baseline_app.resolve(strict=True))
         return 0
