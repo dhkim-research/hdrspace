@@ -105,6 +105,10 @@ public:
         }
     }
 
+    // Where a left-aligned caption without a number starts (hdrspace: 0 for a single row
+    // that sits on the inspector's content edge, such as the glare report).
+    void setCaptionInset(float inset) { mCaptionInset = inset; }
+
     void setHighlightRange(size_t begin, size_t end);
     void setThumbnail(std::vector<uint8_t> rgba, nanogui::Vector2i size);
     void clearThumbnail();
@@ -144,6 +148,7 @@ private:
     size_t mHighlightEnd = 0;
 
     bool mCaptionLeftAligned = false;
+    float mCaptionInset = 8.0f;
     std::vector<uint8_t> mThumbnailRgba;
     nanogui::Vector2i mThumbnailSize = {0, 0};
     int mThumbnailImageHandle = 0;

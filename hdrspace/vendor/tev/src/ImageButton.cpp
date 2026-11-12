@@ -399,7 +399,7 @@ void ImageButton::draw(NVGcontext* ctx) {
     const Vector2f bottomRight = Vector2f{m_pos} + Vector2f{m_size};
     // hdrspace: an id of 0 draws no number (a single row such as the glare report).
     const bool showId = mId > 0;
-    Vector2f textPos = mCaptionLeftAligned ? Vector2f{m_pos.x() + (showId ? 19.0f + nvgTextBounds(ctx, 0, 0, idString.data(), idString.data() + idString.size(), nullptr) : 8.0f), center.y() + 0.5f * (m_font_size + 1)}
+    Vector2f textPos = mCaptionLeftAligned ? Vector2f{m_pos.x() + (showId ? 19.0f + nvgTextBounds(ctx, 0, 0, idString.data(), idString.data() + idString.size(), nullptr) : mCaptionInset), center.y() + 0.5f * (m_font_size + 1)}
                                            : Vector2f{bottomRight.x() - 5 - closeReserve, center.y() + 0.5f * (m_font_size + 1)};
     NVGcolor regularTextColor = mCanBeReference ? Color(150, 255) : Color(190, 255);
     NVGcolor hightlightedTextColor = Color(190, 255);

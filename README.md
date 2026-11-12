@@ -208,7 +208,8 @@ hdrspace.app/Contents/MacOS/hdrspace --gui-test /tmp/gui-test mergehdr/tests/cro
 It opens every tool in the rail in turn, plus the lower part of the Viewer, the Calibrate
 pages, a perceptual map computed on its background job, the Create View 3D, Top and HDR tabs
 (not Preview), Settings and Help, saves a PNG of the window for each and a list in
-`gui-test.txt`, then quits. `--size 1440x900` sets the
+`gui-test.txt`, then quits. When a tool's inspector is taller than its panel, a second
+picture (`-bottom`) shows its lower part. No tooltip is shown in the pictures. `--size 1440x900` sets the
 window size (the default).
 The app reads back its own Metal frames, so macOS asks for no screen-recording permission.
 On Windows the GitHub Actions workflow takes the screenshots instead.

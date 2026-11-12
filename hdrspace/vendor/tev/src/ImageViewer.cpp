@@ -227,22 +227,21 @@ public:
 };
 
 // hdrspace inspector section heading: 11 bold grey capitals under a hairline, like the
-// tool-rail group titles and the other inspector panels.
+// tool-rail group titles and the other inspector panels (34 high as there, so the line, the
+// title and the first row are spaced as in every tool).
 class SidebarSectionHeader final : public Widget {
 public:
-    // inset: where the line and the title start inside the widget, so that every heading starts
-    // 12 px from the inspector edge whatever its container's margin (hdrspace).
-    SidebarSectionHeader(Widget* parent, string title, int inset = 0) : Widget(parent), mInset(inset) {
+    SidebarSectionHeader(Widget* parent, string title) : Widget(parent) {
         for (auto& c : title) c = (char)std::toupper((unsigned char)c);
         mTitle = std::move(title);
-        set_fixed_height(30);
+        set_fixed_height(34);
     }
 
     // Grey text at the right end of the heading line, e.g. how to use the section.
     void setDetail(string detail) { mDetail = std::move(detail); }
 
     void draw(NVGcontext* ctx) override {
-        const float x = (float)(m_pos.x() + mInset), y = (float)m_pos.y(), w = (float)(m_size.x() - mInset), h = (float)m_size.y();
+        const float x = (float)m_pos.x(), y = (float)m_pos.y(), w = (float)m_size.x(), h = (float)m_size.y();
         nvgSave(ctx);
         nvgBeginPath(ctx);
         nvgMoveTo(ctx, x, y + 4.5f);
@@ -270,7 +269,6 @@ public:
 private:
     string mTitle;
     string mDetail;
-    int mInset = 0;
 };
 
 // hdrspace Region statistics: a caption of tab-separated cells is drawn as a table (a header
@@ -344,6 +342,28 @@ private:
 // hdrspace named rows: a grey 13 name of the shared width, then the control, then a value.
 constexpr int kSidebarNameWidth = 104;
 constexpr int kSidebarValueWidth = 40;
+// The docked inspector follows the other hdrspace inspectors: 280 wide content 12 px from the
+// panel edge, 28 high controls, 8 between rows and between a name and its control, 6 between
+// controls that belong together.
+constexpr int kSidebarContentWidth = 280;
+constexpr int kSidebarSliderInset = 9;
+constexpr int kSidebarRowHeight = 28;
+constexpr int kSidebarMargin = 8;
+
+// A value at the end of a row, right-aligned so that it ends on the row's right edge.
+class SidebarValueLabel final : public Label {
+public:
+    explicit SidebarValueLabel(Widget* parent) : Label(parent, "", "sans", 13) {}
+
+    void draw(NVGcontext* ctx) override {
+        Widget::draw(ctx);
+        nvgFontFace(ctx, m_font.c_str());
+        nvgFontSize(ctx, font_size());
+        nvgFillColor(ctx, m_color);
+        nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+        nvgText(ctx, m_pos.x() + m_size.x(), m_pos.y() + m_size.y() * 0.5f, m_caption.c_str(), nullptr);
+    }
+};
 
 Label* makeSidebarRowName(Widget* row, string_view name) {
     auto* label = new Label{row, string{name}, "sans", 13};
@@ -353,7 +373,7 @@ Label* makeSidebarRowName(Widget* row, string_view name) {
 }
 
 Label* makeSidebarRowValue(Widget* row) {
-    auto* label = new Label{row, "", "sans", 13};
+    auto* label = new SidebarValueLabel{row};
     label->set_color(Color(214, 217, 220, 230));
     label->set_fixed_width(kSidebarValueWidth);
     return label;
@@ -1196,14 +1216,15 @@ ImageViewer::ImageViewer(
     }
 
     mSidebarLayout = new Widget{mSidebarRoot};
-    mSidebarLayout->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
+    mSidebarLayout->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? kSidebarMargin : 0, mSidebarOnRight ? 8 : 0});
 
     if (mSidebarOnRight) {
         mFloatingToolbarCard = new FloatingToolbarCard{mSidebarLayout};
-        mFloatingToolbarCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 4, 0});
+        mFloatingToolbarCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
 
+        // Kept, hidden, so that the child indices used to assemble the Display section hold.
         auto* toolbarInset = new Widget{mFloatingToolbarCard};
-        toolbarInset->set_fixed_height(2);
+        toolbarInset->set_visible(false);
     }
 
     // Tonemapping sectionim
@@ -1231,11 +1252,12 @@ ImageViewer::ImageViewer(
         // Exposure label and slider
         {
             panel = new Widget{mSidebarLayout};
-            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8}
+            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8}
                                               : (Layout*)new BoxLayout{Orientation::Vertical, Alignment::Fill, 5});
 
             if (mSidebarOnRight) {
-                makeSidebarRowName(panel, "Exposure");
+                panel->set_fixed_height(kSidebarRowHeight);
+                makeSidebarRowName(panel, "Exposure")->set_fixed_width(kSidebarNameWidth - kSidebarSliderInset);
             } else {
                 mExposureLabel = new Label{panel, "", "sans", 14};
             }
@@ -1257,19 +1279,21 @@ ImageViewer::ImageViewer(
         // Offset/Gamma label and slider
         {
             panel = new Widget{mSidebarLayout};
-            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Vertical, Alignment::Fill, 8, 4}
+            panel->set_layout(mSidebarOnRight ? (Layout*)new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8}
                                               : (Layout*)new GridLayout{Orientation::Vertical, 2, Alignment::Fill, 5, 0});
             Widget* offsetRow = panel;
             Widget* gammaRow = panel;
             if (mSidebarOnRight) {
                 offsetRow = new Widget{panel};
                 offsetRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+                offsetRow->set_fixed_height(kSidebarRowHeight);
                 gammaRow = new Widget{panel};
                 gammaRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+                gammaRow->set_fixed_height(kSidebarRowHeight);
             }
 
             if (mSidebarOnRight) {
-                makeSidebarRowName(offsetRow, "Offset");
+                makeSidebarRowName(offsetRow, "Offset")->set_fixed_width(kSidebarNameWidth - kSidebarSliderInset);
             } else {
                 mOffsetLabel = new Label{offsetRow, "", "sans", 14};
             }
@@ -1283,7 +1307,7 @@ ImageViewer::ImageViewer(
             setOffset(0);
 
             if (mSidebarOnRight) {
-                makeSidebarRowName(gammaRow, "Gamma");
+                makeSidebarRowName(gammaRow, "Gamma")->set_fixed_width(kSidebarNameWidth - kSidebarSliderInset);
             } else {
                 mGammaLabel = new Label{gammaRow, "", "sans", 14};
             }
@@ -1310,15 +1334,16 @@ ImageViewer::ImageViewer(
         Widget* quickToolsHost = mSidebarLayout;
         if (mSidebarOnRight) {
             quickToolsHost = new Widget{mFloatingToolbarCard};
-            quickToolsHost->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
+            quickToolsHost->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         }
 
         auto buttonContainer = new Widget{quickToolsHost};
-        buttonContainer->set_layout(new GridLayout{Orientation::Horizontal, mSidebarOnRight ? 2 : 5, Alignment::Fill, mSidebarOnRight ? 4 : 5, 2});
+        buttonContainer->set_layout(new GridLayout{Orientation::Horizontal, mSidebarOnRight ? 2 : 5, Alignment::Fill, mSidebarOnRight ? 0 : 5, mSidebarOnRight ? 8 : 2});
         Widget* valuesRow = buttonContainer;
         if (mSidebarOnRight) {
             valuesRow = new Widget{quickToolsHost};
-            valuesRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 4, 8});
+            valuesRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+            valuesRow->set_fixed_height(kSidebarRowHeight);
             auto* valuesLabel = new Label{valuesRow, "Pixel values", "sans", 13};
             valuesLabel->set_color(Color(170, 174, 179, 215));
             valuesLabel->set_fixed_width(104);
@@ -1332,6 +1357,7 @@ ImageViewer::ImageViewer(
             button->set_tooltip(tooltip);
             if (mSidebarOnRight) {
                 styleViewerToolbarButton(button, icon, false);
+                button->set_fixed_size({(kSidebarContentWidth - 8) / 2, kSidebarRowHeight});
             }
             return button;
         };
@@ -1712,14 +1738,14 @@ ImageViewer::ImageViewer(
         Widget* displayModeHost = mSidebarLayout;
         if (mSidebarOnRight) {
             auto* divider = new HairlineDivider{mFloatingToolbarCard};
-            divider->set_fixed_height(1);
+            divider->set_visible(false);
 
             displayModeHost = new Widget{mFloatingToolbarCard};
             displayModeHost->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
         }
 
         mTonemapButtonContainer = new Widget{displayModeHost};
-        mTonemapButtonContainer->set_layout(new GridLayout{Orientation::Horizontal, mSidebarOnRight ? 4 : 4, Alignment::Fill, mSidebarOnRight ? 4 : 5, 2});
+        mTonemapButtonContainer->set_layout(new GridLayout{Orientation::Horizontal, 4, Alignment::Fill, mSidebarOnRight ? 0 : 5, mSidebarOnRight ? 6 : 2});
 
         const auto makeTonemapButton = [&](string_view name, ETonemap tonemapValue, function<void()> callback) {
             auto button = new Button{mTonemapButtonContainer, name};
@@ -1800,7 +1826,7 @@ ImageViewer::ImageViewer(
             });
 
             auto* bottomInset = new Widget{mFloatingToolbarCard};
-            bottomInset->set_fixed_height(6);
+            bottomInset->set_visible(false);
 
             // hdrspace inspector order: "Display" heading, then the display curves with
             // false colour beside them, then Normalize / Reset and the pixel-value choice.
@@ -1818,8 +1844,16 @@ ImageViewer::ImageViewer(
                 mFalseColorPopupButton->set_caption("False");
             }
             moveChild(displayModeHost, mFloatingToolbarCard, 1);
-            auto* displayHeader = new SidebarSectionHeader{mFloatingToolbarCard, "Display", 4};
+            auto* displayHeader = new SidebarSectionHeader{mFloatingToolbarCard, "Display"};
             moveChild(displayHeader, mFloatingToolbarCard, 1);
+            // Four equal buttons across the row (4 x 65.5 + 3 x 6 = 280).
+            int tonemapIndex = 0;
+            for (Widget* child : mTonemapButtonContainer->children()) {
+                if (child->visible()) {
+                    child->set_fixed_size({tonemapIndex % 2 == 0 ? 66 : 65, kSidebarRowHeight});
+                    ++tonemapIndex;
+                }
+            }
         }
         else {
             mFalseColorBarPopupButton = nullptr;
@@ -1900,10 +1934,10 @@ ImageViewer::ImageViewer(
     // Image channel mask
     {
         if (mSidebarOnRight) {
-            new SidebarSectionHeader{mSidebarLayout, "Channels", 8};
+            new SidebarSectionHeader{mSidebarLayout, "Channels"};
         }
         mChannelMaskButtonContainer = new Widget{mSidebarLayout};
-        mChannelMaskButtonContainer->set_layout(new GridLayout{Orientation::Horizontal, 5, Alignment::Fill, mSidebarOnRight ? 8 : 5, 2});
+        mChannelMaskButtonContainer->set_layout(new GridLayout{Orientation::Horizontal, 5, Alignment::Fill, mSidebarOnRight ? 0 : 5, mSidebarOnRight ? 6 : 2});
 
         const auto makeChannelMaskBtn = [&](string_view name, string_view humanReadable, int c) {
             auto button = new Button{mChannelMaskButtonContainer, name};
@@ -1934,25 +1968,32 @@ ImageViewer::ImageViewer(
         button->set_font_size(14);
         button->set_callback([this]() { ungroupCurrentChannelGroup(); });
         button->set_tooltip("Ungroup current channel group into individual channels.\n\nKeyboard shortcut: Ctrl+U");
+        if (mSidebarOnRight) {
+            // R, G, B, A and a wider Ungroup across the row (4 x 44 + 80 + 4 x 6 = 280).
+            for (Widget* child : mChannelMaskButtonContainer->children()) {
+                child->set_fixed_size({child == button ? 80 : 44, kSidebarRowHeight});
+            }
+        }
     }
 
     // Crop controls
     {
         auto spacer = new Widget{mSidebarLayout};
         spacer->set_height(6);
+        spacer->set_visible(!mSidebarOnRight);
 
         if (mSidebarOnRight) {
             auto* panel = new Widget{mSidebarLayout};
             mCropControlsPanel = panel;
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 8});
+            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
 
             auto* cropLabel = new SidebarSectionHeader{panel, "Crop & projection"};
             cropLabel->set_tooltip("Set crop here, or drag a crop in the viewer while holding C.");
 
             auto* fieldRow = new Widget{panel};
-            fieldRow->set_layout(new GridLayout{Orientation::Horizontal, 4, Alignment::Fill, 4, 0});
+            fieldRow->set_layout(new GridLayout{Orientation::Horizontal, 4, Alignment::Fill, 0, 6});
 
-            auto makeCropBox = [&](string_view shortLabel, string_view tooltip, nanogui::IntBox<int>*& box) {
+            auto makeCropBox = [&](string_view shortLabel, string_view tooltip, nanogui::IntBox<int>*& box, int width) {
                 auto* field = new Widget{fieldRow};
                 field->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 2});
                 auto* label = new Label{field, shortLabel, "sans", 12};
@@ -1965,23 +2006,27 @@ ImageViewer::ImageViewer(
                 box->set_min_max_values(0, 1000000);
                 box->set_spinnable(false);
                 box->set_font_size(14);
+                box->set_fixed_size({width, kSidebarRowHeight});
             };
 
-            makeCropBox("L", "Left edge in image pixels", mCropLeftBox);
-            makeCropBox("T", "Top edge in image pixels", mCropTopBox);
-            makeCropBox("W", "Crop width in image pixels", mCropWidthBox);
-            makeCropBox("H", "Crop height in image pixels", mCropHeightBox);
+            // Four boxes across the row (4 x 65.5 + 3 x 6 = 280).
+            makeCropBox("L", "Left edge in image pixels", mCropLeftBox, 66);
+            makeCropBox("T", "Top edge in image pixels", mCropTopBox, 65);
+            makeCropBox("W", "Crop width in image pixels", mCropWidthBox, 66);
+            makeCropBox("H", "Crop height in image pixels", mCropHeightBox, 65);
 
             auto* buttonRow = new Widget{panel};
-            buttonRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 6, 0});
+            buttonRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 0, 8});
             auto* apply = new Button{buttonRow, "Crop"};
             apply->set_font_size(14);
+            apply->set_fixed_size({(kSidebarContentWidth - 8) / 2, kSidebarRowHeight});
             apply->set_callback([this]() {
                 applyCropFromUi();
                 maybeOfferCropSave();
             });
             auto* clear = new Button{buttonRow, "Clear"};
             clear->set_font_size(14);
+            clear->set_fixed_size({(kSidebarContentWidth - 8) / 2, kSidebarRowHeight});
             clear->set_callback([this]() {
                 mImageCanvas->setCrop(nullopt);
                 syncCropUiFromCanvas();
@@ -2034,11 +2079,13 @@ ImageViewer::ImageViewer(
     {
         auto spacer = new Widget{mSidebarLayout};
         spacer->set_height(6);
+        spacer->set_visible(!mSidebarOnRight);
 
         if (mSidebarOnRight) {
             // One row: name, menu, Convert (widths in updateDockedSliderWidths).
             auto* panel = new Widget{mSidebarLayout};
-            panel->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 8});
+            panel->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+            panel->set_fixed_height(kSidebarRowHeight);
 
             auto* projectionLabel = makeSidebarRowName(panel, "Projection");
             projectionLabel->set_tooltip("Detected from HDR metadata. Convert and save with mergehdr when supported.");
@@ -2067,10 +2114,11 @@ ImageViewer::ImageViewer(
     {
         auto spacer = new Widget{mSidebarLayout};
         spacer->set_height(10);
+        spacer->set_visible(!mSidebarOnRight);
 
         {
             auto panel = new Widget{mSidebarLayout};
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 8 : 5});
+            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 0 : 5});
             Widget* label = mSidebarOnRight ? (Widget*)new SidebarSectionHeader{panel, "Histogram"} : (Widget*)new Label{panel, "Images", "sans-bold", 25};
             label->set_tooltip(
                 "Select images either by left-clicking on them or by pressing arrow/number keys on your keyboard.\n"
@@ -2082,7 +2130,7 @@ ImageViewer::ImageViewer(
         // Histogram of selected image
         {
             auto controls = new Widget{mSidebarLayout};
-            controls->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 8 : 5, mSidebarOnRight ? 6 : 0});
+            controls->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 0 : 5, mSidebarOnRight ? 8 : 0});
             const string highlightTooltip = "Temporarily overlay pixels in red whose selected channel value falls inside the selected range.";
             if (!mSidebarOnRight) {
                 auto* label = new Label{controls, "Highlight range", "sans", 14};
@@ -2102,6 +2150,7 @@ ImageViewer::ImageViewer(
             if (mSidebarOnRight) {
                 mHighlightModeComboBox->set_side(Popup::Left);
                 mHighlightModeComboBox->set_chevron_icon(FA_CHEVRON_DOWN);
+                modeRow->set_fixed_height(kSidebarRowHeight);
             }
             mHighlightModeComboBox->set_callback([this](int index) {
                 mHighlightModeSelection = index;
@@ -2113,9 +2162,10 @@ ImageViewer::ImageViewer(
             if (mSidebarOnRight) {
                 auto* highlightRow = new Widget{controls};
                 highlightRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+                highlightRow->set_fixed_height(kSidebarRowHeight);
                 makeSidebarRowName(highlightRow, "Highlight")->set_tooltip(highlightTooltip);
                 row = new Widget{highlightRow};
-                row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 4});
+                row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
                 row->set_tooltip(highlightTooltip);
             } else {
                 row = new Widget{controls};
@@ -2170,7 +2220,7 @@ ImageViewer::ImageViewer(
             });
 
             auto panel = new Widget{mSidebarLayout};
-            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 8 : 5, mSidebarOnRight ? 6 : 0});
+            panel->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, mSidebarOnRight ? 0 : 5, mSidebarOnRight ? 8 : 0});
 
             mHistogram = new MultiGraph{panel, ""};
             if (mSidebarOnRight) {
@@ -2184,6 +2234,7 @@ ImageViewer::ImageViewer(
                 // A named row: "Image" or "ROI", the region, and Clear (widths in updateDockedSliderWidths).
                 auto* roiRow = new Widget{panel};
                 roiRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
+                roiRow->set_fixed_height(kSidebarRowHeight);
                 mRoiRegionNameLabel = makeSidebarRowName(roiRow, "Image");
                 mRoiRegionValueLabel = new Label{roiRow, "--", "sans", 13};
                 mRoiRegionValueLabel->set_color(Color(214, 217, 220, 230));
@@ -2354,7 +2405,7 @@ ImageViewer::ImageViewer(
         // List of open images
         {
             if (mSidebarOnRight) {
-                new SidebarSectionHeader{mSidebarLayout, "Images", 8};
+                new SidebarSectionHeader{mSidebarLayout, "Images"};
             }
             mImageScrollContainer = new VScrollPanel{mSidebarLayout};
             mImageScrollContainer->set_fixed_width(mSidebarLayout->fixed_width());
@@ -4963,46 +5014,54 @@ void ImageViewer::updateRoiStatsLabel(const std::shared_ptr<CanvasStatistics>& s
 }
 
 void ImageViewer::updateDockedSliderWidths() {
-    // Docked inspector (hdrspace): named rows 12 px from the edge (an 8 px margin inside the
-    // sidebar's 4): grey name (104), then the control; sliders end with their value.
+    // Docked inspector (hdrspace): 280 wide rows 12 px from the edge, as in every inspector:
+    // grey name (104), 8, then the 168 wide control; sliders end with their value; controls
+    // that belong together are 6 apart; every control is 28 high.
     if (!mSidebarOnRight || !mSidebarLayout) {
         return;
     }
-    const int rowWidth = mSidebarLayout->fixed_width() - 2 * 8;
-    const int fieldWidth = std::max(60, rowWidth - kSidebarNameWidth - 8);
-    const int sliderWidth = std::max(40, fieldWidth - 8 - kSidebarValueWidth);
+    constexpr int rowWidth = kSidebarContentWidth;
+    constexpr int fieldWidth = rowWidth - kSidebarNameWidth - 8;
+    // The slider's track (not its widget) spans the control column up to the value.
+    constexpr int valueWidth = kSidebarValueWidth - kSidebarSliderInset;
+    constexpr int sliderWidth = fieldWidth - 8 - valueWidth + kSidebarSliderInset;
     for (Slider* slider : {mExposureSlider, mOffsetSlider, mGammaSlider}) {
         if (slider) {
             slider->set_fixed_width(sliderWidth);
         }
     }
+    for (Label* value : {mExposureLabel, mOffsetLabel, mGammaLabel}) {
+        if (value) {
+            value->set_fixed_width(valueWidth);
+        }
+    }
     if (mValueModePopupButton) {
-        mValueModePopupButton->set_fixed_width(std::max(60, mSidebarLayout->fixed_width() - 2 * 4 - 104 - 8));
+        mValueModePopupButton->set_fixed_size({fieldWidth, kSidebarRowHeight});
     }
     if (mProjectionComboBox && mProjectionApplyButton) {
         constexpr int convertWidth = 64;
-        mProjectionApplyButton->set_fixed_width(convertWidth);
-        mProjectionComboBox->set_fixed_width(std::max(40, fieldWidth - 6 - convertWidth));
+        mProjectionApplyButton->set_fixed_size({convertWidth, kSidebarRowHeight});
+        mProjectionComboBox->set_fixed_size({fieldWidth - 6 - convertWidth, kSidebarRowHeight});
     }
     if (mHighlightModeComboBox) {
-        mHighlightModeComboBox->set_fixed_width(fieldWidth);
+        mHighlightModeComboBox->set_fixed_size({fieldWidth, kSidebarRowHeight});
     }
     if (mHighlightMinBox && mHighlightMaxBox && mHighlightEnableButton && mHighlightClearButton) {
-        constexpr int gap = 4;
-        constexpr int buttonWidth = 44;
-        const int boxWidth = std::max(28, (fieldWidth - 3 * gap - 2 * buttonWidth) / 2);
-        mHighlightMinBox->set_fixed_width(boxWidth);
-        mHighlightMaxBox->set_fixed_width(boxWidth);
-        mHighlightEnableButton->set_fixed_width(buttonWidth);
-        mHighlightClearButton->set_fixed_width(buttonWidth);
+        constexpr int gap = 6;
+        constexpr int buttonWidth = 43;
+        constexpr int boxWidth = (fieldWidth - 3 * gap - 2 * buttonWidth) / 2;
+        mHighlightMinBox->set_fixed_size({boxWidth, kSidebarRowHeight});
+        mHighlightMaxBox->set_fixed_size({boxWidth, kSidebarRowHeight});
+        mHighlightEnableButton->set_fixed_size({buttonWidth, kSidebarRowHeight});
+        mHighlightClearButton->set_fixed_size({buttonWidth, kSidebarRowHeight});
     }
     if (mRoiRegionValueLabel && mRoiClearButton) {
         constexpr int clearWidth = 60;
-        mRoiClearButton->set_fixed_width(clearWidth);
-        mRoiRegionValueLabel->set_fixed_width(std::max(40, fieldWidth - 8 - clearWidth));
+        mRoiClearButton->set_fixed_size({clearWidth, kSidebarRowHeight});
+        mRoiRegionValueLabel->set_fixed_width(fieldWidth - 8 - clearWidth);
     }
     if (mRoiStatsLabel) {
-        mRoiStatsLabel->set_fixed_width(std::max(60, rowWidth));
+        mRoiStatsLabel->set_fixed_width(rowWidth);
     }
 }
 
@@ -6253,10 +6312,10 @@ void ImageViewer::updateLayout() {
         mSidebarTitleHost->set_size({sidebarContentWidth, mSidebarTitleHost->preferred_size(m_nvg_context).y()});
     }
     if (mFloatingToolbarCard) {
-        mFloatingToolbarCard->set_fixed_width(sidebarContentWidth);
-        mFloatingToolbarCard->set_size({sidebarContentWidth, mFloatingToolbarCard->preferred_size(m_nvg_context).y()});
+        mFloatingToolbarCard->set_fixed_width(kSidebarContentWidth);
+        mFloatingToolbarCard->set_size({kSidebarContentWidth, mFloatingToolbarCard->preferred_size(m_nvg_context).y()});
     }
-    mSidebarLayout->set_fixed_width(sidebarContentWidth);
+    mSidebarLayout->set_fixed_width(mSidebarOnRight ? kSidebarContentWidth + 2 * kSidebarMargin : sidebarContentWidth);
     updateDockedSliderWidths();
     const int helpWidth = 28;
     const int openWidth = mHeaderOpenImageButton ? 64 : 0;
@@ -6307,10 +6366,10 @@ void ImageViewer::updateLayout() {
             mSidebarToolbar->set_size({overlayContentWidth, mSidebarToolbar->fixed_height()});
         }
         if (mFloatingToolbarCard) {
-            mFloatingToolbarCard->set_fixed_width(overlayContentWidth);
-            mFloatingToolbarCard->set_size({overlayContentWidth, mFloatingToolbarCard->preferred_size(m_nvg_context).y()});
+            mFloatingToolbarCard->set_fixed_width(kSidebarContentWidth);
+            mFloatingToolbarCard->set_size({kSidebarContentWidth, mFloatingToolbarCard->preferred_size(m_nvg_context).y()});
         }
-        mSidebarLayout->set_fixed_width(overlayContentWidth);
+        mSidebarLayout->set_fixed_width(kSidebarContentWidth + 2 * kSidebarMargin);
         updateDockedSliderWidths();
         if (mHeaderOpenImageButton) {
             const int headerWidth = mSidebarToolbar ? mSidebarToolbar->width() : mSidebarLayout->fixed_width();

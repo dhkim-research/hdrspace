@@ -1580,14 +1580,12 @@ public:
         set_flags(0); // Selection is owned by the rail, not by the button press state.
         set_font_size(14);
         set_fixed_height(30);
-        twoLine_ = detail_.size() > 20;
     }
     void setSelected(bool selected) { selected_ = selected; }
     bool selected() const { return selected_; }
     void setCompact(bool compact) { compact_ = compact; }
     // A tool that cannot run in this version: drawn greyed, still clickable (its panel says why).
     void setUnavailable(bool unavailable) { unavailable_ = unavailable; }
-    bool twoLine() const { return twoLine_; }
     void draw(NVGcontext* ctx) override {
         const float x = m_pos.x(), y = m_pos.y(), w = m_size.x(), h = m_size.y();
         nvgSave(ctx);
@@ -1603,7 +1601,7 @@ public:
             nvgFillColor(ctx, hdrspaceAccent());
             nvgFill(ctx);
         }
-        const float lineY = twoLine_ && !compact_ ? y + 15.0f : y + h * 0.5f;
+        const float lineY = y + h * 0.5f;
         if (icon() != 0) {
             const auto glyph = nanogui::utf8(icon());
             nvgFontFace(ctx, "icons");
@@ -1623,10 +1621,9 @@ public:
             if (!detail_.empty()) {
                 nvgFontSize(ctx, 12.0f);
                 nvgFillColor(ctx, Color(150, 154, 159, unavailable_ ? 130 : 255));
-                const float detailX = twoLine_ ? x + 38.0f : nameEnd + 8.0f;
-                const float detailY = twoLine_ ? y + 31.0f : lineY;
+                const float detailX = nameEnd + 8.0f;
                 nvgScissor(ctx, detailX, y, std::max(0.0f, x + w - 8.0f - detailX), h);
-                nvgText(ctx, detailX, detailY, detail_.c_str(), nullptr);
+                nvgText(ctx, detailX, lineY, detail_.c_str(), nullptr);
                 nvgResetScissor(ctx);
             }
         }
@@ -1635,7 +1632,6 @@ public:
 
 private:
     std::string detail_;
-    bool twoLine_ = false;
     bool selected_ = false;
     bool compact_ = false;
     bool unavailable_ = false;
@@ -1694,7 +1690,14 @@ private:
 // titles, section headings and result values; every row is a grey 13 label + 28 control.
 constexpr int kInspectorRowHeight = 28;
 constexpr int kInspectorRowLabelWidth = 104;
+// Rows whose controls sit 6 apart (a field and its buttons, two fields side by side): the
+// label is 2 wider, so the first control still starts 8 after the label column.
+constexpr int kInspectorTightRowLabelWidth = kInspectorRowLabelWidth + 2;
 constexpr int kInspectorActionBarHeight = 48;
+// Buttons in the run bar under the scroll area; every other control is kInspectorRowHeight.
+constexpr int kInspectorActionButtonHeight = 30;
+// Space under the last row when an inspector is scrolled to its end.
+constexpr int kInspectorScrollBottomPadding = 12;
 // The inspector's scroll area sits 4 inside the panel (window margin) and draws its content
 // 8 further in, so content (280) starts 12 from the panel edge; the scroll bar uses the
 // right gutter. Above the scroll area are the window header, the panel title and margins.
@@ -1952,10 +1955,63 @@ public:
     }
 };
 
+// Check box in the inspector style: a 14 px box with the fields' fill and a light edge, so an
+// unchecked box stays visible on the dark panel; the caption 8 px after it; 28 high like
+// every inspector row.
+class InspectorCheckBox final : public nanogui::CheckBox {
+public:
+    InspectorCheckBox(Widget* parent, const std::string& caption) : CheckBox(parent, caption) {
+        set_fixed_height(kInspectorRowHeight);
+    }
+    nanogui::Vector2i preferred_size_impl(NVGcontext* ctx) const override {
+        nvgFontSize(ctx, static_cast<float>(font_size()));
+        nvgFontFace(ctx, "sans");
+        const float textWidth = nvgTextBounds(ctx, 0, 0, m_caption.c_str(), nullptr, nullptr);
+        return {static_cast<int>(std::ceil(kBox + kGap + textWidth)) + 2, kInspectorRowHeight};
+    }
+    void draw(NVGcontext* ctx) override {
+        Widget::draw(ctx);
+        const float x = m_pos.x() + 1.0f;
+        const float y = m_pos.y() + std::round((m_size.y() - kBox) * 0.5f);
+        nvgSave(ctx);
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, x + 0.5f, y + 0.5f, kBox - 1.0f, kBox - 1.0f, 3.0f);
+        nvgFillColor(ctx, inspectorFieldFill(m_pushed || m_mouse_focus));
+        nvgFill(ctx);
+        nvgStrokeColor(ctx, Color(255, 255, 255, m_enabled ? 64 : 30));
+        nvgStrokeWidth(ctx, 1.0f);
+        nvgStroke(ctx);
+        if (m_checked) {
+            nvgFontFace(ctx, "icons");
+            nvgFontSize(ctx, 11.0f);
+            nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(ctx, m_enabled ? m_theme->m_icon_color : m_theme->m_disabled_text_color);
+            nvgText(ctx, x + kBox * 0.5f, y + kBox * 0.5f, nanogui::utf8(m_theme->m_check_box_icon).data(), nullptr);
+        }
+        nvgFontFace(ctx, "sans");
+        nvgFontSize(ctx, static_cast<float>(font_size()));
+        nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+        nvgFillColor(ctx, m_enabled ? m_theme->m_text_color : m_theme->m_disabled_text_color);
+        nvgText(ctx, x + kBox + kGap, m_pos.y() + m_size.y() * 0.5f, m_caption.c_str(), nullptr);
+        nvgRestore(ctx);
+    }
+
+private:
+    static constexpr float kBox = 14.0f;
+    static constexpr float kGap = 8.0f;
+};
+
 // Bar pinned under an inspector's scroll area that holds the panel's run action.
 class InspectorActionBar final : public nanogui::Widget {
 public:
     explicit InspectorActionBar(Widget* parent) : Widget(parent) {}
+    // Run-bar buttons are 30 high whatever style they use (rows elsewhere are 28).
+    nanogui::Vector2i preferred_size_impl(NVGcontext* ctx) const override {
+        for (Widget* child : m_children) {
+            child->set_fixed_height(kInspectorActionButtonHeight);
+        }
+        return Widget::preferred_size_impl(ctx);
+    }
     void draw(NVGcontext* ctx) override {
         nvgSave(ctx);
         nvgBeginPath(ctx);
@@ -2199,6 +2255,42 @@ private:
 
     std::vector<std::string> headlineKeys_{"Visibility ratio", "Quality"};
     bool notesMuted_ = false;
+};
+
+// One name-value row drawn as InspectorKeyValueSummary draws its rows (name left, value right,
+// hairline under it, 24 high). The caption is the value, so set_caption keeps working.
+class InspectorKeyValueRow final : public nanogui::Label {
+public:
+    InspectorKeyValueRow(Widget* parent, std::string key) : Label(parent, "--", "sans", 13), key_(std::move(key)) {
+        set_color(hdrspaceInk(230));
+    }
+    nanogui::Vector2i preferred_size_impl(NVGcontext*) const override {
+        return {m_fixed_size.x() > 0 ? m_fixed_size.x() : 240, 24};
+    }
+    void draw(NVGcontext* ctx) override {
+        const float x = m_pos.x(), y = m_pos.y(), w = m_size.x();
+        nvgSave(ctx);
+        nvgFontFace(ctx, "sans");
+        nvgFontSize(ctx, 13.0f);
+        nvgFillColor(ctx, hdrspaceMutedInk(200));
+        nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+        const float keyEnd = nvgText(ctx, x, y + 12.0f, key_.c_str(), nullptr);
+        nvgFillColor(ctx, m_color);
+        nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+        nvgScissor(ctx, keyEnd + 12.0f, y, std::max(0.0f, x + w - keyEnd - 12.0f), 24.0f);
+        nvgText(ctx, x + w, y + 12.0f, m_caption.c_str(), nullptr);
+        nvgResetScissor(ctx);
+        nvgBeginPath(ctx);
+        nvgMoveTo(ctx, x, y + 23.5f);
+        nvgLineTo(ctx, x + w, y + 23.5f);
+        nvgStrokeColor(ctx, Color(255, 255, 255, 14));
+        nvgStrokeWidth(ctx, 1.0f);
+        nvgStroke(ctx);
+        nvgRestore(ctx);
+    }
+
+private:
+    std::string key_;
 };
 
 // ---- Floating report window parts (Glare report) -------------------------------------------
@@ -2653,9 +2745,29 @@ class DesktopScrollPanel final : public nanogui::VScrollPanel {
 public:
     using nanogui::VScrollPanel::VScrollPanel;
 
+    ~DesktopScrollPanel() override {
+        auto& panels = inspectorPanels();
+        panels.erase(std::remove(panels.begin(), panels.end(), this), panels.end());
+    }
+
     // An inspector's main scroll area: no box of its own (DESIGN.md: no card layers), content
-    // inset by kInspectorScrollInset. Lists nested in a panel keep the box.
-    void setInspectorStyle(bool inspector) { inspector_ = inspector; }
+    // inset by kInspectorScrollInset, kInspectorScrollBottomPadding under the last row when
+    // scrolled to the end. Lists nested in a panel keep the box.
+    void setInspectorStyle(bool inspector) {
+        inspector_ = inspector;
+        auto& panels = inspectorPanels();
+        panels.erase(std::remove(panels.begin(), panels.end(), this), panels.end());
+        if (inspector) {
+            panels.push_back(this);
+        }
+    }
+
+    // Every inspector scroll area (the gui-test pictures the lower part of those that scroll).
+    static std::vector<DesktopScrollPanel*>& inspectorPanels() {
+        static std::vector<DesktopScrollPanel*> panels;
+        return panels;
+    }
+    bool scrolls() const { return m_child_preferred_height > m_size.y(); }
 
     void perform_layout(NVGcontext* ctx) override {
         Widget::perform_layout(ctx);
@@ -2668,12 +2780,13 @@ public:
         }
 
         Widget* child = m_children[0];
-        m_child_preferred_height = child->preferred_size(ctx).y();
+        const int contentHeight = child->preferred_size(ctx).y();
+        m_child_preferred_height = contentHeight + (inspector_ ? kInspectorScrollBottomPadding : 0);
 
         const int inset = inspector_ ? kInspectorScrollInset : 0;
         if (m_child_preferred_height > m_size.y()) {
             child->set_position(Vector2i(inset, -m_scroll * (m_child_preferred_height - m_size.y())));
-            child->set_size(Vector2i(m_size.x() - 2 * inset, m_child_preferred_height));
+            child->set_size(Vector2i(m_size.x() - 2 * inset, contentHeight));
         } else {
             child->set_position(Vector2i(inset, 0));
             child->set_size(Vector2i(m_size.x() - 2 * inset, m_size.y()));
@@ -2714,7 +2827,7 @@ public:
             yoffset = -m_scroll * (m_child_preferred_height - m_size.y());
         }
         child->set_position(Vector2i(inspector_ ? kInspectorScrollInset : 0, yoffset));
-        m_child_preferred_height = child->preferred_size(ctx).y();
+        m_child_preferred_height = child->preferred_size(ctx).y() + (inspector_ ? kInspectorScrollBottomPadding : 0);
         const float scrollh = height() * std::min(1.f, height() / (float)m_child_preferred_height);
 
         if (m_update_layout) {
@@ -6382,6 +6495,7 @@ private:
         auto promise = std::make_shared<std::promise<std::pair<std::vector<uint8_t>, Vector2i>>>();
         auto future = promise->get_future();
         runOnUiThreadSync([this, promise]() {
+            viewer_->cursor_pos_callback_event(-1000.0, -1000.0);  // no hover, no tooltip in the picture
             viewer_->capture_next_frame([promise](std::vector<uint8_t> rgba, Vector2i size) {
                 promise->set_value({std::move(rgba), size});
             });
@@ -6493,16 +6607,35 @@ private:
                     throw std::runtime_error(steps[s].name + " did not finish within 2 minutes");
                 }
                 std::this_thread::sleep_for(900ms);  // the inspector slides in
-                auto [rgba, size] = captureGuiTestFrame();
-                if (rgba.empty()) {
-                    throw std::runtime_error("This graphics backend cannot read frames back.");
+                const auto savePicture = [&](const std::string& name) {
+                    auto [rgba, size] = captureGuiTestFrame();
+                    if (rgba.empty()) {
+                        throw std::runtime_error("This graphics backend cannot read frames back.");
+                    }
+                    const fs::path path = options.outputDir / name;
+                    std::ofstream out(path, std::ios::binary);
+                    tev::PngImageSaver saver;
+                    saver.save(out, path, rgba, size, 4).get();
+                    list << name << "  " << size.x() << " x " << size.y() << "\n";
+                    ++saved;
+                };
+                savePicture(file);
+                // An inspector taller than its panel: a second picture of its lower part.
+                const auto scrollInspectors = [](float to) {
+                    bool any = false;
+                    for (DesktopScrollPanel* panel : DesktopScrollPanel::inspectorPanels()) {
+                        if (panel->visible_recursive() && panel->scrolls()) {
+                            panel->set_scroll(to);
+                            any = true;
+                        }
+                    }
+                    return any;
+                };
+                if (callOnUiThreadSync([&]() { return scrollInspectors(1.0f); })) {
+                    std::this_thread::sleep_for(300ms);
+                    savePicture(std::format("{:02}-{}-bottom.png", s + 1, steps[s].name));
+                    runOnUiThreadSync([&]() { scrollInspectors(0.0f); });
                 }
-                const fs::path path = options.outputDir / file;
-                std::ofstream out(path, std::ios::binary);
-                tev::PngImageSaver saver;
-                saver.save(out, path, rgba, size, 4).get();
-                list << file << "  " << size.x() << " x " << size.y() << "\n";
-                ++saved;
             }
         } catch (const std::exception& e) {
             failure = e.what();
@@ -6768,7 +6901,7 @@ private:
         button->set_padding(compact ? Vector2i{12, 6} : Vector2i{14, 8});
         button->set_icon_position(Button::IconPosition::LeftCentered);
         button->set_font_size(compact ? 13 : 14);
-        button->set_fixed_height(compact ? 30 : 34);
+        button->set_fixed_height(compact ? kInspectorRowHeight : 34);  // the run bar makes its buttons 30
     }
 
     void styleSecondaryButton(Button* button, bool compact = false) {
@@ -6780,7 +6913,7 @@ private:
         button->set_padding(compact ? Vector2i{11, 6} : Vector2i{13, 8});
         button->set_icon_position(Button::IconPosition::LeftCentered);
         button->set_font_size(compact ? 13 : 14);
-        button->set_fixed_height(compact ? 30 : 34);
+        button->set_fixed_height(compact ? kInspectorRowHeight : 34);
     }
 
     void styleUtilityButton(Button* button, bool compact = true) {
@@ -6792,7 +6925,7 @@ private:
         button->set_padding(compact ? Vector2i{11, 6} : Vector2i{12, 7});
         button->set_icon_position(Button::IconPosition::LeftCentered);
         button->set_font_size(compact ? 13 : 14);
-        button->set_fixed_height(compact ? 30 : 32);
+        button->set_fixed_height(compact ? kInspectorRowHeight : 32);
     }
 
     void styleSectionButton(Button* button, int icon) {
@@ -7551,27 +7684,27 @@ private:
         leftPagesHost_->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
 
         auto* mergeTab = new Widget(leftPagesHost_);
-        mergeTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
+        mergeTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         buildMergeTab(mergeTab);
         leftPages_.emplace_back(LeftSection::Merge, mergeTab);
 
         auto* colorTab = new Widget(leftPagesHost_);
-        colorTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
+        colorTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         buildColorTab(colorTab);
         leftPages_.emplace_back(LeftSection::Color, colorTab);
 
         auto* shutterTab = new Widget(leftPagesHost_);
-        shutterTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
+        shutterTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         buildShutterTab(shutterTab);
         leftPages_.emplace_back(LeftSection::Shutter, shutterTab);
 
         auto* apertureTab = new Widget(leftPagesHost_);
-        apertureTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
+        apertureTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         buildApertureTab(apertureTab);
         leftPages_.emplace_back(LeftSection::Aperture, apertureTab);
 
         auto* settingsTab = new Widget(leftPagesHost_);
-        settingsTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
+        settingsTab->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         buildSettingsTab(settingsTab);
         leftPages_.emplace_back(LeftSection::Settings, settingsTab);
 
@@ -8190,10 +8323,10 @@ private:
             host->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
             host->set_fixed_width(kInspectorContentWidth);
             auto* label = new Label(host, title, "sans", 13);
-            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_fixed_width(kInspectorTightRowLabelWidth);
             label->set_color(hdrspaceMutedInk(215));
             target = smallTextBox(host, placeholder);
-            target->set_fixed_width(kInspectorContentWidth - kInspectorRowLabelWidth - 6 - 6 - 28);
+            target->set_fixed_width(kInspectorContentWidth - kInspectorTightRowLabelWidth - 6 - 6 - 28);
             target->set_fixed_height(kInspectorRowHeight);
             target->set_font_size(13);
             auto* browse = new Button(host, "", FA_FOLDER_OPEN);
@@ -8380,7 +8513,7 @@ private:
         setupCard->set_fixed_width(kGlareFullRowWidth);
 
         auto* thresholdSection = new Widget(setupCard);
-        thresholdSection->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 1, 0});
+        thresholdSection->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
         thresholdSection->set_fixed_width(kGlareFullRowWidth);
 
         auto* thresholdRow = new Widget(thresholdSection);
@@ -8388,16 +8521,16 @@ private:
         thresholdRow->set_fixed_width(kGlareFullRowWidth);
         auto* thresholdLabel = new Label(thresholdRow, "Threshold (-b)", "sans", 13);
         thresholdLabel->set_color(hdrspaceMutedInk(215));
-        thresholdLabel->set_fixed_width(kInspectorRowLabelWidth);
+        thresholdLabel->set_fixed_width(kInspectorTightRowLabelWidth);
         // Empty = no -b, like evalglare: 2000 cd/m², or 5 x task luminance when a task area is set.
         glareThresholdBox_ = smallTextBox(thresholdRow, "2000 (auto)");
-        glareThresholdBox_->set_fixed_width(kGlareFullRowWidth - kInspectorRowLabelWidth - 6 - 6 - 22);
+        glareThresholdBox_->set_fixed_width(kGlareFullRowWidth - kInspectorTightRowLabelWidth - 6 - 6 - kInspectorRowHeight);
         glareThresholdBox_->set_fixed_height(kInspectorRowHeight);
         glareThresholdBox_->set_font_size(13);
         glareThresholdBox_->set_units("cd/m\u00b2");
         glareThresholdBox_->set_tooltip("Empty: 2000 cd/m\u00b2, or task luminance \u00d7 5 when a task area is set");
         auto* thresholdHelpButton = new Button(thresholdRow, "?");
-        thresholdHelpButton->set_fixed_size({22, 22});
+        thresholdHelpButton->set_fixed_size({kInspectorRowHeight, kInspectorRowHeight});
         thresholdHelpButton->set_font_size(12);
         thresholdHelpButton->set_flags(Button::ToggleButton);
         thresholdHelpButton->set_background_color(Color(255, 255, 255, 16));
@@ -8656,11 +8789,11 @@ private:
         auto* splitToggleSection = new Widget(advancedPanel);
         splitToggleSection->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 6, 0});
         splitToggleSection->set_fixed_width(kGlareFullRowWidth);
-        splitToggleSection->set_fixed_height(24);
-        glareDisableSplitCheck_ = new CheckBox(splitToggleSection, "Disable split (-x)");
+        splitToggleSection->set_fixed_height(kInspectorRowHeight);
+        glareDisableSplitCheck_ = new InspectorCheckBox(splitToggleSection, "Disable split (-x)");
         glareDisableSplitCheck_->set_tooltip("Disable split-source analysis.");
         glareDisableSplitCheck_->set_fixed_width(kGlareHalfRowWidth);
-        glareDisableSplitCheck_->set_fixed_height(24);
+        glareDisableSplitCheck_->set_fixed_height(kInspectorRowHeight);
         glareDisableSplitCheck_->set_font_size(14);
 
         // Each flag sets a fixed height as well: NanoGUI's CheckBox reports its fixed
@@ -8668,25 +8801,25 @@ private:
         auto* glareFlagsRow = new Widget(advancedPanel);
         glareFlagsRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 6, 0});
         glareFlagsRow->set_fixed_width(kGlareFullRowWidth);
-        glareForceCheck_ = new CheckBox(glareFlagsRow, "Force");
+        glareForceCheck_ = new InspectorCheckBox(glareFlagsRow, "Force");
         glareForceCheck_->set_tooltip("Force (-f)");
         glareForceCheck_->set_fixed_width(kGlareHalfRowWidth);
-        glareForceCheck_->set_fixed_height(24);
+        glareForceCheck_->set_fixed_height(kInspectorRowHeight);
         glareForceCheck_->set_font_size(14);
-        glareTaskColorCheck_ = new CheckBox(glareFlagsRow, "Task color");
+        glareTaskColorCheck_ = new InspectorCheckBox(glareFlagsRow, "Task color");
         glareTaskColorCheck_->set_tooltip("Task color (-T)");
         glareTaskColorCheck_->set_fixed_width(kGlareHalfRowWidth);
-        glareTaskColorCheck_->set_fixed_height(24);
+        glareTaskColorCheck_->set_fixed_height(kInspectorRowHeight);
         glareTaskColorCheck_->set_font_size(14);
-        glareLocalOnlyCheck_ = new CheckBox(glareFlagsRow, "Local only");
+        glareLocalOnlyCheck_ = new InspectorCheckBox(glareFlagsRow, "Local only");
         glareLocalOnlyCheck_->set_tooltip("Local only (-lf)");
         glareLocalOnlyCheck_->set_fixed_width(kGlareHalfRowWidth);
-        glareLocalOnlyCheck_->set_fixed_height(24);
+        glareLocalOnlyCheck_->set_fixed_height(kInspectorRowHeight);
         glareLocalOnlyCheck_->set_font_size(14);
-        glareEqvLuminanceCheck_ = new CheckBox(glareFlagsRow, "Eqv_Luminance");
+        glareEqvLuminanceCheck_ = new InspectorCheckBox(glareFlagsRow, "Eqv_Luminance");
         glareEqvLuminanceCheck_->set_tooltip("Replace ordinary luminance with Eqv_Luminance (--equivlum).");
         glareEqvLuminanceCheck_->set_fixed_width(kGlareHalfRowWidth);
-        glareEqvLuminanceCheck_->set_fixed_height(24);
+        glareEqvLuminanceCheck_->set_fixed_height(kInspectorRowHeight);
         glareEqvLuminanceCheck_->set_font_size(14);
 
         auto* glareCutViewRow = new Widget(advancedPanel);
@@ -8819,8 +8952,6 @@ private:
         auto* reportCard = new Widget(content);
         reportCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         reportCard->set_fixed_width(kGlareFullRowWidth);
-        auto* reportSpacer = new Widget(reportCard);
-        reportSpacer->set_fixed_height(4);
         auto* reportRow = new Widget(reportCard);
         reportRow->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
         reportRow->set_fixed_width(kGlareFullRowWidth);
@@ -8829,6 +8960,7 @@ private:
         glareReportButton_->set_font_size(13);
         glareReportButton_->setId(0);
         glareReportButton_->setCaptionLeftAligned(true);
+        glareReportButton_->setCaptionInset(0.0f);
         glareReportButton_->setSelectedCallback([this] {
             if (!glareResult_.has_value()) {
                 showMessage("Run Evaluate Glare first.");
@@ -8841,8 +8973,6 @@ private:
         auto* profilesCard = new Widget(content);
         profilesCard->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         profilesCard->set_fixed_width(kGlareFullRowWidth);
-        auto* profileSpacer = new Widget(profilesCard);
-        profileSpacer->set_fixed_height(2);
 
         constexpr int kGlareProfileLabelWidth = kInspectorRowLabelWidth;
 
@@ -8950,7 +9080,7 @@ private:
             line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, spacing});
             line->set_fixed_width(kFullRowWidth);
             auto* label = new Label(line, title, "sans", 13);
-            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_fixed_width(kInspectorRowLabelWidth + 8 - spacing);  // first control 8 after the label column
             label->set_color(hdrspaceMutedInk(215));
             return line;
         };
@@ -9022,7 +9152,7 @@ private:
         auto* aiClickRow = buttonRow(6);
         glareAiPickPositiveButton_ = new Button(aiClickRow, "Pick +");
         glareAiPickPositiveButton_->set_font_size(13);
-        glareAiPickPositiveButton_->set_fixed_width(kQuarterWidth);
+        glareAiPickPositiveButton_->set_fixed_width(kQuarterWidth + (kFullRowWidth - 3 * 6) % 4 / 2);
         glareAiPickPositiveButton_->set_flags(Button::ToggleButton);
         glareAiPickPositiveButton_->set_change_callback([this](bool pushed) {
             if (!viewer_) {
@@ -9070,7 +9200,7 @@ private:
 
         glareAiPointUndoButton_ = new Button(aiClickRow, "Undo");
         glareAiPointUndoButton_->set_font_size(13);
-        glareAiPointUndoButton_->set_fixed_width(kQuarterWidth);
+        glareAiPointUndoButton_->set_fixed_width(kQuarterWidth + (kFullRowWidth - 3 * 6) % 4 / 2);
         glareAiPointUndoButton_->set_callback([this] { undoLastAiMaskPoint(); });
 
         glareAiPointClearButton_ = new Button(aiClickRow, "Clear");
@@ -9136,7 +9266,7 @@ private:
         glareAiReplaceButton_->set_callback([this] { startAiMaskAssist(AiMaskApplyMode::Replace); });
 
         glareAiAddButton_ = new Button(aiButtonsRow, "Add");
-        glareAiAddButton_->set_fixed_width(kThirdWidth);
+        glareAiAddButton_->set_fixed_width(kFullRowWidth - 2 * kThirdWidth - 2 * 6);
         glareAiAddButton_->set_tooltip("Add the selected AI candidates to the existing HDR mask.");
         glareAiAddButton_->set_callback([this] { startAiMaskAssist(AiMaskApplyMode::Add); });
 
@@ -9167,7 +9297,7 @@ private:
 
         auto* exteriorRow = row("Exterior HDR", 6);
         imageVosExteriorReferenceBox_ = smallTextBox(exteriorRow, "optional");
-        imageVosExteriorReferenceBox_->set_fixed_size({kFullRowWidth - kInspectorRowLabelWidth - 3 * 6 - 2 * 28, kInspectorRowHeight});
+        imageVosExteriorReferenceBox_->set_fixed_size({kFieldWidth - 2 * (6 + 28), kInspectorRowHeight});
         imageVosExteriorReferenceBox_->set_font_size(13);
         imageVosExteriorReferenceBox_->set_tooltip("Optional unobstructed exterior reference. When selected, hdrspace analyzes both views and reports paired error.");
         imageVosChooseExteriorButton_ = new Button(exteriorRow, "", FA_FOLDER_OPEN);
@@ -9416,7 +9546,7 @@ private:
         styleSecondaryButton(imageStatsSaveCsvButton_, true);
         imageStatsSaveCsvButton_->set_callback([this] { saveImageStatisticsCsv(); });
         imageStatsSaveGraphButton_ = new Button(exportRow, "Graph CSV");
-        imageStatsSaveGraphButton_->set_fixed_width(kThirdWidth);
+        imageStatsSaveGraphButton_->set_fixed_width(kFullRowWidth - 2 * kThirdWidth - 2 * 6);
         styleSecondaryButton(imageStatsSaveGraphButton_, true);
         imageStatsSaveGraphButton_->set_callback([this] { saveImageStatisticsGraphCsv(); });
         imageStatsSaveRegionButton_ = new Button(exportRow, "Region HDR");
@@ -11181,10 +11311,10 @@ private:
             row->set_fixed_width(kInspectorContentWidth);
             row->set_visible(false);
             auto* label = new Label(row, "Parameter", "sans", 13);
-            label->set_fixed_width(kInspectorRowLabelWidth + 12);
+            label->set_fixed_width(kInspectorRowLabelWidth);
             label->set_color(hdrspaceMutedInk(215));
             auto* box = smallTextBox(row, "");
-            box->set_fixed_width(kInspectorContentWidth - kInspectorRowLabelWidth - 12 - 8);
+            box->set_fixed_width(kInspectorContentWidth - kInspectorRowLabelWidth - 8);
             box->set_fixed_height(kInspectorRowHeight);
             box->set_font_size(13);
             box->set_callback([this](std::string_view) {
@@ -11199,9 +11329,9 @@ private:
             outBox = box;
         };
         const auto makeToggleSlot = [this](Widget* host) {
-            auto* check = new CheckBox(host, "Option");
+            auto* check = new InspectorCheckBox(host, "Option");
             check->set_fixed_width(kInspectorContentWidth);
-            check->set_fixed_height(22);
+            check->set_fixed_height(kInspectorRowHeight);
             check->set_font_size(13);
             check->set_visible(false);
             check->set_callback([this](bool) {
@@ -11254,10 +11384,10 @@ private:
         previewRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 8});
         previewRow->set_fixed_width(kInspectorContentWidth);
         auto* previewLabel = new Label(previewRow, "Preview width", "sans", 13);
-        previewLabel->set_fixed_width(kInspectorRowLabelWidth + 12);
+        previewLabel->set_fixed_width(kInspectorRowLabelWidth);
         previewLabel->set_color(hdrspaceMutedInk(215));
         toneMappingPfsPreviewWidthBox_ = smallTextBox(previewRow, "Full");
-        toneMappingPfsPreviewWidthBox_->set_fixed_width(kInspectorContentWidth - kInspectorRowLabelWidth - 12 - 8);
+        toneMappingPfsPreviewWidthBox_->set_fixed_width(kInspectorContentWidth - kInspectorRowLabelWidth - 8);
         toneMappingPfsPreviewWidthBox_->set_fixed_height(kInspectorRowHeight);
         toneMappingPfsPreviewWidthBox_->set_font_size(13);
         toneMappingPfsPreviewWidthBox_->set_units("px");
@@ -11272,10 +11402,10 @@ private:
             return true;
         });
 
-        toneMappingPfsRadianceAbsoluteCheck_ = new CheckBox(toneMappingPfsPanel_, "Radiance input in cd/m² (× 179)");
+        toneMappingPfsRadianceAbsoluteCheck_ = new InspectorCheckBox(toneMappingPfsPanel_, "Radiance input in cd/m² (× 179)");
         toneMappingPfsRadianceAbsoluteCheck_->set_checked(true);
         toneMappingPfsRadianceAbsoluteCheck_->set_fixed_width(kInspectorContentWidth);
-        toneMappingPfsRadianceAbsoluteCheck_->set_fixed_height(22);
+        toneMappingPfsRadianceAbsoluteCheck_->set_fixed_height(kInspectorRowHeight);
         toneMappingPfsRadianceAbsoluteCheck_->set_font_size(13);
         toneMappingPfsRadianceAbsoluteCheck_->set_tooltip(
             "Passes --radiance to pfsin. Keep this on for calibrated Radiance RGBE files whose "
@@ -11537,13 +11667,13 @@ private:
         styleSecondaryButton(toneMappingUseCenterButton_, true);
         toneMappingUseCenterButton_->set_callback([this] { useToneMappingImageCenter(); });
 
-        toneMappingProtectHighlightsCheck_ = new CheckBox(
+        toneMappingProtectHighlightsCheck_ = new InspectorCheckBox(
             content,
             "Protect highlights inside gaze region"
         );
         toneMappingProtectHighlightsCheck_->set_checked(true);
         toneMappingProtectHighlightsCheck_->set_fixed_width(kInspectorContentWidth);
-        toneMappingProtectHighlightsCheck_->set_fixed_height(24);
+        toneMappingProtectHighlightsCheck_->set_fixed_height(kInspectorRowHeight);
         toneMappingProtectHighlightsCheck_->set_font_size(14);
         toneMappingProtectHighlightsCheck_->set_tooltip(
             "Measures the maximum sampled linear RGB value inside 3σ of the gaze point "
@@ -11615,13 +11745,13 @@ private:
             refreshToneMappingUi();
         });
 
-        toneMappingUseDisplayGeometryCheck_ = new CheckBox(
+        toneMappingUseDisplayGeometryCheck_ = new InspectorCheckBox(
             content,
             "Measure radius as display visual angle"
         );
         toneMappingUseDisplayGeometryCheck_->set_checked(true);
         toneMappingUseDisplayGeometryCheck_->set_fixed_width(kInspectorContentWidth);
-        toneMappingUseDisplayGeometryCheck_->set_fixed_height(24);
+        toneMappingUseDisplayGeometryCheck_->set_fixed_height(kInspectorRowHeight);
         toneMappingUseDisplayGeometryCheck_->set_font_size(14);
         toneMappingUseDisplayGeometryCheck_->set_tooltip(
             "Fits the HDR image to the profile resolution, then converts pixel distance "
@@ -11679,13 +11809,13 @@ private:
         toneMappingReferenceWhiteBox_->set_callback(displayFieldChanged);
         toneMappingPeakNitsBox_->set_callback(displayFieldChanged);
 
-        toneMappingApplyReferenceWhiteCheck_ = new CheckBox(
+        toneMappingApplyReferenceWhiteCheck_ = new InspectorCheckBox(
             content,
             "Apply profile reference white to EDR output"
         );
         toneMappingApplyReferenceWhiteCheck_->set_checked(true);
         toneMappingApplyReferenceWhiteCheck_->set_fixed_width(kInspectorContentWidth);
-        toneMappingApplyReferenceWhiteCheck_->set_fixed_height(24);
+        toneMappingApplyReferenceWhiteCheck_->set_fixed_height(kInspectorRowHeight);
         toneMappingApplyReferenceWhiteCheck_->set_font_size(14);
         toneMappingApplyReferenceWhiteCheck_->set_tooltip(
             "Requests this reference white through the Viewer HDR pipeline. The nominal peak "
@@ -12315,7 +12445,7 @@ private:
                     }
                 }
             }
-            const int itemHeight = leftRailCollapsed_ ? 34 : (item.button->twoLine() ? 44 : 30);
+            const int itemHeight = leftRailCollapsed_ ? 34 : 30;
             place(item.button, leftRailCollapsed_ ? 7 : 8, y, railWidth - (leftRailCollapsed_ ? 14 : 16), itemHeight);
             y += itemHeight + 2;
         }
@@ -12657,7 +12787,7 @@ private:
         new Label(yRow, "Tick", "sans", 12);
         graphPreviewYTickStepBox_ = smallTextBox(yRow, "Auto");
         configureGraphPreviewEntry(graphPreviewYTickStepBox_, 68);
-        graphPreviewYLogScaleCheck_ = new CheckBox(yRow, "Log");
+        graphPreviewYLogScaleCheck_ = new InspectorCheckBox(yRow, "Log");
         graphPreviewYLogScaleCheck_->set_font_size(14);
         graphPreviewYLogScaleCheck_->set_callback([this](bool value) {
             graphPreviewSettings_.yLogScale = value;
@@ -12665,7 +12795,7 @@ private:
         });
 
         auto* backgroundRow = makeSettingsRow("Background");
-        graphPreviewTransparentBgCheck_ = new CheckBox(backgroundRow, "None");
+        graphPreviewTransparentBgCheck_ = new InspectorCheckBox(backgroundRow, "None");
         graphPreviewTransparentBgCheck_->set_font_size(14);
         graphPreviewTransparentBgCheck_->set_callback([this](bool value) {
             graphPreviewSettings_.transparentBackground = value;
@@ -13626,6 +13756,14 @@ private:
             contextStripWindow_->set_fixed_size(contextSize);
             contextStripWindow_->set_size(contextSize);
             contextStripWindow_->set_visible(!focusMode_);
+            // Five equal columns (the grid would size each by its text).
+            const int cardWidth = std::max(1, (stripWidth - 2 * 12) / 5);
+            for (Label* title : {contextStripCardATitleLabel_, contextStripCardBTitleLabel_, contextStripCardCTitleLabel_,
+                                 contextStripCardDTitleLabel_, contextStripCardETitleLabel_}) {
+                if (title && title->parent()) {
+                    title->parent()->set_fixed_width(cardWidth);
+                }
+            }
             if (contextResized) contextStripWindow_->perform_layout(viewer_->nvg_context());
             if (recentHdrBarWindow_) {
                 const Vector2i recentSize{stripWidth, kRecentHdrBarHeight};
@@ -13715,9 +13853,7 @@ private:
                 }
             } else if (auto* check = dynamic_cast<CheckBox*>(child)) {
                 check->set_font_size(13);
-                if (check->fixed_height() >= 24) {
-                    check->set_fixed_height(22);
-                }
+                check->set_fixed_height(kInspectorRowHeight);
             } else if (auto* inspectorCombo = dynamic_cast<InspectorComboBox*>(child)) {
                 if (inspectorCombo->fixed_height() >= kInspectorRowHeight) {
                     inspectorCombo->set_font_size(13);
@@ -13733,8 +13869,8 @@ private:
                 if (button->font_size() >= 13) {
                     button->set_font_size(13);
                 }
-                if (button->fixed_height() >= 32) {
-                    button->set_fixed_height(30);
+                if (button->fixed_height() > kInspectorRowHeight) {
+                    button->set_fixed_height(kInspectorRowHeight);
                 }
             }
             applyInspectorTypography(child);
@@ -15297,12 +15433,6 @@ private:
             label->set_color(hdrspaceMutedInk(215));
             return r;
         };
-        auto valueLabel = [&](Widget* host) {
-            auto* label = new Label(host, "--", "sans", 13);
-            label->set_fixed_width(kFieldWidth);
-            label->set_color(hdrspaceInk(230));
-            return label;
-        };
 
         auto* statusRow = new Widget(content);
         statusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
@@ -15314,9 +15444,13 @@ private:
         statusDot->setSource(perceptualStatusLabel_);
 
         heading("Image");
-        perceptualFileLabel_ = valueLabel(row(content, "File"));
-        perceptualColorLabel_ = valueLabel(row(content, "Colour"));
+        auto* imageRows = new Widget(content);
+        imageRows->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 0});
+        imageRows->set_fixed_width(kInspectorContentWidth);
+        perceptualFileLabel_ = new InspectorKeyValueRow(imageRows, "File");
+        perceptualColorLabel_ = new InspectorKeyValueRow(imageRows, "Colour");
         perceptualColorLabel_->set_tooltip("Colour space of the file's values, from its header.");
+        perceptualViewLabel_ = new InspectorKeyValueRow(imageRows, "View");
         perceptualAssignCombo_ = new InspectorComboBox(row(content, "Assign colour"),
             {"Choose...", "Radiance RGB", "sRGB / Rec.709", "XYZ", "XYZ (cd/m²)", "Raw (camera)", "Luminance (cd/m²)"});
         perceptualAssignCombo_->set_fixed_width(kFieldWidth);
@@ -15330,7 +15464,6 @@ private:
             perceptualAssignCombo_->set_selected_index(0);
         });
         perceptualAssignRow_ = perceptualAssignCombo_->parent();
-        perceptualViewLabel_ = valueLabel(row(content, "View"));
 
         heading("Map");
         const auto groupCaption = [&](const std::string& text) {
@@ -15424,6 +15557,7 @@ private:
             perceptualShowOriginalButton_->set_fixed_width((kFieldWidth - 6) / 2);
             perceptualShowOriginalButton_->set_callback([this] { setPerceptualShowOriginal(true); });
             showRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+            static_cast<Label*>(showRow->children().front())->set_fixed_width(kInspectorTightRowLabelWidth);
         }
         {
             auto* colourRow = row(content, "Colour");
@@ -15434,6 +15568,7 @@ private:
             perceptualGreyButton_->set_fixed_width((kFieldWidth - 6) / 2);
             perceptualGreyButton_->set_callback([this] { perceptualFalseColor_ = false; applyPerceptualDisplay(); });
             colourRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+            static_cast<Label*>(colourRow->children().front())->set_fixed_width(kInspectorTightRowLabelWidth);
         }
         {
             auto* scaleRow = row(content, "Scale");
@@ -15444,6 +15579,7 @@ private:
             perceptualLinearButton_->set_fixed_width((kFieldWidth - 6) / 2);
             perceptualLinearButton_->set_callback([this] { perceptualLog_ = false; applyPerceptualDisplay(); });
             scaleRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+            static_cast<Label*>(scaleRow->children().front())->set_fixed_width(kInspectorTightRowLabelWidth);
         }
         perceptualLegend_ = new PerceptualLegendBar(content);
         perceptualLegend_->set_fixed_size({kInspectorContentWidth, 30});
@@ -16000,6 +16136,7 @@ private:
 
         auto* ppdRow = blurRow(settingsCard, "PPD  X / Y");
         ppdRow->children().front()->set_tooltip("Pixels per degree. Optional; X alone is used for both.");
+        static_cast<Label*>(ppdRow->children().front())->set_fixed_width(kInspectorTightRowLabelWidth);
         blurPpdXBox_ = smallTextBox(ppdRow, "auto");
         blurPpdXBox_->set_fixed_width((kBlurFieldWidth - 6) / 2);
         blurPpdXBox_->set_alignment(TextBox::Alignment::Left);
@@ -16037,9 +16174,9 @@ private:
         });
 
         auto* blurHighlightRow = new Widget(settingsCard);
-        blurHighlightRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 8, 0});
+        blurHighlightRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 0});
         blurHighlightRow->set_fixed_width(kInspectorContentWidth);
-        blurHighlightCheck_ = new CheckBox(blurHighlightRow, "Highlight thresholded source");
+        blurHighlightCheck_ = new InspectorCheckBox(blurHighlightRow, "Highlight thresholded source");
         blurHighlightCheck_->set_font_size(14);
         blurHighlightCheck_->set_checked(true);
         blurHighlightCheck_->set_callback([this](bool) { updateBlurLivePreview(); });
@@ -18568,14 +18705,14 @@ private:
         // Scene inputs as in View Visibility: label, path, choose, and one more action. The 3D
         // viewport lives on the canvas (tabs above it), so the inspector keeps only the inputs.
         makeStepHeading("Scene", "Room geometry, camera view and environment. Typing a path and pressing Enter also loads it.");
-        constexpr int kCreateViewPathWidth = kInspectorContentWidth - kInspectorRowLabelWidth - 3 * 6 - 2 * 28;
+        constexpr int kCreateViewPathWidth = kInspectorContentWidth - kInspectorTightRowLabelWidth - 3 * 6 - 2 * 28;
         auto pathRow = [&](const std::string& title, TextBox*& box, const std::string& placeholder,
                            const std::string& tooltip, const std::string& chooseTooltip) -> Widget* {
             auto* row = new Widget(content);
             row->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
             row->set_fixed_width(kInspectorContentWidth);
             auto* label = new Label(row, title, "sans", 13);
-            label->set_fixed_width(kInspectorRowLabelWidth);
+            label->set_fixed_width(kInspectorTightRowLabelWidth);
             label->set_color(hdrspaceMutedInk(215));
             box = smallTextBox(row, placeholder);
             box->set_fixed_size({kCreateViewPathWidth, kInspectorRowHeight});
@@ -18776,12 +18913,13 @@ private:
 
         auto* renderResolutionRow = fieldRow(renderCard, "Size  W / H");
         renderResolutionRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+        static_cast<Label*>(renderResolutionRow->children().front())->set_fixed_width(kInspectorTightRowLabelWidth);
         createViewRenderWidthBox_ = smallTextBox(renderResolutionRow, "6000");
-        createViewRenderWidthBox_->set_fixed_width((kCreateViewFieldWidth - 4) / 2);
+        createViewRenderWidthBox_->set_fixed_width((kCreateViewFieldWidth - 6) / 2);
         createViewRenderWidthBox_->set_alignment(TextBox::Alignment::Left);
         createViewRenderWidthBox_->set_units("px");
         createViewRenderHeightBox_ = smallTextBox(renderResolutionRow, "6000");
-        createViewRenderHeightBox_->set_fixed_width((kCreateViewFieldWidth - 4) / 2);
+        createViewRenderHeightBox_->set_fixed_width((kCreateViewFieldWidth - 6) / 2);
         createViewRenderHeightBox_->set_alignment(TextBox::Alignment::Left);
         createViewRenderHeightBox_->set_units("px");
 
@@ -18790,18 +18928,18 @@ private:
         createViewRenderOutputBox_->set_alignment(TextBox::Alignment::Left);
 
         auto* renderPostRow = new Widget(renderCard);
-        renderPostRow->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 4, 0});
+        renderPostRow->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 8});
         renderPostRow->set_fixed_width(kInspectorContentWidth);
         // Captions fit the inspector width; the exact commands are in the tooltips.
-        createViewRenderConvertRgbeCheck_ = new CheckBox(renderPostRow, "Convert with ra_rgbe -r");
+        createViewRenderConvertRgbeCheck_ = new InspectorCheckBox(renderPostRow, "Convert with ra_rgbe -r");
         createViewRenderConvertRgbeCheck_->set_font_size(14);
         createViewRenderConvertRgbeCheck_->set_tooltip("Runs ra_rgbe -r on the rendered picture.");
         createViewRenderConvertRgbeCheck_->set_checked(true);
-        createViewRenderPfiltCheck_ = new CheckBox(renderPostRow, "Save half-size _sm.hdr (pfilt)");
+        createViewRenderPfiltCheck_ = new InspectorCheckBox(renderPostRow, "Save half-size _sm.hdr (pfilt)");
         createViewRenderPfiltCheck_->set_font_size(14);
         createViewRenderPfiltCheck_->set_tooltip("Runs pfilt -x /2 -y /2 -r 1 and saves the result as _sm.hdr.");
         createViewRenderPfiltCheck_->set_checked(true);
-        createViewRenderFastDirectCheck_ = new CheckBox(renderPostRow, "Fast direct mode");
+        createViewRenderFastDirectCheck_ = new InspectorCheckBox(renderPostRow, "Fast direct mode");
         createViewRenderFastDirectCheck_->set_font_size(14);
         createViewRenderFastDirectCheck_->set_tooltip("No overture pass; rxpiece computes direct light only.");
         createViewRenderFastDirectCheck_->set_checked(false);
@@ -19056,27 +19194,27 @@ private:
         auto* mergeModeRow = new Widget(mergeOptions.body);
         mergeModeRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 8, 0});
         mergeModeRow->set_fixed_width(kMergeContentWidth);
-        bloomPreventBox_ = new CheckBox(mergeModeRow, "Bloom prevent");
+        bloomPreventBox_ = new InspectorCheckBox(mergeModeRow, "Bloom prevent");
         bloomPreventBox_->set_font_size(kMergeFieldFont);
         bloomPreventBox_->set_fixed_width(kMergeHalfWidth);
-        bloomPreventBox_->set_fixed_height(24);
+        bloomPreventBox_->set_fixed_height(kInspectorRowHeight);
         bloomPreventBox_->set_callback([this](bool value) {
             if (value) {
                 demosaicCombo_->set_selected_index(1);
                 mergeWeightCombo_->set_selected_index(1);
             }
         });
-        fisheyeBox_ = new CheckBox(mergeModeRow, "Fisheye correction");
+        fisheyeBox_ = new InspectorCheckBox(mergeModeRow, "Fisheye correction");
         fisheyeBox_->set_font_size(kMergeFieldFont);
         fisheyeBox_->set_fixed_width(kMergeHalfWidth);
-        fisheyeBox_->set_fixed_height(24);
+        fisheyeBox_->set_fixed_height(kInspectorRowHeight);
         auto* rawgridRow = new Widget(mergeOptions.body);
         rawgridRow->set_layout(new GridLayout{Orientation::Horizontal, 2, Alignment::Fill, 8, 0});
         rawgridRow->set_fixed_width(kMergeContentWidth);
-        rawgridBox_ = new CheckBox(rawgridRow, "Raw grid");
+        rawgridBox_ = new InspectorCheckBox(rawgridRow, "Raw grid");
         rawgridBox_->set_font_size(kMergeFieldFont);
         rawgridBox_->set_fixed_width(kMergeHalfWidth);
-        rawgridBox_->set_fixed_height(24);
+        rawgridBox_->set_fixed_height(kInspectorRowHeight);
         auto* rawgridSpacer = new Widget(rawgridRow);
         rawgridSpacer->set_fixed_width(kMergeHalfWidth);
 
@@ -19246,6 +19384,14 @@ private:
             label->set_color(hdrspaceMutedInk(215));
             return line;
         };
+        // A file or chart-cell row: the field and its buttons 6 apart (kInspectorTightRowLabelWidth).
+        auto tightRow = [&](const std::string& title) -> Widget* {
+            auto* line = row(title);
+            line->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+            static_cast<Label*>(line->children().front())->set_fixed_width(kInspectorTightRowLabelWidth);
+            return line;
+        };
+        constexpr int kTightRowField = kTabContentWidth - kInspectorTightRowLabelWidth - 6;
         auto pathBox = [&](Widget* line, const std::string& placeholder, int width) {
             auto* box = smallTextBox(line, placeholder);
             box->set_font_size(kTabLabelFont);
@@ -19259,14 +19405,14 @@ private:
             styleUtilityButton(button);
             return button;
         };
-        constexpr int kFileField = kRowField - 2 * (28 + 8);
+        constexpr int kFileField = kTightRowField - 2 * (6 + 28);
         (void)kTabHalfWidth;
         (void)kTabFieldFont;
         (void)kTabActionFont;
 
         heading("Images", false);
         {
-            auto* line = row("Reference");
+            auto* line = tightRow("Reference");
             refFileBox_ = pathBox(line, "Reference HDR", kFileField);
             iconButton(line, FA_FOLDER_OPEN, "Choose the reference HDR")->set_callback([this] {
                 auto paths = file_dialog(viewer_, FileDialogType::Open);
@@ -19282,7 +19428,7 @@ private:
             });
         }
         {
-            auto* line = row("Camera");
+            auto* line = tightRow("Camera");
             testFileBox_ = pathBox(line, "Camera HDR", kFileField);
             iconButton(line, FA_FOLDER_OPEN, "Choose the camera HDR")->set_callback([this] {
                 auto paths = file_dialog(viewer_, FileDialogType::Open);
@@ -19301,8 +19447,8 @@ private:
         heading("Chart cells");
         constexpr int kAutoWidth = 64;
         {
-            auto* line = row("Reference");
-            refCellsBox_ = pathBox(line, "ref_cells.txt", kRowField - kAutoWidth - 8);
+            auto* line = tightRow("Reference");
+            refCellsBox_ = pathBox(line, "ref_cells.txt", kTightRowField - 6 - kAutoWidth);
             auto* autoRef = new Button(line, "Auto");
             autoRef->set_fixed_width(kAutoWidth);
             styleSecondaryButton(autoRef, true);
@@ -19310,8 +19456,8 @@ private:
             autoRef->set_callback([this] { runChartCells(true); });
         }
         {
-            auto* line = row("Camera");
-            testCellsBox_ = pathBox(line, "test_cells.txt", kRowField - kAutoWidth - 8);
+            auto* line = tightRow("Camera");
+            testCellsBox_ = pathBox(line, "test_cells.txt", kTightRowField - 6 - kAutoWidth);
             auto* autoCam = new Button(line, "Auto");
             autoCam->set_fixed_width(kAutoWidth);
             styleSecondaryButton(autoCam, true);
@@ -19354,14 +19500,14 @@ private:
         colorResultArea_->setPlaceholder("Run color calibration to see the fit and the recommended xyzcam here");
 
         auto* horizontalScrollRow = new Widget(resultHost);
-        horizontalScrollRow->set_fixed_size({kTabContentWidth, 26});
-        horizontalScrollRow->set_layout(new GridLayout{Orientation::Horizontal, 3, Alignment::Fill, 5, 0});
+        horizontalScrollRow->set_fixed_size({kTabContentWidth, kInspectorRowHeight});
+        horizontalScrollRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
 
         auto* scrollLeftButton = new Button(horizontalScrollRow, "<");
-        scrollLeftButton->set_fixed_width(34);
+        styleSecondaryButton(scrollLeftButton, true);
+        scrollLeftButton->set_fixed_size({kInspectorRowHeight, kInspectorRowHeight});
         scrollLeftButton->set_font_size(kTabFieldFont);
         scrollLeftButton->set_tooltip("Scroll XYZ result left");
-        styleSecondaryButton(scrollLeftButton);
         scrollLeftButton->set_callback([this] {
             if (colorResultScroll_) {
                 colorResultScroll_->scrollHorizontalBy(-0.15f);
@@ -19370,6 +19516,7 @@ private:
         });
 
         colorResultHorizontalSlider_ = new Slider(horizontalScrollRow);
+        colorResultHorizontalSlider_->set_fixed_width(kTabContentWidth - 2 * (kInspectorRowHeight + 6));
         colorResultHorizontalSlider_->set_range({0.0f, 1.0f});
         colorResultHorizontalSlider_->set_value(0.0f);
         colorResultHorizontalSlider_->set_tooltip("Horizontal scroll for the XYZ result");
@@ -19380,10 +19527,10 @@ private:
         });
 
         auto* scrollRightButton = new Button(horizontalScrollRow, ">");
-        scrollRightButton->set_fixed_width(34);
+        styleSecondaryButton(scrollRightButton, true);
+        scrollRightButton->set_fixed_size({kInspectorRowHeight, kInspectorRowHeight});
         scrollRightButton->set_font_size(kTabFieldFont);
         scrollRightButton->set_tooltip("Scroll XYZ result right");
-        styleSecondaryButton(scrollRightButton);
         scrollRightButton->set_callback([this] {
             if (colorResultScroll_) {
                 colorResultScroll_->scrollHorizontalBy(0.15f);
@@ -19528,7 +19675,16 @@ private:
         constexpr int kTabFieldFont = 14;
         constexpr int kTabActionFont = 14;
 
-        auto* toolsHeader = new InspectorSectionHeader(parent, "Tools", false);
+        auto* statusRow = new Widget(parent);
+        statusRow->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Minimum, 0, 6});
+        statusRow->set_fixed_width(kTabContentWidth);
+        auto* statusDot = new InspectorStatusDot(statusRow, nullptr);
+        settingsStatusLabel_ = new Label(statusRow, "Ready", "sans", 12);
+        settingsStatusLabel_->set_fixed_width(kTabContentWidth - 14);
+        settingsStatusLabel_->set_color(hdrspaceMutedInk(220));
+        statusDot->setSource(settingsStatusLabel_);
+
+        auto* toolsHeader = new InspectorSectionHeader(parent, "Tools");
         toolsHeader->set_fixed_width(kTabContentWidth);
         const auto pathRow = [&](const char* name, const char* placeholder, const char* tooltip) {
             auto* line = new Widget(parent);
@@ -24318,6 +24474,9 @@ private:
         writeKeyValueFile(paths_.settingsFile, values);
         paths_ = resolvePaths();
         loadSettingsIntoUi();
+        if (settingsStatusLabel_) {
+            settingsStatusLabel_->set_caption("Settings saved");
+        }
         showMessage("Settings saved.");
     }
 
@@ -25887,6 +26046,7 @@ private:
     GraphPreviewHeaderDragHandle* graphPreviewTitleLabel_ = nullptr;
     Button* graphPreviewSaveButton_ = nullptr;
     Button* graphPreviewCloseButton_ = nullptr;
+    Label* settingsStatusLabel_ = nullptr;
     Label* contextStripCardATitleLabel_ = nullptr;
     Label* contextStripCardAValueLabel_ = nullptr;
     Label* contextStripCardBTitleLabel_ = nullptr;
