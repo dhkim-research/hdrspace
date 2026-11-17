@@ -87,9 +87,14 @@ luminance meter before relying on absolute values.
   *Extra arguments* box.
 - **Glare**: DGP, DGI, UGR, glare sources, bands and zones, based on evalglare 3.06.
 - **View Visibility**: how much of a view's detectable contrast is kept in a second image
-  (e.g. with blinds), using the visibility stages of HDR-VDP 3.
+  (e.g. with blinds), using the visibility stages of HDR-VDP 3. Colour becomes cone and rod
+  responses as in HDR-VDP 3 (a display's emission spectra, Smith-Pokorny cones). Options bring
+  this up to date: CIE 2006 cones (Stockman & Sharpe, as in ColorVideoVDP), smooth sRGB
+  primaries with a D65 white (Mallett & Yuksel 2019), and HDR-VDP 3's XYZ-to-display
+  conversion in the contrast step.
 - **Perceptual maps**: cone and rod response, local adaptation, detectable contrast and
-  equivalent luminance, with pixels per degree read from the `VIEW` header.
+  equivalent luminance, with pixels per degree read from the `VIEW` header and the same
+  colour options.
 - **Statistics**: whole-image, rectangle, circle (by opening angle) and mask statistics, row
   and column profiles, and CSV and region-HDR export.
 - **Tonemapping**: pfstools operators and Radiance `pcond` (Ward).
@@ -107,6 +112,9 @@ luminance meter before relying on absolute values.
 | [hdrmerge](https://github.com/wjakob/hdrmerge) (Wenzel Jakob) | GPL-3.0 | Used for the fast merge path. |
 | evalglare (J. Wienold, Fraunhofer ISE / EPFL) | Evalglare License 3.0 | Ported to C++; angles in degrees; equivalent-luminance and local-only modes added. This software uses a modified version of the source code of evalglare. |
 | [HDR-VDP 3](https://sourceforge.net/projects/hdrvdp/) (Rafał Mantiuk) | BSD-3-Clause | Visibility and detectable-contrast stages ported from MATLAB to C++. |
+| [ColorVideoVDP](https://github.com/gfxdisp/ColorVideoVDP) (Mantiuk et al.) | MIT | Its use of the CIE 2006 cone fundamentals and their L, M, S weights, offered as an option. |
+| CIE 2006 cone fundamentals (Stockman & Sharpe 2000), [CVRL](http://www.cvrl.org) | Public research data | The 2-deg table (linss2_10e_1) compiled in for the CIE 2006 option. |
+| sRGB spectral primaries (Mallett & Yuksel 2019), as tabulated in [colour-science](https://www.colour-science.org) | BSD-3-Clause (colour-science) | Compiled in and multiplied by CIE D65 as a display-spectrum option. |
 | [Radiance](https://www.radiance-online.org/) (LBNL) | Radiance License 2.0 | Command-line tools bundled for `pcond` and rendering. |
 | [pfstools](http://pfstools.sourceforge.net/) | GPL / LGPL | Called as external programs for tone mapping. |
 | NanoGUI (Wenzel Jakob), NanoVG (Mikko Mononen) | BSD-3-Clause / zlib | Restyled dialogs, menus and tooltips. |
