@@ -105,3 +105,29 @@ jobs:
         with:
           name: crossplatform-raw-results
           path: rawresults/
+
+  # Keep only the newest artifacts: once this run has succeeded, the artifacts of the earlier
+  # runs of this workflow are deleted.
+  cleanup:
+    needs: [windows]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the artifacts of earlier runs of this workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          runs=$(gh api --paginate "repos/$repo/actions/workflows/mergehdr-windows.yml/runs?per_page=100" \
+            --jq '.workflow_runs[] | select(.id < ${{ github.run_id }}) | .id')
+          n=0
+          for run in $runs; do
+            for id in $(gh api --paginate "repos/$repo/actions/runs/$run/artifacts?per_page=100" --jq '.artifacts[].id'); do
+              gh api -X DELETE "repos/$repo/actions/artifacts/$id"
+              n=$((n + 1))
+            done
+          done
+          echo "Deleted $n artifacts of earlier runs." | tee -a "$GITHUB_STEP_SUMMARY"

@@ -13,7 +13,7 @@ back to the RAW files and settings that made it.
 The app is developed and tested on Apple Silicon Macs and needs macOS 26 or newer. A 64-bit
 Windows build is also available, with a few tools missing; see [Windows](#windows).
 
-**Download:** [hdrspace 1.01](https://github.com/dhkim-research/hdrspace/releases/tag/v1.01).
+**Download:** [hdrspace 1.02](https://github.com/dhkim-research/hdrspace/releases/tag/v1.02).
 On a Mac, unzip `hdrspace-macos-arm64.zip` and move `hdrspace.app` to Applications. The app
 is not notarized, so open it the first time with right-click → Open.
 
@@ -130,7 +130,7 @@ package also gets the BusyBox (busybox-w32) licence note when it is built.
 ## Windows
 
 Download `hdrspace-windows-x64.zip` from the
-[1.01 release](https://github.com/dhkim-research/hdrspace/releases/tag/v1.01),
+[1.02 release](https://github.com/dhkim-research/hdrspace/releases/tag/v1.02),
 unzip it anywhere and start `hdrspace-windows-x64\bin\hdrspace.exe`. The program is not
 code-signed, so Windows may show a SmartScreen warning the first time ("More info" → "Run
 anyway"). Newer builds are made by GitHub Actions when `hdrspace/`, `mergehdr/` or the
