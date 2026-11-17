@@ -87,7 +87,8 @@ luminance meter before relying on absolute values.
 - **Merge HDR / Calibrate**: the pipeline above, plus colour, shutter and aperture
   calibration. The shadowband step is only on the command line (`mergehdr shadowband`), and a
   vignetting table or fitted shutter and aperture corrections come from a profile file or the
-  *Extra arguments* box.
+  *Extra arguments* box. Ready-made profiles for the author's cameras are listed in
+  [mergehdr/README.rst](mergehdr/README.rst#profiles).
 - **Glare**: DGP, DGI, UGR, glare sources, bands and zones, based on evalglare 3.06.
 - **View Visibility**: how much of a view's detectable contrast is kept in a second image
   (e.g. with blinds), using the visibility stages of HDR-VDP 3. Colour becomes cone and rod
