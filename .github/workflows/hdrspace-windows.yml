@@ -153,8 +153,12 @@ jobs:
           Copy-Item $lib.FullName "$root/Resources/radiance/lib" -Recurse
           Get-ChildItem radiance-zip -Recurse -File | Where-Object { $_.Name -match '^(License|LICENSE|COPYRIGHT)' } |
             Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName "$root/Resources/licenses/Radiance-$($_.Name)" }
-          # busybox-w32 (GPL-2.0): the POSIX shell that runs hdrspace's command lines on Windows
-          Invoke-WebRequest "https://frippery.org/files/busybox/busybox64u.exe" -OutFile "$root/bin/busybox.exe"
+          # busybox-w32 (GPL-2.0): the POSIX shell that runs hdrspace's command lines on Windows.
+          # frippery.org stopped answering GitHub's runners (2026-11-17), so the CI takes an unchanged
+          # copy of its busybox64u.exe from this repository's release "crossplatform-raw-data".
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/crossplatform-raw-data/busybox64u.exe" -OutFile "$root/bin/busybox.exe"
+          $sha = (Get-FileHash "$root/bin/busybox.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "36b266923fc5765b42f5f981319f39568498fba60b53ccf26e8fc1e575e2a9a9") { throw "busybox64u.exe has an unexpected SHA-256: $sha" }
           @(
             "busybox-w32 (https://frippery.org/busybox/), GPL-2.0.",
             "Source code: https://frippery.org/files/busybox/ and https://github.com/rmyorston/busybox-w32"
