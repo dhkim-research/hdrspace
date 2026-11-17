@@ -2,6 +2,7 @@
 
 #include "hdrimage.h"
 #include "cie2006_cone_fundamentals.h"
+#include "srgb_mallett2019_d65.h"
 
 #include <algorithm>
 #include <array>
@@ -156,6 +157,10 @@ const char *viewVisibilityInputColorLabel(ViewVisibilitySummaryOptions::InputCol
 
 const char *hdrvdpConeFundamentalsLabel(ViewVisibilitySummaryOptions::ConeFundamentals cones) {
     return cones == ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006 ? "cie2006" : "smith-pokorny";
+}
+
+const char *hdrvdpXyzToDisplayLabel(ViewVisibilitySummaryOptions::XyzToDisplay xyzToDisplay) {
+    return xyzToDisplay == ViewVisibilitySummaryOptions::XyzToDisplay::Convert ? "convert" : "direct";
 }
 
 // `inputScale` comes from viewVisibilityInputScale() for the same picture and input colour.
@@ -2960,6 +2965,15 @@ enum class HdrvdpPreparedImageMode {
     NativeTransformed,
 };
 
+// Preparation of the contrast and perceptual-map steps: DirectChannels feeds the XYZ values as the
+// display's R, G, B (the former fixed behaviour); with XyzToDisplay::Convert they are turned into
+// the display's RGB first (NativeTransformed), as HDR-VDP 3 does for 'XYZ' input.
+HdrvdpPreparedImageMode hdrvdpContrastMode(ViewVisibilitySummaryOptions::XyzToDisplay xyzToDisplay) {
+    return xyzToDisplay == ViewVisibilitySummaryOptions::XyzToDisplay::Convert
+        ? HdrvdpPreparedImageMode::NativeTransformed
+        : HdrvdpPreparedImageMode::DirectChannels;
+}
+
 struct CachedPreparedHdrvdpImageEntry {
     std::filesystem::file_time_type mtime;
     HdrvdpPreparedImage prepared;
@@ -3397,17 +3411,32 @@ const HdrvdpPnLookup &getHdrvdpPnLookupCached(
     return it->second;
 }
 
+// The built-in emission spectra kHdrvdpMallettSpectrum: D65 x the Mallett & Yuksel (2019) sRGB
+// primaries, resampled to the grid of the data files with the same PCHIP interpolation.
+SpectralCurve3 hdrvdpMallettD65Emission() {
+    SpectralCurve3 raw;
+    for (const auto &row : kSrgbMallett2019D65) {
+        raw.wavelengths.push_back(row[0]);
+        raw.values.push_back(Vec3d{row[1] * row[4], row[2] * row[4], row[3] * row[4]});
+    }
+    return resampleSpectralCurve3Pchip(raw);
+}
+
 HdrvdpSpectralContext buildHdrvdpSpectralContext(
     const std::string &anchorPath,
     const std::string &spectralEmissionPath,
     ViewVisibilitySummaryOptions::ConeFundamentals cones,
     const HdrvdpParams &params
 ) {
-    const std::string emissionPath = resolveHdrvdpResourcePath(anchorPath, spectralEmissionPath.empty() ? "data/emission_spectra_oled.csv" : spectralEmissionPath);
+    // The built-in spectrum has no file: the other data files are then found from the folder of
+    // the default (OLED) spectrum.
+    const bool builtinMallett = spectralEmissionPath == kHdrvdpMallettSpectrum;
+    const std::string emissionPath = resolveHdrvdpResourcePath(anchorPath,
+        (spectralEmissionPath.empty() || builtinMallett) ? "data/emission_spectra_oled.csv" : spectralEmissionPath);
     const std::string xyzPath = resolveHdrvdpResourcePath(emissionPath, "data/ciexyz31.csv");
     const std::string rodPath = resolveHdrvdpResourcePath(emissionPath, "data/cie_scotopic_lum.txt");
 
-    const SpectralCurve3 emission = loadSpectralCurve3(emissionPath);
+    const SpectralCurve3 emission = builtinMallett ? hdrvdpMallettD65Emission() : loadSpectralCurve3(emissionPath);
     const SpectralCurve3 xyz = loadSpectralCurve3(xyzPath);
     const SpectralCurve1 rod = loadSpectralCurve1(rodPath);
 
@@ -9505,7 +9534,8 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
         "|sens=" + formatCacheDouble(opts.sensitivityCorrection) +
         "|emission=" + opts.spectralEmissionPath +
         "|input_color=" + std::string(viewVisibilityInputColorLabel(opts.inputColor)) +
-        "|cones=" + std::string(hdrvdpConeFundamentalsLabel(opts.coneFundamentals));
+        "|cones=" + std::string(hdrvdpConeFundamentalsLabel(opts.coneFundamentals)) +
+        "|xyz=" + std::string(hdrvdpXyzToDisplayLabel(opts.xyzToDisplay));
 
     std::map<std::string, CachedPerceptualMapResultEntry>::iterator cachedIt = sResultCache.find(resultKey);
     if (cachedIt != sResultCache.end() && cachedIt->second.inputMtime == inputMtime) {
@@ -9539,7 +9569,7 @@ PerceptualMapResult analyzePerceptualMap(const PerceptualMapOptions &opts, Perce
             opts.spectralEmissionPath,
             opts.sensitivityCorrection,
             opts.pixelsPerDegree,
-            HdrvdpPreparedImageMode::DirectChannels,
+            hdrvdpContrastMode(opts.xyzToDisplay),
             perceptualMapPreparedFields(kind),
             kPreparedPerceptualFields,
             false,
@@ -9606,7 +9636,8 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
         "|ppd=" + formatCacheDouble(opts.pixelsPerDegree) +
         "|sens=" + formatCacheDouble(opts.sensitivityCorrection) +
         "|emission=" + opts.spectralEmissionPath +
-        "|cones=" + std::string(hdrvdpConeFundamentalsLabel(opts.coneFundamentals));
+        "|cones=" + std::string(hdrvdpConeFundamentalsLabel(opts.coneFundamentals)) +
+        "|xyz=" + std::string(hdrvdpXyzToDisplayLabel(opts.xyzToDisplay));
     auto cachedResultIt = sResultCache.find(resultKey);
     if (cachedResultIt != sResultCache.end() &&
         cachedResultIt->second.referenceMtime == referenceMtime &&
@@ -9635,8 +9666,12 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
     result.width = reference.width;
     result.height = reference.height;
     result.inputColor = viewVisibilityInputColorLabel(opts.inputColor);
-    if (opts.detailMode == ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset)
+    if (opts.detailMode == ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset) {
         result.coneFundamentals = hdrvdpConeFundamentalsLabel(opts.coneFundamentals);
+        result.xyzToDisplay = hdrvdpXyzToDisplayLabel(opts.xyzToDisplay);
+        if (opts.spectralEmissionPath == kHdrvdpMallettSpectrum)
+            result.builtinSpectrum = kHdrvdpMallettSpectrum;
+    }
     double proxyPreservationSum = 0.0;
 
     // The mask threshold value is only ever compared with 0.5, so per pixel only the outcome is
@@ -9748,10 +9783,10 @@ ViewVisibilitySummaryResult analyzeViewVisibilitySummary(const ViewVisibilitySum
         // Only the adaptation and achromatic vectors are read below (kPreparedVisibilityFields).
         const HdrvdpPreparedImage &referenceContrastPrepared = getPreparedHdrvdpImageCached(
             opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
-            HdrvdpPreparedImageMode::DirectChannels, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor, opts.coneFundamentals);
+            hdrvdpContrastMode(opts.xyzToDisplay), kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor, opts.coneFundamentals);
         const HdrvdpPreparedImage &testContrastPrepared = getPreparedHdrvdpImageCached(
             opts.testPath, opts.testPath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
-            HdrvdpPreparedImageMode::DirectChannels, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor, opts.coneFundamentals);
+            hdrvdpContrastMode(opts.xyzToDisplay), kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor, opts.coneFundamentals);
         const HdrvdpPreparedImage &referenceSideBySidePrepared = getPreparedHdrvdpImageCached(
             opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
             HdrvdpPreparedImageMode::NativeTransformed, kPreparedVisibilityFields, kPreparedVisibilityFields, false, false, opts.inputColor, opts.coneFundamentals);
@@ -9922,6 +9957,10 @@ void writeViewVisibilityResultHdr(const std::string &path, const ViewVisibilityS
     // Written only for the CIE 2006 cones, so that results with the default cones keep their header.
     if (result.coneFundamentals == "cie2006")
         headerLines.push_back("MERGEHDR_VIEWVIS_CONES= cie2006");
+    if (result.xyzToDisplay == "convert")
+        headerLines.push_back("MERGEHDR_VIEWVIS_XYZ_TO_DISPLAY= convert");
+    if (!result.builtinSpectrum.empty())
+        headerLines.push_back("MERGEHDR_VIEWVIS_SPECTRUM= " + result.builtinSpectrum);
     headerLines.push_back("MERGEHDR_VIEWVIS_CHANNELS= test_contrast visibility reference_contrast");
     headerLines.push_back("MERGEHDR_VIEWVIS_VIEWSIZE= " + std::to_string(result.viewSize));
     {
@@ -10109,10 +10148,10 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
 
     const HdrvdpPreparedImage &referencePrepared = getPreparedHdrvdpImageCached(
         opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
-        HdrvdpPreparedImageMode::DirectChannels, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor, opts.coneFundamentals);
+        hdrvdpContrastMode(opts.xyzToDisplay), kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor, opts.coneFundamentals);
     const HdrvdpPreparedImage &testPrepared = getPreparedHdrvdpImageCached(
         opts.testPath, opts.testPath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
-        HdrvdpPreparedImageMode::DirectChannels, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor, opts.coneFundamentals);
+        hdrvdpContrastMode(opts.xyzToDisplay), kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor, opts.coneFundamentals);
     const HdrvdpPreparedImage &referenceSideBySidePrepared = getPreparedHdrvdpImageCached(
         opts.referencePath, opts.referencePath, opts.spectralEmissionPath, opts.sensitivityCorrection, opts.pixelsPerDegree,
         HdrvdpPreparedImageMode::NativeTransformed, kPreparedAllFields, kPreparedAllFields, false, false, opts.inputColor, opts.coneFundamentals);
@@ -10494,6 +10533,10 @@ void writeViewVisibilityDebugDump(const ViewVisibilitySummaryOptions &opts, cons
     meta << "input_color=" << viewVisibilityInputColorLabel(opts.inputColor) << "\n";
     if (opts.coneFundamentals == ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006)
         meta << "cones=" << hdrvdpConeFundamentalsLabel(opts.coneFundamentals) << "\n";
+    if (opts.xyzToDisplay == ViewVisibilitySummaryOptions::XyzToDisplay::Convert)
+        meta << "xyz_to_display=" << hdrvdpXyzToDisplayLabel(opts.xyzToDisplay) << "\n";
+    if (opts.spectralEmissionPath == kHdrvdpMallettSpectrum)
+        meta << "spectrum=" << kHdrvdpMallettSpectrum << "\n";
     writeGrayMapHdr((fs::path(outDir) / "native_side_C_map.hdr").string(), reference.width, reference.height, sideBySide.contrastMap);
     writeGrayMapHdr((fs::path(outDir) / "native_side_P_map.hdr").string(), reference.width, reference.height, sideBySide.probabilityMap);
     writeGrayMapRaw((fs::path(outDir) / "native_side_C_map.bin").string(), reference.width, reference.height, sideBySide.contrastMap);

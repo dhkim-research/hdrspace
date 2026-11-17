@@ -4502,8 +4502,12 @@ std::string viewVisibilityHelp(const std::string &command) {
     oss << "  --ppd FLOAT                Pixels per degree. Default: 30.\n";
     oss << "  --sensitivity FLOAT        Sensitivity correction. Default: -1.\n";
     oss << "  --spectral-emission PATH   Spectral emission CSV. Default: OLED profile.\n";
+    oss << "                             srgb-mallett2019-d65: built-in Mallett & Yuksel (2019)\n";
+    oss << "                             sRGB primaries x CIE D65 (white = the D65 spectrum).\n";
     oss << "  --cone-fundamentals TEXT   smith-pokorny (HDR-VDP 3) or cie2006 (Stockman & Sharpe,\n";
     oss << "                             as ColorVideoVDP). Default: smith-pokorny.\n";
+    oss << "  --xyz-to-display TEXT      direct (X, Y, Z drive the display's R, G, B) or convert\n";
+    oss << "                             (XYZ to the display's RGB first, as HDR-VDP 3). Default: direct.\n";
     oss << "  --detail TEXT              hdrvdp3 or contrast-proxy. Default: hdrvdp3.\n";
     oss << "  --input-color TEXT         rad, srgb, xyz (Radiance units), or xyz-cdm2 (XYZ already in cd/m2).\n";
     oss << "                             Values are multiplied by 179 (not for xyz-cdm2) and divided by EXPOSURE.\n";
@@ -4554,8 +4558,12 @@ std::string perceptualMapHelp(const std::string &command) {
     oss << "  --ppd FLOAT                Pixels per degree. Default: 30.\n";
     oss << "  --sensitivity FLOAT        Sensitivity correction. Default: -1.\n";
     oss << "  --spectral-emission PATH   Spectral emission CSV. Default: OLED profile.\n";
+    oss << "                             srgb-mallett2019-d65: built-in Mallett & Yuksel (2019)\n";
+    oss << "                             sRGB primaries x CIE D65 (white = the D65 spectrum).\n";
     oss << "  --cone-fundamentals TEXT   smith-pokorny (HDR-VDP 3) or cie2006 (Stockman & Sharpe,\n";
     oss << "                             as ColorVideoVDP). Default: smith-pokorny.\n";
+    oss << "  --xyz-to-display TEXT      direct (X, Y, Z drive the display's R, G, B) or convert\n";
+    oss << "                             (XYZ to the display's RGB first, as HDR-VDP 3). Default: direct.\n";
     oss << "  --help                     Show this help.\n";
     return oss.str();
 }
@@ -5045,6 +5053,15 @@ ViewVisibilitySummaryOptions::ConeFundamentals parseHdrvdpConeFundamentals(const
     throw std::runtime_error("Unsupported --cone-fundamentals value: " + value);
 }
 
+ViewVisibilitySummaryOptions::XyzToDisplay parseHdrvdpXyzToDisplay(const std::string &value) {
+    const std::string token = lowerCopy(value);
+    if (token.empty() || token == "direct")
+        return ViewVisibilitySummaryOptions::XyzToDisplay::Direct;
+    if (token == "convert" || token == "hdrvdp3" || token == "hdr-vdp3")
+        return ViewVisibilitySummaryOptions::XyzToDisplay::Convert;
+    throw std::runtime_error("Unsupported --xyz-to-display value: " + value);
+}
+
 PerceptualMapKind parsePerceptualMapKind(const std::string &value) {
     const std::string token = lowerCopy(value);
     if (token == "l")
@@ -5086,6 +5103,7 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
     std::string detail = "hdrvdp3";
     std::string inputColor = "rad";
     std::string cones = "smith-pokorny";
+    std::string xyzToDisplay = "direct";
     desc.add_options()
         ("help", "help")
         ("version", "version")
@@ -5100,6 +5118,7 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
         ("sensitivity", po::value<double>(&opts.analysis.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
         ("spectral-emission", po::value<std::string>(&opts.analysis.spectralEmissionPath), "spectral emission")
         ("cone-fundamentals", po::value<std::string>(&cones)->default_value("smith-pokorny"), "cone fundamentals")
+        ("xyz-to-display", po::value<std::string>(&xyzToDisplay)->default_value("direct"), "xyz to display")
         ("detail", po::value<std::string>(&detail)->default_value("hdrvdp3"), "detail mode")
         ("input-color", po::value<std::string>(&inputColor)->default_value("rad"), "input color space")
         ("debug-dir", po::value<std::string>(&opts.debugDir), "debug dump");
@@ -5118,6 +5137,7 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
     opts.analysis.detailMode = parseViewVisibilityDetailMode(detail);
     opts.analysis.inputColor = parseViewVisibilityInputColor(inputColor);
     opts.analysis.coneFundamentals = parseHdrvdpConeFundamentals(cones);
+    opts.analysis.xyzToDisplay = parseHdrvdpXyzToDisplay(xyzToDisplay);
     return opts;
 }
 
@@ -5159,6 +5179,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
     const std::vector<std::string> normalizedArgs = normalizeOptionSpellings(args);
     po::options_description desc("perceptualmap");
     std::string cones = "smith-pokorny";
+    std::string xyzToDisplay = "direct";
     desc.add_options()
         ("help", "help")
         ("version", "version")
@@ -5170,6 +5191,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
         ("sensitivity", po::value<double>(&opts.analysis.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
         ("spectral-emission", po::value<std::string>(&opts.analysis.spectralEmissionPath), "spectral emission")
         ("cone-fundamentals", po::value<std::string>(&cones)->default_value("smith-pokorny"), "cone fundamentals")
+        ("xyz-to-display", po::value<std::string>(&xyzToDisplay)->default_value("direct"), "xyz to display")
         ("input-files", po::value<std::vector<std::string> >(), "input");
 
     po::positional_options_description positional;
@@ -5195,6 +5217,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
     if (!inputs.empty())
         opts.analysis.inputPath = inputs.front();
     opts.analysis.coneFundamentals = parseHdrvdpConeFundamentals(cones);
+    opts.analysis.xyzToDisplay = parseHdrvdpXyzToDisplay(xyzToDisplay);
     return opts;
 }
 
@@ -6181,6 +6204,10 @@ int printViewVisibility(const ViewVisibilityCliOptions &opts) {
         std::cout << "input_color\t" << result.inputColor << "\n";
         if (result.coneFundamentals == "cie2006")
             std::cout << "cones\t" << result.coneFundamentals << "\n";
+        if (result.xyzToDisplay == "convert")
+            std::cout << "xyz_to_display\t" << result.xyzToDisplay << "\n";
+        if (!result.builtinSpectrum.empty())
+            std::cout << "spectrum\t" << result.builtinSpectrum << "\n";
         std::cout << "viewsize\t" << result.viewSize << "\n";
         std::cout << "refcontrast\t" << result.referenceBaseline << "\n";
         std::cout << "visibility\t" << result.visibilityRatio << "\n";
@@ -6210,6 +6237,10 @@ int printPerceptualMap(const PerceptualMapCliOptions &opts) {
     std::cout << "map\t" << result.label << "\n";
     if (resolved.analysis.coneFundamentals == ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006)
         std::cout << "cones\tcie2006\n";
+    if (resolved.analysis.xyzToDisplay == ViewVisibilitySummaryOptions::XyzToDisplay::Convert)
+        std::cout << "xyz_to_display\tconvert\n";
+    if (resolved.analysis.spectralEmissionPath == kHdrvdpMallettSpectrum)
+        std::cout << "spectrum\t" << kHdrvdpMallettSpectrum << "\n";
     std::cout << "output\t" << resolved.outputPath << "\n";
     return 0;
 }

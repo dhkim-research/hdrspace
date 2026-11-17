@@ -144,9 +144,13 @@ down (**Test**). It tells you how much of the detectable contrast in the view is
    units (× 179). CIE XYZ (cd/m²) is for XYZ files that already hold cd/m². Header
    `EXPOSURE=` lines are always undone. **Display metric** (E, AE, SE, RAE, RSE) and **Show
    map** (RGB, Visibility, Test contrast, Reference contrast) choose what the canvas shows,
-   and **Advanced (spectrum, cones)** sets the emission spectrum HDR-VDP assumes and the cone
-   sensitivities: Smith-Pokorny 1975 (HDR-VDP 3's own, the default) or CIE 2006 (Stockman &
-   Sharpe, as in ColorVideoVDP). Perceptual maps have the same **Cones** choice.
+   and **Advanced (spectrum, colour)** sets how colour becomes cone responses: **Primaries**
+   (the emission spectra in the **Spectrum** CSV, by default the OLED that HDR-VDP 3 uses for XYZ
+   input, or the built-in Mallett & Yuksel 2019 sRGB primaries times CIE D65, whose white is the
+   D65 spectrum), **Cones** (Smith-Pokorny 1975, HDR-VDP 3's own and the default, or CIE 2006,
+   Stockman & Sharpe, as in ColorVideoVDP) and **XYZ to RGB** (Direct, the default, feeds X, Y, Z
+   to the display's R, G, B in the contrast step; HDR-VDP 3 convert turns XYZ into the display's
+   RGB first, as HDR-VDP 3 and the quality step do). Perceptual maps have the same choices.
 3. Press **Compute visibility**.
 
 The result is a **Visibility ratio** and a **Quality** score. The tabs above the canvas switch

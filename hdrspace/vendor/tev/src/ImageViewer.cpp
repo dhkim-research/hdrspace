@@ -4840,6 +4840,9 @@ std::shared_ptr<Image> ImageViewer::makeExperimentalPerceptualPreviewImage(const
     opts.coneFundamentals = mPerceptualConeFundamentals == 1
         ? ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006
         : ViewVisibilitySummaryOptions::ConeFundamentals::SmithPokorny1975;
+    opts.xyzToDisplay = mPerceptualXyzToDisplay == 1
+        ? ViewVisibilitySummaryOptions::XyzToDisplay::Convert
+        : ViewVisibilitySummaryOptions::XyzToDisplay::Direct;
     PerceptualMapResult result;
     try {
         result = analyzePerceptualMap(opts, kind);
@@ -6864,15 +6867,16 @@ void ImageViewer::requestSourceColorAssignment(int kind) {
 // ---- Perceptual maps on the canvas -------------------------------------------------------
 
 void ImageViewer::setPerceptualMapSettings(double pixelsPerDegree, double sensitivityCorrection,
-    const std::string& spectralEmissionPath, int inputColor, int coneFundamentals) {
+    const std::string& spectralEmissionPath, int inputColor, int coneFundamentals, int xyzToDisplay) {
     const bool changed = pixelsPerDegree != mPerceptualPpd || sensitivityCorrection != mPerceptualSensitivity ||
         spectralEmissionPath != mPerceptualEmissionPath || inputColor != mPerceptualInputColor ||
-        coneFundamentals != mPerceptualConeFundamentals;
+        coneFundamentals != mPerceptualConeFundamentals || xyzToDisplay != mPerceptualXyzToDisplay;
     mPerceptualPpd = pixelsPerDegree;
     mPerceptualSensitivity = sensitivityCorrection;
     mPerceptualEmissionPath = spectralEmissionPath;
     mPerceptualInputColor = inputColor;
     mPerceptualConeFundamentals = coneFundamentals;
+    mPerceptualXyzToDisplay = xyzToDisplay;
 #ifdef MERGEHDR_ENABLE_EXPERIMENTAL_PERCEPTUAL_MAPS
     if (changed) {
         mExperimentalInspectionPreviewImage.reset();

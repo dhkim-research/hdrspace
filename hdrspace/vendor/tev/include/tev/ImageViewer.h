@@ -218,8 +218,9 @@ public:
     // Perceptual maps (shown on the canvas in place of the file's values).
     // inputColor: 0 Radiance RGB, 1 sRGB, 2 XYZ (as View Visibility's input colour).
     // coneFundamentals: 0 Smith-Pokorny 1975 (HDR-VDP 3), 1 CIE 2006 (Stockman & Sharpe).
+    // xyzToDisplay: 0 direct (X, Y, Z as the display's R, G, B), 1 convert to the display's RGB.
     void setPerceptualMapSettings(double pixelsPerDegree, double sensitivityCorrection,
-        const std::string& spectralEmissionPath, int inputColor, int coneFundamentals = 0);
+        const std::string& spectralEmissionPath, int inputColor, int coneFundamentals = 0, int xyzToDisplay = 0);
     // kind: 0 L, 1 M, 2 Rod, 3 L+M, 4 Adaptation, 5 Detectable contrast, 6 Eqv. luminance.
     bool showPerceptualMap(int kind);
     void showSourceValues();
@@ -594,6 +595,7 @@ private:
     std::string mPerceptualEmissionPath;
     int mPerceptualInputColor = 0;
     int mPerceptualConeFundamentals = 0;
+    int mPerceptualXyzToDisplay = 0;
     std::vector<nanogui::Button*> mAssignColorButtons;
     std::vector<int> mAssignColorButtonKinds;
     int currentAssignedColorKind() const;

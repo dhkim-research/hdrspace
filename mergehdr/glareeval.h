@@ -226,6 +226,10 @@ struct EvalGlareAnalysisResult {
     bool outputSimple = false;
 };
 
+// Name that selects the built-in spectrum (Mallett & Yuksel 2019 sRGB primaries x CIE D65)
+// instead of an emission CSV file, wherever a spectral emission path is given.
+inline constexpr const char *kHdrvdpMallettSpectrum = "srgb-mallett2019-d65";
+
 struct ViewVisibilitySummaryOptions {
     enum class DetailMode {
         HdrvdpSubset,
@@ -248,6 +252,15 @@ struct ViewVisibilitySummaryOptions {
         Cie2006
     };
 
+    // How the XYZ values reach the display primaries in the contrast and perceptual-map steps.
+    // Direct feeds X, Y and Z as the display's R, G and B (the former fixed behaviour). Convert
+    // first turns XYZ into the display's own RGB, as HDR-VDP 3 does for 'XYZ' input and as the
+    // side-by-side (quality) step always does.
+    enum class XyzToDisplay {
+        Direct,
+        Convert
+    };
+
     std::string referencePath;
     std::string testPath;
     std::string maskPath;
@@ -255,6 +268,7 @@ struct ViewVisibilitySummaryOptions {
     double sensitivityCorrection = -1.0;
     std::string spectralEmissionPath;
     ConeFundamentals coneFundamentals = ConeFundamentals::SmithPokorny1975;
+    XyzToDisplay xyzToDisplay = XyzToDisplay::Direct;
     DetailMode detailMode = DetailMode::HdrvdpSubset;
     InputColor inputColor = InputColor::Rad;
 };
@@ -272,6 +286,8 @@ struct ViewVisibilitySummaryResult {
     std::string detailLabel;
     std::string inputColor;
     std::string coneFundamentals;  // "smith-pokorny" or "cie2006" (HDR-VDP3 detail only)
+    std::string xyzToDisplay;      // "direct" or "convert" (HDR-VDP3 detail only)
+    std::string builtinSpectrum;   // kHdrvdpMallettSpectrum when it was used, else empty
     std::vector<float> testContrastMap;
     std::vector<float> visibilityMap;
     std::vector<float> referenceContrastMap;
@@ -294,6 +310,8 @@ struct PerceptualMapOptions {
     std::string spectralEmissionPath;
     ViewVisibilitySummaryOptions::ConeFundamentals coneFundamentals =
         ViewVisibilitySummaryOptions::ConeFundamentals::SmithPokorny1975;
+    ViewVisibilitySummaryOptions::XyzToDisplay xyzToDisplay =
+        ViewVisibilitySummaryOptions::XyzToDisplay::Direct;
     // How the file's three channels are read (as View Visibility's input colour). Rad is the
     // former fixed behaviour; Xyz with three equal channels reads a luminance (cd/m²) picture.
     ViewVisibilitySummaryOptions::InputColor inputColor = ViewVisibilitySummaryOptions::InputColor::Rad;
