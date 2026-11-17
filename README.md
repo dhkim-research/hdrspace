@@ -1,8 +1,8 @@
 # hdrspace
 
-hdrspace is a macOS app (with a Windows build) for HDR photography where the pixel values
-are meant to be measurements. It turns a bracket of camera RAW files into a Radiance HDR image in absolute
-units (luminance in cd/m², colour in CIE XYZ or Radiance / linear sRGB primaries), and has
+hdrspace is a Mac and Windows app for HDR photography where the pixel values are meant to be
+measurements. It turns a bracket of camera RAW files into a Radiance HDR image in absolute
+units (luminance in cd/m², colour in CIE XYZ or Radiance / linear sRGB primaries). It also has
 tools to analyse that image: glare, visibility, tone mapping and a few perceptual maps.
 
 I use it for daylighting and visual comfort research. Ordinary raw converters add tone
@@ -10,12 +10,15 @@ curves and white balance, so their output can't be used for luminance. hdrspace 
 whole chain linear and writes every step into the file header, so each result can be traced
 back to the RAW files and settings that made it.
 
-The app is developed and tested on Apple Silicon Macs and needs macOS 26 or newer. A 64-bit
-Windows build is also available, with a few tools missing; see [Windows](#windows).
+The Mac version runs on Apple Silicon Macs with macOS 26 or newer. The Windows version runs on
+64-bit Windows but lacks AI Segmentation, View Volume and the pfstools tone-mapping operators.
+The app is developed and tested on a Mac, and each Windows build is checked on a Windows
+virtual machine (see [Windows](#windows)).
 
 **Download:** [hdrspace 1.02](https://github.com/dhkim-research/hdrspace/releases/tag/v1.02).
 On a Mac, unzip `hdrspace-macos-arm64.zip` and move `hdrspace.app` to Applications. The app
-is not notarized, so open it the first time with right-click → Open.
+is not notarized, so open it the first time with right-click → Open. On Windows, unzip
+`hdrspace-windows-x64.zip` anywhere and start `hdrspace-windows-x64\bin\hdrspace.exe`.
 
 **New here?** The [usage guide](docs/usage.md) walks through the app with screenshots.
 
