@@ -8,6 +8,10 @@ on:
       - 'mergehdr/**'
       - 'hdrspace/vendor/hdrvdp-mex/**'
       - '.github/workflows/mergehdr-windows.yml'
+      # Documentation and camera profiles alone do not need a new Windows build.
+      - '!mergehdr/profiles/**'
+      - '!**/*.md'
+      - '!**/README.rst'
   workflow_dispatch:
 
 jobs:

@@ -54,27 +54,26 @@ for bright skies. It adds ``nd = 3.0`` and has its own colour matrix.
 
 The other presets come from the author's own calibrations of other cameras:
 
-- ``D70-1`` and ``D70-2``: two Canon EOS 70D bodies with the Sigma 4.5mm f/2.8
-  EX DC HSM Circular Fisheye. ``D70-1ND3`` and ``D70-2ND3`` add a Kodak Wratten
-  ND 3.0 filter. The D70-2 presets reuse the colour matrices and the shutter
-  and aperture corrections of D70-1, with their own crop.
+- ``D70``: Canon EOS 70D with the Sigma 4.5mm f/2.8 EX DC HSM Circular Fisheye.
+  ``D70ND3`` adds a Kodak Wratten ND 3.0 filter.
 - ``R5``: Canon EOS R5 with the Canon RF 5.2mm F2.8 L Dual Fisheye, without a
   filter. The preset keeps the whole frame with both circles. The lens is
   equidistant, so it needs no fisheye remap.
 - ``5DSR`` and ``5DSRND3``: Canon EOS 5DS R with the Canon EF 8-15mm f/4L
   Fisheye USM, without and with an ND 3.0 filter.
-- ``Fuji``: a Fujifilm camera, without a crop or a fisheye remap.
+- ``Pi5``: Raspberry Pi 5 (16 GB) with a Sony IMX219 camera module and the
+  Entaniya RP-L220 fisheye lens. Its crop is a 2016 x 2016 pixel square near
+  the sensor centre, and it has no fisheye remap.
 
-All presets except ``R5m2`` and ``R5m2ND3`` were calibrated with the mechanical
-shutter, so take the photos with the mechanical shutter too. For the 70D with a
-Kodak Wratten ND 2.0 filter, use the ND3 preset and set ``nd`` to 2.0. The
-colour matrix then still comes from the ND 3.0 fit.
+``D70``, ``D70ND3``, ``R5``, ``5DSR`` and ``5DSRND3`` were calibrated with the
+mechanical shutter, so take the photos with the mechanical shutter too. For
+the 70D with a Kodak Wratten ND 2.0 filter, use ``D70ND3`` and set ``nd`` to
+2.0. The colour matrix then still comes from the ND 3.0 fit.
 
-Every camera body and lens differs a little. The two 70D presets show this:
-their crop windows are shifted by 29 pixels horizontally and 10 vertically.
-Use these presets as a starting point, not as a calibration of your own
-equipment. For measurements, make your own preset with the calibration tools
-below.
+Every camera body and lens differs a little. For example, the author's two 70D
+bodies needed crop windows 29 pixels apart horizontally and 10 vertically. Use
+these presets as a starting point, not as a calibration of your own equipment.
+For measurements, make your own preset with the calibration tools below.
 
 Lens projection
 ---------------
@@ -258,7 +257,8 @@ Windows
 -------
 
 GitHub Actions builds the command-line tools for 64-bit Windows (MSYS2 UCRT64, GCC) on every
-change to ``mergehdr`` and compares the results with macOS (``tests/crossplatform``). The package
+change to ``mergehdr`` and compares the results with macOS (``tests/crossplatform``). Changes to
+documentation or to ``profiles/`` alone start no build. The package
 ``mergehdr-windows-x64`` (Actions, workflow "mergehdr Windows", latest run) holds
 ``bin/mergehdr.exe`` and ``bin/mergehdrcore.exe`` with their DLLs, ``profiles/`` and the HDR-VDP
 data in ``hdrvdp3/``. Unzip it anywhere and run ``bin\mergehdr.exe``.

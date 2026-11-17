@@ -138,7 +138,8 @@ Download `hdrspace-windows-x64.zip` from the
 unzip it anywhere and start `hdrspace-windows-x64\bin\hdrspace.exe`. The program is not
 code-signed, so Windows may show a SmartScreen warning the first time ("More info" → "Run
 anyway"). Newer builds are made by GitHub Actions when `hdrspace/`, `mergehdr/` or the
-workflow change, or when the workflow is started by hand (workflow "hdrspace Windows app",
+workflow change. Changes to documentation (`.md`, `README.rst`) or to `mergehdr/profiles` alone
+start no build. The workflow can also be started by hand (workflow "hdrspace Windows app",
 package `hdrspace-windows-x64`). Nothing else has to be installed: the
 package contains `mergehdr`, the Radiance programs, the HDR-VDP data, the camera profiles and a
 small POSIX shell (BusyBox) that runs the background jobs.
