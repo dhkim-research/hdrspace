@@ -4502,6 +4502,8 @@ std::string viewVisibilityHelp(const std::string &command) {
     oss << "  --ppd FLOAT                Pixels per degree. Default: 30.\n";
     oss << "  --sensitivity FLOAT        Sensitivity correction. Default: -1.\n";
     oss << "  --spectral-emission PATH   Spectral emission CSV. Default: OLED profile.\n";
+    oss << "  --cone-fundamentals TEXT   smith-pokorny (HDR-VDP 3) or cie2006 (Stockman & Sharpe,\n";
+    oss << "                             as ColorVideoVDP). Default: smith-pokorny.\n";
     oss << "  --detail TEXT              hdrvdp3 or contrast-proxy. Default: hdrvdp3.\n";
     oss << "  --input-color TEXT         rad, srgb, xyz (Radiance units), or xyz-cdm2 (XYZ already in cd/m2).\n";
     oss << "                             Values are multiplied by 179 (not for xyz-cdm2) and divided by EXPOSURE.\n";
@@ -4552,6 +4554,8 @@ std::string perceptualMapHelp(const std::string &command) {
     oss << "  --ppd FLOAT                Pixels per degree. Default: 30.\n";
     oss << "  --sensitivity FLOAT        Sensitivity correction. Default: -1.\n";
     oss << "  --spectral-emission PATH   Spectral emission CSV. Default: OLED profile.\n";
+    oss << "  --cone-fundamentals TEXT   smith-pokorny (HDR-VDP 3) or cie2006 (Stockman & Sharpe,\n";
+    oss << "                             as ColorVideoVDP). Default: smith-pokorny.\n";
     oss << "  --help                     Show this help.\n";
     return oss.str();
 }
@@ -5032,6 +5036,15 @@ ViewVisibilitySummaryOptions::InputColor parseViewVisibilityInputColor(const std
     throw std::runtime_error("Unsupported --input-color value: " + value);
 }
 
+ViewVisibilitySummaryOptions::ConeFundamentals parseHdrvdpConeFundamentals(const std::string &value) {
+    const std::string token = lowerCopy(value);
+    if (token.empty() || token == "smith-pokorny" || token == "smith_pokorny" || token == "smithpokorny")
+        return ViewVisibilitySummaryOptions::ConeFundamentals::SmithPokorny1975;
+    if (token == "cie2006" || token == "cie-2006" || token == "cie_2006")
+        return ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006;
+    throw std::runtime_error("Unsupported --cone-fundamentals value: " + value);
+}
+
 PerceptualMapKind parsePerceptualMapKind(const std::string &value) {
     const std::string token = lowerCopy(value);
     if (token == "l")
@@ -5072,6 +5085,7 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
     po::options_description desc("view_visibility");
     std::string detail = "hdrvdp3";
     std::string inputColor = "rad";
+    std::string cones = "smith-pokorny";
     desc.add_options()
         ("help", "help")
         ("version", "version")
@@ -5085,6 +5099,7 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
         ("ppd", po::value<double>(&opts.analysis.pixelsPerDegree)->default_value(30.0), "pixels per degree")
         ("sensitivity", po::value<double>(&opts.analysis.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
         ("spectral-emission", po::value<std::string>(&opts.analysis.spectralEmissionPath), "spectral emission")
+        ("cone-fundamentals", po::value<std::string>(&cones)->default_value("smith-pokorny"), "cone fundamentals")
         ("detail", po::value<std::string>(&detail)->default_value("hdrvdp3"), "detail mode")
         ("input-color", po::value<std::string>(&inputColor)->default_value("rad"), "input color space")
         ("debug-dir", po::value<std::string>(&opts.debugDir), "debug dump");
@@ -5102,6 +5117,7 @@ ViewVisibilityCliOptions parseViewVisibilityOptions(const std::vector<std::strin
     opts.writeDebugDump = !opts.debugDir.empty();
     opts.analysis.detailMode = parseViewVisibilityDetailMode(detail);
     opts.analysis.inputColor = parseViewVisibilityInputColor(inputColor);
+    opts.analysis.coneFundamentals = parseHdrvdpConeFundamentals(cones);
     return opts;
 }
 
@@ -5142,6 +5158,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
     PerceptualMapCliOptions opts;
     const std::vector<std::string> normalizedArgs = normalizeOptionSpellings(args);
     po::options_description desc("perceptualmap");
+    std::string cones = "smith-pokorny";
     desc.add_options()
         ("help", "help")
         ("version", "version")
@@ -5152,6 +5169,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
         ("ppd", po::value<double>(&opts.analysis.pixelsPerDegree)->default_value(30.0), "pixels per degree")
         ("sensitivity", po::value<double>(&opts.analysis.sensitivityCorrection)->default_value(-1.0), "sensitivity correction")
         ("spectral-emission", po::value<std::string>(&opts.analysis.spectralEmissionPath), "spectral emission")
+        ("cone-fundamentals", po::value<std::string>(&cones)->default_value("smith-pokorny"), "cone fundamentals")
         ("input-files", po::value<std::vector<std::string> >(), "input");
 
     po::positional_options_description positional;
@@ -5176,6 +5194,7 @@ PerceptualMapCliOptions parsePerceptualMapOptions(const std::vector<std::string>
         : std::vector<std::string>();
     if (!inputs.empty())
         opts.analysis.inputPath = inputs.front();
+    opts.analysis.coneFundamentals = parseHdrvdpConeFundamentals(cones);
     return opts;
 }
 
@@ -6160,6 +6179,8 @@ int printViewVisibility(const ViewVisibilityCliOptions &opts) {
         std::cout << std::fixed << std::setprecision(12);
         std::cout << "detail\t" << result.detailLabel << "\n";
         std::cout << "input_color\t" << result.inputColor << "\n";
+        if (result.coneFundamentals == "cie2006")
+            std::cout << "cones\t" << result.coneFundamentals << "\n";
         std::cout << "viewsize\t" << result.viewSize << "\n";
         std::cout << "refcontrast\t" << result.referenceBaseline << "\n";
         std::cout << "visibility\t" << result.visibilityRatio << "\n";
@@ -6187,6 +6208,8 @@ int printPerceptualMap(const PerceptualMapCliOptions &opts) {
     writePerceptualMapHdr(resolved.outputPath, result);
 
     std::cout << "map\t" << result.label << "\n";
+    if (resolved.analysis.coneFundamentals == ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006)
+        std::cout << "cones\tcie2006\n";
     std::cout << "output\t" << resolved.outputPath << "\n";
     return 0;
 }

@@ -7890,7 +7890,8 @@ private:
         // at a '.' in a stem ("office.v2") and dropped the mode and colour suffixes.
         const std::string stem =
             (referencePath.empty() ? std::string("reference") : sanitizeStem(referencePath)) + "_" +
-            (testPath.empty() ? std::string("test") : sanitizeStem(testPath)) + "_" + modeSuffix + "_" + inputColorSuffix;
+            (testPath.empty() ? std::string("test") : sanitizeStem(testPath)) + "_" + modeSuffix + "_" + inputColorSuffix +
+            (selectedViewVisibilityCones() == ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006 ? "_cie2006" : "");
         return paths_.cacheDir / (stem + "_view_visibility_result.hdr");
     }
 
@@ -7945,6 +7946,13 @@ private:
             case 3: return "xyz-cdm2";
             default: return "rad";
         }
+    }
+
+    // Cone list order: Smith-Pokorny 1975 (HDR-VDP 3, default), CIE 2006 (Stockman & Sharpe).
+    ViewVisibilitySummaryOptions::ConeFundamentals selectedViewVisibilityCones() const {
+        return viewVisibilityConesCombo_ && viewVisibilityConesCombo_->selected_index() == 1
+            ? ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006
+            : ViewVisibilitySummaryOptions::ConeFundamentals::SmithPokorny1975;
     }
 
     ViewVisibilitySummaryOptions::InputColor selectedViewVisibilityInputColor() const {
@@ -8095,6 +8103,7 @@ private:
             }
             opts.detailMode = ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset;
             opts.inputColor = selectedViewVisibilityInputColor();
+            opts.coneFundamentals = selectedViewVisibilityCones();
 
             const fs::path outputDir = fs::path(folders.front()) /
                 (sanitizeStem(referencePath) + "_" + sanitizeStem(testPath) + "_view_visibility_steps");
@@ -8193,6 +8202,7 @@ private:
                     ? ViewVisibilitySummaryOptions::DetailMode::ContrastProxy
                     : ViewVisibilitySummaryOptions::DetailMode::HdrvdpSubset;
             opts.inputColor = selectedViewVisibilityInputColor();
+            opts.coneFundamentals = selectedViewVisibilityCones();
         } catch (const std::exception& e) {
             resetViewVisibilityResult();
             setViewVisibilityStatusCaption("View visibility summary failed");
@@ -8397,7 +8407,7 @@ private:
         viewVisibilityResultMapCombo_->set_callback([this](int) {
             if (viewVisibilityResult_) applyViewVisibilityResultDisplay(false);
         });
-        auto* spectrumButton = new InspectorDisclosureButton(content, "Advanced (emission spectrum)");
+        auto* spectrumButton = new InspectorDisclosureButton(content, "Advanced (spectrum, cones)");
         spectrumButton->set_fixed_width(kInspectorContentWidth);
         auto* spectrumBody = new Widget(content);
         spectrumBody->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
@@ -8409,6 +8419,24 @@ private:
         input("Spectrum", viewVisibilitySpectralBox_, "emission_spectra_oled.csv", spectrumBody);
         viewVisibilitySpectralBox_->set_value(defaultViewVisibilitySpectralPath().string());
         viewVisibilitySpectralBox_->set_tooltip("CSV emission spectrum used by the existing native visibility pipeline");
+        {
+            auto* host = new Widget(spectrumBody);
+            host->set_layout(new BoxLayout{Orientation::Horizontal, Alignment::Middle, 0, 6});
+            host->set_fixed_width(kInspectorContentWidth);
+            auto* label = new Label(host, "Cones", "sans", 13);
+            label->set_fixed_width(kInspectorTightRowLabelWidth);
+            label->set_color(hdrspaceMutedInk(215));
+            viewVisibilityConesCombo_ = new InspectorComboBox(host, std::vector<std::string>{"Smith-Pokorny 1975", "CIE 2006 (Stockman)"});
+            viewVisibilityConesCombo_->set_selected_index(0);
+            viewVisibilityConesCombo_->set_fixed_size({kInspectorContentWidth - kInspectorTightRowLabelWidth - 6, kInspectorRowHeight});
+            viewVisibilityConesCombo_->set_tooltip(
+                "Cone sensitivities used for the L, M and S responses. Smith-Pokorny 1975 is HDR-VDP 3's own choice (default); "
+                "CIE 2006 (Stockman & Sharpe 2000) is the current CIE standard, used by ColorVideoVDP.");
+            viewVisibilityConesCombo_->set_callback([this](int) {
+                resetViewVisibilityResult();
+                setViewVisibilityStatusCaption("Cone fundamentals changed");
+            });
+        }
 
         heading("Result");
         viewVisibilityActionBar_ = new InspectorActionBar(viewVisibilityWindow_);
@@ -15517,7 +15545,7 @@ private:
         perceptualPpdNoteLabel_->set_fixed_width(kInspectorContentWidth);
         perceptualPpdNoteLabel_->set_color(hdrspaceMutedInk(200));
 
-        auto* advancedButton = new InspectorDisclosureButton(content, "Advanced (sensitivity, emission spectrum)");
+        auto* advancedButton = new InspectorDisclosureButton(content, "Advanced (sensitivity, spectrum, cones)");
         advancedButton->set_fixed_width(kInspectorContentWidth);
         auto* advancedBody = new Widget(content);
         advancedBody->set_layout(new BoxLayout{Orientation::Vertical, Alignment::Fill, 0, 6});
@@ -15546,6 +15574,14 @@ private:
                 if (!paths.empty()) perceptualEmissionBox_->set_value(paths.front());
             });
         }
+        perceptualConesCombo_ = new InspectorComboBox(row(advancedBody, "Cones"),
+            std::vector<std::string>{"Smith-Pokorny 1975", "CIE 2006 (Stockman)"});
+        perceptualConesCombo_->set_selected_index(0);
+        perceptualConesCombo_->set_fixed_size({kFieldWidth, kInspectorRowHeight});
+        perceptualConesCombo_->set_tooltip(
+            "Cone sensitivities used for the L, M and S responses. Smith-Pokorny 1975 is HDR-VDP 3's own choice (default); "
+            "CIE 2006 (Stockman & Sharpe 2000) is the current CIE standard, used by ColorVideoVDP.");
+        perceptualConesCombo_->set_callback([this](int) { refreshPerceptualMapsUi(); });
 
         heading("Display");
         {
@@ -15801,7 +15837,12 @@ private:
         return viewer_->currentImage()->path().string() + "|" + std::to_string(viewer_->currentImage()->id()) +
             "|k" + std::to_string(perceptualKind_) + "|" + trim(perceptualPpdBox_->value()) + "|" +
             trim(perceptualSensitivityBox_->value()) + "|" + trim(perceptualEmissionBox_->value()) +
-            "|c" + std::to_string(perceptualInputColor());
+            "|c" + std::to_string(perceptualInputColor()) + "|o" + std::to_string(perceptualConeIndex());
+    }
+
+    // 0 Smith-Pokorny 1975 (HDR-VDP 3, default), 1 CIE 2006 (Stockman & Sharpe).
+    int perceptualConeIndex() const {
+        return perceptualConesCombo_ ? perceptualConesCombo_->selected_index() : 0;
     }
 
     void computePerceptualMap() {
@@ -15835,6 +15876,9 @@ private:
         opts.pixelsPerDegree = ppd;
         opts.sensitivityCorrection = sensitivity;
         opts.spectralEmissionPath = emission.empty() ? std::string() : emission.string();
+        opts.coneFundamentals = perceptualConeIndex() == 1
+            ? ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006
+            : ViewVisibilitySummaryOptions::ConeFundamentals::SmithPokorny1975;
         opts.inputColor = inputColor == 1 ? ViewVisibilitySummaryOptions::InputColor::Srgb
             : inputColor == 2 ? ViewVisibilitySummaryOptions::InputColor::Xyz
             : inputColor == 3 ? ViewVisibilitySummaryOptions::InputColor::XyzCdm2
@@ -15925,8 +15969,9 @@ private:
         perceptualResultValues_ = result.values;
         perceptualResultPpd_ = ppd;
         perceptualResultSensitivity_ = sensitivity;
+        perceptualResultCones_ = opts.coneFundamentals == ViewVisibilitySummaryOptions::ConeFundamentals::Cie2006 ? 1 : 0;
 
-        viewer_->setPerceptualMapSettings(ppd, sensitivity, opts.spectralEmissionPath, inputColor);
+        viewer_->setPerceptualMapSettings(ppd, sensitivity, opts.spectralEmissionPath, inputColor, perceptualResultCones_);
         if (!viewer_->showPerceptualMap(kind)) {
             perceptualErrorText_ = "The map could not be shown on the canvas.";
         }
@@ -16033,6 +16078,8 @@ private:
                     : perceptualInputColor() == 2 ? "xyz"
                     : perceptualInputColor() == 3 ? "xyz-cdm2" : "rad"),
         };
+        // Only maps made with the CIE 2006 cones say so; the default keeps the former header.
+        if (perceptualResultCones_ == 1) lines.back() += " cones cie2006";
         if (std::string(info.unit) == "cd/m²") lines.push_back("HDRSPACE_COLOR= luminance cd/m2");
         const std::string view = currentImageHeaderValue("VIEW");
         if (!view.empty()) lines.push_back("VIEW= " + view);
@@ -25520,6 +25567,7 @@ private:
     Label* perceptualPpdNoteLabel_ = nullptr;
     TextBox* perceptualSensitivityBox_ = nullptr;
     TextBox* perceptualEmissionBox_ = nullptr;
+    ComboBox* perceptualConesCombo_ = nullptr;
     InspectorSegmentButton* perceptualShowMapButton_ = nullptr;
     InspectorSegmentButton* perceptualShowOriginalButton_ = nullptr;
     InspectorSegmentButton* perceptualFalseColorButton_ = nullptr;
@@ -25543,6 +25591,7 @@ private:
     std::vector<float> perceptualResultValues_;
     double perceptualResultPpd_ = 30.0;
     double perceptualResultSensitivity_ = -1.0;
+    int perceptualResultCones_ = 0;
     std::optional<tev::ETonemap> perceptualSavedTonemap_;
     std::optional<std::pair<float, float>> perceptualSavedExposure_;
     DesktopPanelWindow* createViewWindow_ = nullptr;
@@ -25681,6 +25730,7 @@ private:
     TextBox* viewVisibilitySensitivityBox_ = nullptr;
     TextBox* viewVisibilitySpectralBox_ = nullptr;
     ComboBox* viewVisibilityInputColorCombo_ = nullptr;
+    ComboBox* viewVisibilityConesCombo_ = nullptr;
     ComboBox* viewVisibilityDetailCombo_ = nullptr;
     ComboBox* viewVisibilityResultMapCombo_ = nullptr;
     ComboBox* viewVisibilityMetricCombo_ = nullptr;

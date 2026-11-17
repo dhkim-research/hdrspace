@@ -239,12 +239,22 @@ struct ViewVisibilitySummaryOptions {
         XyzCdm2  // XYZ already stored in cd/m²
     };
 
+    // Cone spectral sensitivities that turn the display's light into L, M and S responses.
+    // SmithPokorny1975 is HDR-VDP 3's own choice (the former fixed behaviour). Cie2006 uses the
+    // CIE 2006 2-deg cone fundamentals of Stockman & Sharpe (2000), weighted as in ColorVideoVDP
+    // so that L+M is the CIE 2006 luminance.
+    enum class ConeFundamentals {
+        SmithPokorny1975,
+        Cie2006
+    };
+
     std::string referencePath;
     std::string testPath;
     std::string maskPath;
     double pixelsPerDegree = 30.0;
     double sensitivityCorrection = -1.0;
     std::string spectralEmissionPath;
+    ConeFundamentals coneFundamentals = ConeFundamentals::SmithPokorny1975;
     DetailMode detailMode = DetailMode::HdrvdpSubset;
     InputColor inputColor = InputColor::Rad;
 };
@@ -261,6 +271,7 @@ struct ViewVisibilitySummaryResult {
     double qualityScore = 0.0;
     std::string detailLabel;
     std::string inputColor;
+    std::string coneFundamentals;  // "smith-pokorny" or "cie2006" (HDR-VDP3 detail only)
     std::vector<float> testContrastMap;
     std::vector<float> visibilityMap;
     std::vector<float> referenceContrastMap;
@@ -281,6 +292,8 @@ struct PerceptualMapOptions {
     double pixelsPerDegree = 30.0;
     double sensitivityCorrection = -1.0;
     std::string spectralEmissionPath;
+    ViewVisibilitySummaryOptions::ConeFundamentals coneFundamentals =
+        ViewVisibilitySummaryOptions::ConeFundamentals::SmithPokorny1975;
     // How the file's three channels are read (as View Visibility's input colour). Rad is the
     // former fixed behaviour; Xyz with three equal channels reads a luminance (cd/m²) picture.
     ViewVisibilitySummaryOptions::InputColor inputColor = ViewVisibilitySummaryOptions::InputColor::Rad;
