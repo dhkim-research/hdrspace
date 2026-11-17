@@ -65,9 +65,11 @@ The other presets come from the author's own calibrations of other cameras:
   Entaniya RP-L220 fisheye lens. Its crop is a 2016 x 2016 pixel square near
   the sensor centre, and it has no fisheye remap.
 
-``D70``, ``D70ND3``, ``R5``, ``5DSR`` and ``5DSRND3`` were calibrated with the
-mechanical shutter, so take the photos with the mechanical shutter too. For
-the 70D with a Kodak Wratten ND 2.0 filter, use ``D70ND3`` and set ``nd`` to
+``R5m2`` and ``R5m2ND3`` were calibrated with the electronic shutter. ``D70``,
+``D70ND3``, ``R5``, ``5DSR`` and ``5DSRND3`` were calibrated with the mechanical
+shutter. Take the photos with the same shutter as the preset.
+
+For the 70D with a Kodak Wratten ND 2.0 filter, use ``D70ND3`` and set ``nd`` to
 2.0. The colour matrix then still comes from the ND 3.0 fit.
 
 Every camera body and lens differs a little. For example, the author's two 70D
